@@ -84,10 +84,10 @@ Run `scrapingbee --help` or `scrapingbee [command] --help` for details.
 All commands that take a single input (URL, query, ASIN, product ID, video ID, or prompt) support **batch mode** via `--input-file`:
 
 - Provide a file with **one input per line** (empty lines are skipped).
-- The CLI calls the ScrapingBee **usage** API to get your **max concurrent request limit** and runs that many requests in parallel.
-- **Output:** One file per response is written to a folder. Successful responses go to `1.txt`, `2.txt`, … (by input order). Failed items are reported on stderr and, if the API returned a body, written to `N.err`.
+- The CLI calls the ScrapingBee **usage** API for your plan limit and runs that many requests in parallel when you do not set `--concurrency`. Set `--concurrency N` to use a different concurrency.
+- **Output:** One file per response is written to a folder. For **scrape** (HTML API), the extension is inferred from the response (body sniff, then `Content-Type`; unknown → `N.unidentified.txt`). Image responses (png, jpg, gif, webp) are written to a **screenshots/** subfolder; other non-text types (e.g. pdf, zip) to a **files/** subfolder; JSON, HTML, and text stay in the batch root. For **google, fast-search, amazon, walmart, youtube, chatgpt** output is always `N.json` in the batch root. Failed items are reported on stderr and, if the API returned a body, written to `N.err`.
 - **Output folder:** Use `--batch-output-dir` to set a custom folder. If omitted, a folder named `batch_<YYYYMMDD_HHMMSS>` is created in the current directory.
-- **Concurrency:** Use `--concurrency N` to cap concurrent requests. If omitted (or 0), the CLI uses your plan limit from the usage API. If you set `--concurrency` higher than your plan limit, the batch is not run and you get an error (check limits with `scrapingbee usage`).
+- **Concurrency:** Use `--concurrency N` to set concurrent requests. If omitted (or 0), the CLI uses your plan limit from the usage API. If you set `--concurrency` higher than your plan limit, the batch is not run and you get an error (check limits with `scrapingbee usage`). On low-resource machines you can set a lower value (e.g. `--concurrency 10` or `--concurrency 50`).
 - **Credits:** Before running, the CLI checks the usage API for available credits. If the response includes a credit balance and it is less than the number of batch items, the batch is not run and you are informed (run `scrapingbee usage` to see your balance).
 - When finished, the CLI prints to **stdout**: `Batch complete. Output written to <absolute path>`.
 - You cannot use `--input-file` together with a positional argument.
@@ -217,7 +217,7 @@ scrapingbee chatgpt "Explain quantum computing in one sentence"
 
 ## Command parameters
 
-Each command supports the global flags (`--api-key`, `-o`, `-v`, `--batch-output-dir`, `--concurrency`) plus the parameters below. Boolean flags accept `true`/`false` (e.g. `--render-js=false`). All commands that take a single input also support **`--input-file`** for batch mode; use **`--batch-output-dir`** and **`--concurrency`** as needed (see [Batch mode](#batch-mode)).
+Each command supports the global flags above plus the parameters below. For full options run `scrapingbee [command] --help`. Boolean flags accept `true`/`false` (e.g. `--render-js=false`). Commands that take a single input support **`--input-file`** for batch mode (see [Batch mode](#batch-mode)).
 
 ### `usage`
 
@@ -259,7 +259,7 @@ No parameters (only global flags).
 | `--ai-extract-rules` | | string | AI extraction rules (JSON string) |
 | `--session-id` | | int | Session ID for sticky IP (0–10000000) |
 | `--timeout` | | int | Timeout in ms (1000–140000) |
-| `--cookies` | | string | Custom cookies string |
+| `--cookies` | | string | Custom cookies string (see format below) |
 | `--device` | | string | Device type (desktop\|mobile) |
 | `--custom-google` | | string | Enable Google scraping (true/false) |
 | `--transparent-status-code` | | string | Transparent HTTP status code (true/false) |
@@ -267,6 +267,12 @@ No parameters (only global flags).
 | `--method` | `-X` | string | HTTP method (GET\|POST\|PUT) |
 | `--data` | `-d` | string | Request body for POST/PUT |
 | `--content-type` | | string | Content-Type header for POST/PUT |
+
+**Cookies** (`--cookies`): Use the format `name=value,domain=example.com;name2=value2;name3=value3,path=/`. Example:
+
+```bash
+--cookies "session=abc123,domain=example.com;pref=dark,path=/"
+```
 
 ---
 
@@ -344,7 +350,7 @@ No parameters (only global flags).
 | `--device` | string | desktop\|mobile\|tablet |
 | `--domain` | string | Walmart domain |
 | `--fulfillment-speed` | string | today\|tomorrow\|2_days\|anytime |
-| `--fulfillment-type` | string | Fulfillment type (in_store) |
+| `--fulfillment-type` | string | in_store (in-store pickup) |
 | `--delivery-zip` | string | Delivery ZIP code |
 | `--store-id` | string | Walmart store ID |
 | `--add-html` | string | Include full HTML (true/false) |
@@ -414,21 +420,10 @@ No parameters; the prompt is the positional argument (or multiple words joined).
 
 ---
 
-## Project structure
-
-```
-scrapingbee-cli/
-├── pyproject.toml           # Package config and dependencies
-├── src/
-│   └── scrapingbee_cli/    # Python package
-│       ├── __init__.py
-│       ├── cli.py           # Click commands (scrape, google, amazon, etc.)
-│       ├── client.py        # HTTP client and API request builders
-│       ├── config.py        # API key and base URL
-│       └── batch.py         # Batch mode helpers
-└── README.md
-```
-
-## Documentation
+## More information
 
 - [ScrapingBee API documentation](https://www.scrapingbee.com/documentation/)
+
+**Credit costs (per request):** HTML API 1–75 (depends on proxy and JS); Google 10–15; Fast Search 10; Amazon 5–15; Walmart 10–15; YouTube 5; ChatGPT 15. Use `--verbose` to see the `Spb-cost` header when present.
+
+**Custom headers** (`-H` / `--header`): Sent as HTTP request headers to ScrapingBee with the `Spb-` prefix (e.g. `Accept-Language: en` → `Spb-Accept-Language: en`). Use `--forward-headers true` so the browser forwards them to the target page.

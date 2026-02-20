@@ -1,44 +1,106 @@
-"""HTTP client for ScrapingBee API."""
+"""HTTP client for ScrapingBee API (async, aiohttp)."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
-import requests
+import aiohttp
 
 from .config import BASE_URL
 
 
-class Client:
-    """ScrapingBee API client."""
+def _clean_params(params: dict) -> dict:
+    """Drop None and empty string values for API query/body params."""
+    return {k: v for k, v in params.items() if v is not None and v != ""}
 
-    def __init__(self, api_key: str, base_url: str = BASE_URL, timeout: int = 150):
+
+class Client:
+    """ScrapingBee API client (async, use as context manager)."""
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = BASE_URL,
+        timeout: int = 150,
+        connector_limit: int | None = None,
+    ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self._session = requests.Session()
+        self._connector_limit = connector_limit
+        self._session: aiohttp.ClientSession | None = None
 
-    def _get(self, path: str, params: dict[str, Any]) -> tuple[bytes, dict, int]:
-        params = {k: v for k, v in params.items() if v is not None and v != ""}
-        params.setdefault("api_key", self.api_key)
-        url = f"{self.base_url}{path}"
-        resp = self._session.get(url, params=params, timeout=self.timeout)
-        return resp.content, dict(resp.headers), resp.status_code
+    async def __aenter__(self) -> Client:
+        connector = (
+            aiohttp.TCPConnector(limit=self._connector_limit)
+            if self._connector_limit is not None
+            else None
+        )
+        timeout = aiohttp.ClientTimeout(total=self.timeout)
+        self._session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout,
+            headers={"User-Agent": "ScrapingBee/CLI"},
+        )
+        return self
 
-    def _request(
-        self, method: str, path: str, params: dict, data: str | None = None, content_type: str | None = None
+    async def __aexit__(self, *args: object) -> None:
+        if self._session:
+            await self._session.close()
+            self._session = None
+
+    def _ensure_session(self) -> aiohttp.ClientSession:
+        if self._session is None:
+            raise RuntimeError("Client must be used as async with Client(...) as client")
+        return self._session
+
+    async def _get(
+        self,
+        path: str,
+        params: dict[str, Any],
+        headers: dict[str, str] | None = None,
     ) -> tuple[bytes, dict, int]:
-        params = {k: v for k, v in params.items() if v is not None and v != ""}
+        params = _clean_params(params)
         params.setdefault("api_key", self.api_key)
-        url = f"{self.base_url}{path}"
-        kwargs = {"params": params, "timeout": self.timeout}
+        url = f"{self.base_url}{path}" if path else self.base_url
+        session = self._ensure_session()
+        req_kwargs: dict[str, Any] = {"params": params}
+        if headers:
+            req_kwargs["headers"] = headers
+        async with session.get(url, **req_kwargs) as resp:
+            body = await resp.read()
+            out_headers = dict(resp.headers)
+            return body, out_headers, resp.status
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        params: dict,
+        data: str | None = None,
+        content_type: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[bytes, dict, int]:
+        params = _clean_params(params)
+        params.setdefault("api_key", self.api_key)
+        url = f"{self.base_url}{path}" if path else self.base_url
+        session = self._ensure_session()
+        req_kwargs: dict[str, Any] = {"params": params}
+        if headers:
+            req_kwargs["headers"] = headers
         if data is not None:
-            kwargs["data"] = data
+            req_kwargs["data"] = data
             if content_type:
-                kwargs["headers"] = {"Content-Type": content_type}
-        resp = self._session.request(method, url, **kwargs)
-        return resp.content, dict(resp.headers), resp.status_code
+                existing = req_kwargs.get("headers")
+                req_kwargs["headers"] = (
+                    {**existing, "Content-Type": content_type}
+                    if isinstance(existing, dict)
+                    else {"Content-Type": content_type}
+                )
+        async with session.request(method, url, **req_kwargs) as resp:
+            body = await resp.read()
+            return body, dict(resp.headers), resp.status
 
     @staticmethod
     def _bool(val: bool | None) -> str | None:
@@ -46,7 +108,7 @@ class Client:
             return None
         return "true" if val else "false"
 
-    def scrape(
+    async def scrape(
         self,
         url: str,
         method: str = "GET",
@@ -128,29 +190,30 @@ class Client:
         ]:
             if v is not None:
                 params[k] = str(v) if not isinstance(v, str) else v
+        req_headers = None
         if custom_headers:
-            for k, v in custom_headers.items():
-                params[f"Spb-{k}"] = v
-        # Scrape endpoint is base URL with query params (no path)
+            req_headers = {f"Spb-{k}": v for k, v in custom_headers.items()}
         method_upper = (method or "GET").upper()
         if method_upper == "GET":
-            return self._get("", params)
-        # POST/PUT with body
-        params = {k: v for k, v in params.items() if v is not None and v != ""}
+            return await self._get("", params, headers=req_headers)
+        params = _clean_params(params)
         params["api_key"] = self.api_key
-        url_req = self.base_url
-        kwargs_req = {"params": params, "timeout": self.timeout}
-        if body is not None:
-            kwargs_req["data"] = body
-            if content_type:
-                kwargs_req["headers"] = {"Content-Type": content_type}
-        resp = self._session.request(method_upper, url_req, **kwargs_req)
-        return resp.content, dict(resp.headers), resp.status_code
+        req_headers_merged = dict(req_headers) if req_headers else {}
+        if body is not None and content_type:
+            req_headers_merged["Content-Type"] = content_type
+        return await self._request(
+            method_upper,
+            "",
+            params,
+            data=body,
+            content_type=None,
+            headers=req_headers_merged or None,
+        )
 
-    def usage(self) -> tuple[bytes, dict, int]:
-        return self._get("/usage", {"api_key": self.api_key})
+    async def usage(self) -> tuple[bytes, dict, int]:
+        return await self._get("/usage", {"api_key": self.api_key})
 
-    def google_search(
+    async def google_search(
         self,
         search: str,
         search_type: str | None = None,
@@ -175,9 +238,9 @@ class Client:
             "add_html": self._bool(add_html),
             "light_request": self._bool(light_request),
         }
-        return self._get("/google", params)
+        return await self._get("/google", params)
 
-    def fast_search(
+    async def fast_search(
         self,
         search: str,
         page: int | None = None,
@@ -190,9 +253,9 @@ class Client:
             "country_code": country_code,
             "language": language,
         }
-        return self._get("/fast_search", params)
+        return await self._get("/fast_search", params)
 
-    def amazon_product(
+    async def amazon_product(
         self,
         query: str,
         device: str | None = None,
@@ -217,9 +280,9 @@ class Client:
             "light_request": self._bool(light_request),
             "screenshot": self._bool(screenshot),
         }
-        return self._get("/amazon/product", params)
+        return await self._get("/amazon/product", params)
 
-    def amazon_search(
+    async def amazon_search(
         self,
         query: str,
         start_page: int | None = None,
@@ -256,9 +319,9 @@ class Client:
             "light_request": self._bool(light_request),
             "screenshot": self._bool(screenshot),
         }
-        return self._get("/amazon/search", params)
+        return await self._get("/amazon/search", params)
 
-    def walmart_search(
+    async def walmart_search(
         self,
         query: str,
         min_price: int | None = None,
@@ -289,9 +352,9 @@ class Client:
             "light_request": self._bool(light_request),
             "screenshot": self._bool(screenshot),
         }
-        return self._get("/walmart/search", params)
+        return await self._get("/walmart/search", params)
 
-    def walmart_product(
+    async def walmart_product(
         self,
         product_id: str,
         domain: str | None = None,
@@ -310,9 +373,9 @@ class Client:
             "light_request": self._bool(light_request),
             "screenshot": self._bool(screenshot),
         }
-        return self._get("/walmart/product", params)
+        return await self._get("/walmart/product", params)
 
-    def youtube_search(
+    async def youtube_search(
         self,
         search: str,
         upload_date: str | None = None,
@@ -347,32 +410,36 @@ class Client:
             "location": self._bool(location),
             "vr180": self._bool(vr180),
         }
-        return self._get("/youtube/search", params)
+        return await self._get("/youtube/search", params)
 
-    def youtube_metadata(self, video_id: str) -> tuple[bytes, dict, int]:
-        return self._get("/youtube/metadata", {"video_id": video_id})
+    async def youtube_metadata(self, video_id: str) -> tuple[bytes, dict, int]:
+        return await self._get("/youtube/metadata", {"video_id": video_id})
 
-    def youtube_transcript(
+    async def youtube_transcript(
         self,
         video_id: str,
         language: str | None = None,
         transcript_origin: str | None = None,
     ) -> tuple[bytes, dict, int]:
-        params = {"video_id": video_id, "language": language, "transcript_origin": transcript_origin}
-        return self._get("/youtube/transcript", params)
+        params = {
+            "video_id": video_id,
+            "language": language,
+            "transcript_origin": transcript_origin,
+        }
+        return await self._get("/youtube/transcript", params)
 
-    def youtube_trainability(self, video_id: str) -> tuple[bytes, dict, int]:
-        return self._get("/youtube/trainability", {"video_id": video_id})
+    async def youtube_trainability(self, video_id: str) -> tuple[bytes, dict, int]:
+        return await self._get("/youtube/trainability", {"video_id": video_id})
 
-    def chatgpt(self, prompt: str) -> tuple[bytes, dict, int]:
-        return self._get("/chatgpt", {"prompt": prompt})
+    async def chatgpt(self, prompt: str) -> tuple[bytes, dict, int]:
+        return await self._get("/chatgpt", {"prompt": prompt})
 
 
 def parse_usage(body: bytes) -> dict:
     """Extract max_concurrency and credits from usage API response."""
     out = {"max_concurrency": 5, "credits": 0}
     try:
-        m = json.loads(body)
+        data = json.loads(body)
     except json.JSONDecodeError:
         return out
     for key in (
@@ -382,9 +449,9 @@ def parse_usage(body: bytes) -> dict:
         "concurrency",
         "concurrent_requests",
     ):
-        v = m.get(key)
-        if v is not None and isinstance(v, (int, float)) and 0 < v <= 10000:
-            out["max_concurrency"] = int(v)
+        value = data.get(key)
+        if value is not None and isinstance(value, (int, float)) and 0 < value <= 10000:
+            out["max_concurrency"] = int(value)
             break
     for key in (
         "credits",
@@ -394,12 +461,12 @@ def parse_usage(body: bytes) -> dict:
         "credits_remaining",
         "remaining_credits",
     ):
-        v = m.get(key)
-        if v is not None and isinstance(v, (int, float)) and v >= 0:
-            out["credits"] = int(v)
+        value = data.get(key)
+        if value is not None and isinstance(value, (int, float)) and value >= 0:
+            out["credits"] = int(value)
             return out
-    max_credit = m.get("max_api_credit")
-    used_credit = m.get("used_api_credit")
+    max_credit = data.get("max_api_credit")
+    used_credit = data.get("used_api_credit")
     if isinstance(max_credit, (int, float)) and isinstance(used_credit, (int, float)):
         avail = int(max_credit) - int(used_credit)
         if avail >= 0:

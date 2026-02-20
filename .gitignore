@@ -1,3 +1,7 @@
+# Environment (never commit secrets)
+.env
+.env.local
+
 # macOS
 .DS_Store
 
@@ -5,12 +9,22 @@
 .venv/
 venv/
 __pycache__/
+.ruff_cache/
 *.py[cod]
 *.egg-info/
 .eggs/
 dist/
 build/
 *.egg
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+failed_requests.txt
+
+# CLI output
+batch_*/
 
 # IDE
 .idea/

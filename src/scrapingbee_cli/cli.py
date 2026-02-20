@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import asyncio
 import sys
 from typing import Any
 
@@ -13,7 +13,7 @@ from .batch import (
     get_batch_usage,
     read_input_file,
     resolve_batch_concurrency,
-    run_batch,
+    run_batch_async,
     validate_batch_run,
     write_batch_output_to_dir,
 )
@@ -27,6 +27,18 @@ def _parse_bool(val: str | None) -> bool | None:
     return val.lower() in ("true", "1", "yes")
 
 
+def _check_api_response(data: bytes, status_code: int, err_prefix: str = "Error") -> None:
+    """Exit with 1 on HTTP 4xx/5xx (per ScrapingBee docs).
+    No special cases except scrape+transparent_status_code."""
+    if status_code >= 400:
+        click.echo(f"{err_prefix}: HTTP {status_code}", err=True)
+        try:
+            click.echo(pretty_json(data), err=True)
+        except Exception:
+            click.echo(data.decode("utf-8", errors="replace"), err=True)
+        raise SystemExit(1)
+
+
 def _write_output(
     data: bytes,
     headers: dict,
@@ -36,27 +48,16 @@ def _write_output(
 ) -> None:
     if verbose:
         click.echo(f"HTTP Status: {status_code}", err=True)
-        if "spb-cost" in [h.lower() for h in headers]:
-            cost = next((headers[k] for k in headers if k.lower() == "spb-cost"), None)
-            if cost:
-                click.echo(f"Credit Cost: {cost}", err=True)
-        if "spb-resolved-url" in [h.lower() for h in headers]:
-            resolved = next(
-                (headers[k] for k in headers if k.lower() == "spb-resolved-url"), None
-            )
-            if resolved:
-                click.echo(f"Resolved URL: {resolved}", err=True)
-        if "spb-initial-status-code" in [h.lower() for h in headers]:
-            initial = next(
-                (
-                    headers[k]
-                    for k in headers
-                    if k.lower() == "spb-initial-status-code"
-                ),
-                None,
-            )
-            if initial:
-                click.echo(f"Initial Status Code: {initial}", err=True)
+        headers_lower = {k.lower(): (k, v) for k, v in headers.items()}
+        for key, label in [
+            ("spb-cost", "Credit Cost"),
+            ("spb-resolved-url", "Resolved URL"),
+            ("spb-initial-status-code", "Initial Status Code"),
+        ]:
+            if key in headers_lower:
+                _, val = headers_lower[key]
+                if val:
+                    click.echo(f"{label}: {val}", err=True)
         click.echo("---", err=True)
     if output_path:
         with open(output_path, "wb") as f:
@@ -136,17 +137,21 @@ def cli(
 @click.pass_obj
 def usage(obj: dict) -> None:
     """Check API credit usage and concurrency."""
+
+    async def _run() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, _, status_code = await client.usage()
+            if status_code != 200:
+                click.echo(f"API returned status {status_code}: {data.decode()}", err=True)
+                raise SystemExit(1)
+            click.echo(pretty_json(data))
+
     try:
         key = get_api_key(obj["api_key"])
     except ValueError as e:
         click.echo(str(e), err=True)
         raise SystemExit(1)
-    client = Client(key, BASE_URL)
-    data, _, status_code = client.usage()
-    if status_code != 200:
-        click.echo(f"API returned status {status_code}: {data.decode()}", err=True)
-        raise SystemExit(1)
-    click.echo(pretty_json(data))
+    asyncio.run(_run())
 
 
 # --- scrape ---
@@ -169,10 +174,30 @@ def usage(obj: dict) -> None:
 @click.option("--forward-headers", type=str, default=None)
 @click.option("--forward-headers-pure", type=str, default=None)
 @click.option("-H", "--header", "headers", multiple=True, help="Custom header Key:Value")
-@click.option("--json-response", type=str, default=None)
-@click.option("--screenshot", type=str, default=None)
-@click.option("--screenshot-selector", type=str, default=None)
-@click.option("--screenshot-full-page", type=str, default=None)
+@click.option(
+    "--json-response",
+    type=str,
+    default=None,
+    help="Wrap response in JSON (use with --screenshot to get both HTML and image in one response)",
+)
+@click.option(
+    "--screenshot",
+    type=str,
+    default=None,
+    help="Capture a screenshot (viewport or use selector/full-page)",
+)
+@click.option(
+    "--screenshot-selector",
+    type=str,
+    default=None,
+    help="CSS selector for screenshot area (cannot be combined with --screenshot-full-page)",
+)
+@click.option(
+    "--screenshot-full-page",
+    type=str,
+    default=None,
+    help="Capture full page screenshot (cannot be combined with --screenshot-selector)",
+)
 @click.option("--return-page-source", type=str, default=None)
 @click.option("--return-markdown", type=str, default=None)
 @click.option("--return-text", type=str, default=None)
@@ -248,6 +273,21 @@ def scrape(
         k, v = h.split(":", 1)
         custom_headers[k.strip()] = v.strip()
 
+    # Screenshot options: selector and full-page are mutually exclusive (per API behavior).
+    if _parse_bool(screenshot):
+        if screenshot_selector and _parse_bool(screenshot_full_page):
+            click.echo(
+                "Cannot use both --screenshot-selector and --screenshot-full-page; choose one.",
+                err=True,
+            )
+            raise SystemExit(1)
+    elif screenshot_selector or _parse_bool(screenshot_full_page):
+        click.echo(
+            "Note: --screenshot-selector and --screenshot-full-page have no effect "
+            "without --screenshot=true.",
+            err=True,
+        )
+
     if input_file:
         if url:
             click.echo("cannot use both --input-file and positional URL", err=True)
@@ -255,121 +295,132 @@ def scrape(
         inputs = read_input_file(input_file)
         usage_info = get_batch_usage(obj["api_key"])
         validate_batch_run(obj["concurrency"], len(inputs), usage_info)
-        concurrency = resolve_batch_concurrency(
-            obj["concurrency"], usage_info, len(inputs)
-        )
-        client = Client(key, BASE_URL)
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        def do_one(u: str) -> tuple[bytes, int, Exception | None]:
-            try:
-                data, _, status_code = client.scrape(
-                    u,
-                    method=method,
-                    render_js=_parse_bool(render_js),
-                    js_scenario=js_scenario,
-                    wait=wait,
-                    wait_for=wait_for,
-                    wait_browser=wait_browser,
-                    block_ads=_parse_bool(block_ads),
-                    block_resources=_parse_bool(block_resources),
-                    window_width=window_width,
-                    window_height=window_height,
-                    premium_proxy=_parse_bool(premium_proxy),
-                    stealth_proxy=_parse_bool(stealth_proxy),
-                    country_code=country_code,
-                    own_proxy=own_proxy,
-                    forward_headers=_parse_bool(forward_headers),
-                    forward_headers_pure=_parse_bool(forward_headers_pure),
-                    custom_headers=custom_headers or None,
-                    json_response=_parse_bool(json_response),
-                    screenshot=_parse_bool(screenshot),
-                    screenshot_selector=screenshot_selector,
-                    screenshot_full_page=_parse_bool(screenshot_full_page),
-                    return_page_source=_parse_bool(return_page_source),
-                    return_page_markdown=_parse_bool(return_markdown),
-                    return_page_text=_parse_bool(return_text),
-                    extract_rules=extract_rules,
-                    ai_query=ai_query,
-                    ai_selector=ai_selector,
-                    ai_extract_rules=ai_extract_rules,
-                    session_id=session_id,
-                    timeout=timeout,
-                    cookies=cookies,
-                    device=device,
-                    custom_google=_parse_bool(custom_google),
-                    transparent_status_code=_parse_bool(transparent_status_code),
-                    scraping_config=scraping_config,
-                    body=body,
-                    content_type=content_type,
+        async def _batch() -> None:
+            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
+
+                async def do_one(u: str):
+                    try:
+                        data, resp_headers, status_code = await client.scrape(
+                            u,
+                            method=method,
+                            render_js=_parse_bool(render_js),
+                            js_scenario=js_scenario,
+                            wait=wait,
+                            wait_for=wait_for,
+                            wait_browser=wait_browser,
+                            block_ads=_parse_bool(block_ads),
+                            block_resources=_parse_bool(block_resources),
+                            window_width=window_width,
+                            window_height=window_height,
+                            premium_proxy=_parse_bool(premium_proxy),
+                            stealth_proxy=_parse_bool(stealth_proxy),
+                            country_code=country_code,
+                            own_proxy=own_proxy,
+                            forward_headers=_parse_bool(forward_headers),
+                            forward_headers_pure=_parse_bool(forward_headers_pure),
+                            custom_headers=custom_headers or None,
+                            json_response=_parse_bool(json_response),
+                            screenshot=_parse_bool(screenshot),
+                            screenshot_selector=screenshot_selector,
+                            screenshot_full_page=_parse_bool(screenshot_full_page),
+                            return_page_source=_parse_bool(return_page_source),
+                            return_page_markdown=_parse_bool(return_markdown),
+                            return_page_text=_parse_bool(return_text),
+                            extract_rules=extract_rules,
+                            ai_query=ai_query,
+                            ai_selector=ai_selector,
+                            ai_extract_rules=ai_extract_rules,
+                            session_id=session_id,
+                            timeout=timeout,
+                            cookies=cookies,
+                            device=device,
+                            custom_google=_parse_bool(custom_google),
+                            transparent_status_code=_parse_bool(transparent_status_code),
+                            scraping_config=scraping_config,
+                            body=body,
+                            content_type=content_type,
+                        )
+                        if not _parse_bool(transparent_status_code) and status_code >= 400:
+                            return (
+                                data,
+                                resp_headers,
+                                status_code,
+                                RuntimeError(f"HTTP {status_code}"),
+                                None,
+                            )
+                        return data, resp_headers, status_code, None, None
+                    except Exception as e:
+                        return b"", {}, 0, e, None
+
+                results = await run_batch_async(
+                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
                 )
-                if status_code >= 400:
-                    return data, status_code, RuntimeError(f"HTTP {status_code}")
-                return data, status_code, None
-            except Exception as e:
-                return b"", 0, e
+            out_dir = write_batch_output_to_dir(
+                results, obj["batch_output_dir"] or None, obj["verbose"]
+            )
+            click.echo(f"Batch complete. Output written to {out_dir}")
 
-        results = run_batch(inputs, concurrency, do_one)
-        out_dir = write_batch_output_to_dir(
-            results, obj["batch_output_dir"] or None, obj["verbose"]
-        )
-        click.echo(f"Batch complete. Output written to {out_dir}")
+        asyncio.run(_batch())
         return
 
     if not url:
         click.echo("expected one URL argument, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
-    client = Client(key, BASE_URL)
-    data, resp_headers, status_code = client.scrape(
-        url,
-        method=method,
-        render_js=_parse_bool(render_js),
-        js_scenario=js_scenario,
-        wait=wait,
-        wait_for=wait_for,
-        wait_browser=wait_browser,
-        block_ads=_parse_bool(block_ads),
-        block_resources=_parse_bool(block_resources),
-        window_width=window_width,
-        window_height=window_height,
-        premium_proxy=_parse_bool(premium_proxy),
-        stealth_proxy=_parse_bool(stealth_proxy),
-        country_code=country_code,
-        own_proxy=own_proxy,
-        forward_headers=_parse_bool(forward_headers),
-        forward_headers_pure=_parse_bool(forward_headers_pure),
-        custom_headers=custom_headers or None,
-        json_response=_parse_bool(json_response),
-        screenshot=_parse_bool(screenshot),
-        screenshot_selector=screenshot_selector,
-        screenshot_full_page=_parse_bool(screenshot_full_page),
-        return_page_source=_parse_bool(return_page_source),
-        return_page_markdown=_parse_bool(return_markdown),
-        return_page_text=_parse_bool(return_text),
-        extract_rules=extract_rules,
-        ai_query=ai_query,
-        ai_selector=ai_selector,
-        ai_extract_rules=ai_extract_rules,
-        session_id=session_id,
-        timeout=timeout,
-        cookies=cookies,
-        device=device,
-        custom_google=_parse_bool(custom_google),
-        transparent_status_code=_parse_bool(transparent_status_code),
-        scraping_config=scraping_config,
-        body=body,
-        content_type=content_type,
-    )
-    if status_code >= 400:
-        click.echo(f"Error: HTTP {status_code}", err=True)
-        try:
-            click.echo(pretty_json(data), err=True)
-        except Exception:
-            click.echo(data.decode("utf-8", errors="replace"), err=True)
-        raise SystemExit(1)
-    _write_output(
-        data, resp_headers, status_code, obj["output_file"], obj["verbose"]
-    )
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, resp_headers, status_code = await client.scrape(
+                url,
+                method=method,
+                render_js=_parse_bool(render_js),
+                js_scenario=js_scenario,
+                wait=wait,
+                wait_for=wait_for,
+                wait_browser=wait_browser,
+                block_ads=_parse_bool(block_ads),
+                block_resources=_parse_bool(block_resources),
+                window_width=window_width,
+                window_height=window_height,
+                premium_proxy=_parse_bool(premium_proxy),
+                stealth_proxy=_parse_bool(stealth_proxy),
+                country_code=country_code,
+                own_proxy=own_proxy,
+                forward_headers=_parse_bool(forward_headers),
+                forward_headers_pure=_parse_bool(forward_headers_pure),
+                custom_headers=custom_headers or None,
+                json_response=_parse_bool(json_response),
+                screenshot=_parse_bool(screenshot),
+                screenshot_selector=screenshot_selector,
+                screenshot_full_page=_parse_bool(screenshot_full_page),
+                return_page_source=_parse_bool(return_page_source),
+                return_page_markdown=_parse_bool(return_markdown),
+                return_page_text=_parse_bool(return_text),
+                extract_rules=extract_rules,
+                ai_query=ai_query,
+                ai_selector=ai_selector,
+                ai_extract_rules=ai_extract_rules,
+                session_id=session_id,
+                timeout=timeout,
+                cookies=cookies,
+                device=device,
+                custom_google=_parse_bool(custom_google),
+                transparent_status_code=_parse_bool(transparent_status_code),
+                scraping_config=scraping_config,
+                body=body,
+                content_type=content_type,
+            )
+        if not _parse_bool(transparent_status_code) and status_code >= 400:
+            click.echo(f"Error: HTTP {status_code}", err=True)
+            try:
+                click.echo(pretty_json(data), err=True)
+            except Exception:
+                click.echo(data.decode("utf-8", errors="replace"), err=True)
+            raise SystemExit(1)
+        _write_output(data, resp_headers, status_code, obj["output_file"], obj["verbose"])
+
+    asyncio.run(_single())
 
 
 # --- google ---
@@ -414,56 +465,64 @@ def google(
         inputs = read_input_file(input_file)
         usage_info = get_batch_usage(obj["api_key"])
         validate_batch_run(obj["concurrency"], len(inputs), usage_info)
-        concurrency = resolve_batch_concurrency(
-            obj["concurrency"], usage_info, len(inputs)
-        )
-        client = Client(key, BASE_URL)
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        def do_one(q: str) -> tuple[bytes, int, Exception | None]:
-            try:
-                data, _, status_code = client.google_search(
-                    q,
-                    search_type=search_type,
-                    country_code=country_code,
-                    device=device,
-                    page=page,
-                    language=language,
-                    nfpr=_parse_bool(nfpr),
-                    extra_params=extra_params,
-                    add_html=_parse_bool(add_html),
-                    light_request=_parse_bool(light_request),
+        async def _batch() -> None:
+            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
+
+                async def do_one(q: str):
+                    try:
+                        data, headers, status_code = await client.google_search(
+                            q,
+                            search_type=search_type,
+                            country_code=country_code,
+                            device=device,
+                            page=page,
+                            language=language,
+                            nfpr=_parse_bool(nfpr),
+                            extra_params=extra_params,
+                            add_html=_parse_bool(add_html),
+                            light_request=_parse_bool(light_request),
+                        )
+                        if status_code >= 400:
+                            err = RuntimeError(f"HTTP {status_code}")
+                            return data, headers, status_code, err, "json"
+                        return data, headers, status_code, None, "json"
+                    except Exception as e:
+                        return b"", {}, 0, e, "json"
+
+                results = await run_batch_async(
+                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
                 )
-                if status_code >= 400:
-                    return data, status_code, RuntimeError(f"HTTP {status_code}")
-                return data, status_code, None
-            except Exception as e:
-                return b"", 0, e
+            out_dir = write_batch_output_to_dir(
+                results, obj["batch_output_dir"] or None, obj["verbose"]
+            )
+            click.echo(f"Batch complete. Output written to {out_dir}")
 
-        results = run_batch(inputs, concurrency, do_one)
-        out_dir = write_batch_output_to_dir(
-            results, obj["batch_output_dir"] or None, obj["verbose"]
-        )
-        click.echo(f"Batch complete. Output written to {out_dir}")
+        asyncio.run(_batch())
         return
 
     if not query:
         click.echo("expected one search query, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
-    client = Client(key, BASE_URL)
-    data, headers, status_code = client.google_search(
-        query,
-        search_type=search_type,
-        country_code=country_code,
-        device=device,
-        page=page,
-        language=language,
-        nfpr=_parse_bool(nfpr),
-        extra_params=extra_params,
-        add_html=_parse_bool(add_html),
-        light_request=_parse_bool(light_request),
-    )
-    _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.google_search(
+                query,
+                search_type=search_type,
+                country_code=country_code,
+                device=device,
+                page=page,
+                language=language,
+                nfpr=_parse_bool(nfpr),
+                extra_params=extra_params,
+                add_html=_parse_bool(add_html),
+                light_request=_parse_bool(light_request),
+            )
+        _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+
+    asyncio.run(_single())
 
 
 # --- fast-search ---
@@ -496,38 +555,46 @@ def fast_search(
         inputs = read_input_file(input_file)
         usage_info = get_batch_usage(obj["api_key"])
         validate_batch_run(obj["concurrency"], len(inputs), usage_info)
-        concurrency = resolve_batch_concurrency(
-            obj["concurrency"], usage_info, len(inputs)
-        )
-        client = Client(key, BASE_URL)
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        def do_one(q: str) -> tuple[bytes, int, Exception | None]:
-            try:
-                data, _, status_code = client.fast_search(
-                    q, page=page, country_code=country_code, language=language
+        async def _batch() -> None:
+            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
+
+                async def do_one(q: str):
+                    try:
+                        data, headers, status_code = await client.fast_search(
+                            q, page=page, country_code=country_code, language=language
+                        )
+                        if status_code >= 400:
+                            err = RuntimeError(f"HTTP {status_code}")
+                            return data, headers, status_code, err, "json"
+                        return data, headers, status_code, None, "json"
+                    except Exception as e:
+                        return b"", {}, 0, e, "json"
+
+                results = await run_batch_async(
+                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
                 )
-                if status_code >= 400:
-                    return data, status_code, RuntimeError(f"HTTP {status_code}")
-                return data, status_code, None
-            except Exception as e:
-                return b"", 0, e
+            out_dir = write_batch_output_to_dir(
+                results, obj["batch_output_dir"] or None, obj["verbose"]
+            )
+            click.echo(f"Batch complete. Output written to {out_dir}")
 
-        results = run_batch(inputs, concurrency, do_one)
-        out_dir = write_batch_output_to_dir(
-            results, obj["batch_output_dir"] or None, obj["verbose"]
-        )
-        click.echo(f"Batch complete. Output written to {out_dir}")
+        asyncio.run(_batch())
         return
 
     if not query:
         click.echo("expected one search query, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
-    client = Client(key, BASE_URL)
-    data, headers, status_code = client.fast_search(
-        query, page=page, country_code=country_code, language=language
-    )
-    _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.fast_search(
+                query, page=page, country_code=country_code, language=language
+            )
+        _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+
+    asyncio.run(_single())
 
 
 # --- amazon-product ---
@@ -572,56 +639,64 @@ def amazon_product(
         inputs = read_input_file(input_file)
         usage_info = get_batch_usage(obj["api_key"])
         validate_batch_run(obj["concurrency"], len(inputs), usage_info)
-        concurrency = resolve_batch_concurrency(
-            obj["concurrency"], usage_info, len(inputs)
-        )
-        client = Client(key, BASE_URL)
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        def do_one(a: str) -> tuple[bytes, int, Exception | None]:
-            try:
-                data, _, status_code = client.amazon_product(
-                    a,
-                    device=device,
-                    domain=domain,
-                    country=country,
-                    zip_code=zip_code,
-                    language=language,
-                    currency=currency,
-                    add_html=_parse_bool(add_html),
-                    light_request=_parse_bool(light_request),
-                    screenshot=_parse_bool(screenshot),
+        async def _batch() -> None:
+            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
+
+                async def do_one(a: str):
+                    try:
+                        data, headers, status_code = await client.amazon_product(
+                            a,
+                            device=device,
+                            domain=domain,
+                            country=country,
+                            zip_code=zip_code,
+                            language=language,
+                            currency=currency,
+                            add_html=_parse_bool(add_html),
+                            light_request=_parse_bool(light_request),
+                            screenshot=_parse_bool(screenshot),
+                        )
+                        if status_code >= 400:
+                            err = RuntimeError(f"HTTP {status_code}")
+                            return data, headers, status_code, err, "json"
+                        return data, headers, status_code, None, "json"
+                    except Exception as e:
+                        return b"", {}, 0, e, "json"
+
+                results = await run_batch_async(
+                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
                 )
-                if status_code >= 400:
-                    return data, status_code, RuntimeError(f"HTTP {status_code}")
-                return data, status_code, None
-            except Exception as e:
-                return b"", 0, e
+            out_dir = write_batch_output_to_dir(
+                results, obj["batch_output_dir"] or None, obj["verbose"]
+            )
+            click.echo(f"Batch complete. Output written to {out_dir}")
 
-        results = run_batch(inputs, concurrency, do_one)
-        out_dir = write_batch_output_to_dir(
-            results, obj["batch_output_dir"] or None, obj["verbose"]
-        )
-        click.echo(f"Batch complete. Output written to {out_dir}")
+        asyncio.run(_batch())
         return
 
     if not asin:
         click.echo("expected one ASIN, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
-    client = Client(key, BASE_URL)
-    data, headers, status_code = client.amazon_product(
-        asin,
-        device=device,
-        domain=domain,
-        country=country,
-        zip_code=zip_code,
-        language=language,
-        currency=currency,
-        add_html=_parse_bool(add_html),
-        light_request=_parse_bool(light_request),
-        screenshot=_parse_bool(screenshot),
-    )
-    _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.amazon_product(
+                asin,
+                device=device,
+                domain=domain,
+                country=country,
+                zip_code=zip_code,
+                language=language,
+                currency=currency,
+                add_html=_parse_bool(add_html),
+                light_request=_parse_bool(light_request),
+                screenshot=_parse_bool(screenshot),
+            )
+        _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+
+    asyncio.run(_single())
 
 
 # --- amazon-search ---
@@ -678,68 +753,76 @@ def amazon_search(
         inputs = read_input_file(input_file)
         usage_info = get_batch_usage(obj["api_key"])
         validate_batch_run(obj["concurrency"], len(inputs), usage_info)
-        concurrency = resolve_batch_concurrency(
-            obj["concurrency"], usage_info, len(inputs)
-        )
-        client = Client(key, BASE_URL)
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        def do_one(q: str) -> tuple[bytes, int, Exception | None]:
-            try:
-                data, _, status_code = client.amazon_search(
-                    q,
-                    start_page=start_page,
-                    pages=pages,
-                    sort_by=sort_by,
-                    device=device,
-                    domain=domain,
-                    country=country,
-                    zip_code=zip_code,
-                    language=language,
-                    currency=currency,
-                    category_id=category_id,
-                    merchant_id=merchant_id,
-                    autoselect_variant=_parse_bool(autoselect_variant),
-                    add_html=_parse_bool(add_html),
-                    light_request=_parse_bool(light_request),
-                    screenshot=_parse_bool(screenshot),
+        async def _batch() -> None:
+            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
+
+                async def do_one(q: str):
+                    try:
+                        data, headers, status_code = await client.amazon_search(
+                            q,
+                            start_page=start_page,
+                            pages=pages,
+                            sort_by=sort_by,
+                            device=device,
+                            domain=domain,
+                            country=country,
+                            zip_code=zip_code,
+                            language=language,
+                            currency=currency,
+                            category_id=category_id,
+                            merchant_id=merchant_id,
+                            autoselect_variant=_parse_bool(autoselect_variant),
+                            add_html=_parse_bool(add_html),
+                            light_request=_parse_bool(light_request),
+                            screenshot=_parse_bool(screenshot),
+                        )
+                        if status_code >= 400:
+                            err = RuntimeError(f"HTTP {status_code}")
+                            return data, headers, status_code, err, "json"
+                        return data, headers, status_code, None, "json"
+                    except Exception as e:
+                        return b"", {}, 0, e, "json"
+
+                results = await run_batch_async(
+                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
                 )
-                if status_code >= 400:
-                    return data, status_code, RuntimeError(f"HTTP {status_code}")
-                return data, status_code, None
-            except Exception as e:
-                return b"", 0, e
+            out_dir = write_batch_output_to_dir(
+                results, obj["batch_output_dir"] or None, obj["verbose"]
+            )
+            click.echo(f"Batch complete. Output written to {out_dir}")
 
-        results = run_batch(inputs, concurrency, do_one)
-        out_dir = write_batch_output_to_dir(
-            results, obj["batch_output_dir"] or None, obj["verbose"]
-        )
-        click.echo(f"Batch complete. Output written to {out_dir}")
+        asyncio.run(_batch())
         return
 
     if not query:
         click.echo("expected one search query, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
-    client = Client(key, BASE_URL)
-    data, headers, status_code = client.amazon_search(
-        query,
-        start_page=start_page,
-        pages=pages,
-        sort_by=sort_by,
-        device=device,
-        domain=domain,
-        country=country,
-        zip_code=zip_code,
-        language=language,
-        currency=currency,
-        category_id=category_id,
-        merchant_id=merchant_id,
-        autoselect_variant=_parse_bool(autoselect_variant),
-        add_html=_parse_bool(add_html),
-        light_request=_parse_bool(light_request),
-        screenshot=_parse_bool(screenshot),
-    )
-    _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.amazon_search(
+                query,
+                start_page=start_page,
+                pages=pages,
+                sort_by=sort_by,
+                device=device,
+                domain=domain,
+                country=country,
+                zip_code=zip_code,
+                language=language,
+                currency=currency,
+                category_id=category_id,
+                merchant_id=merchant_id,
+                autoselect_variant=_parse_bool(autoselect_variant),
+                add_html=_parse_bool(add_html),
+                light_request=_parse_bool(light_request),
+                screenshot=_parse_bool(screenshot),
+            )
+        _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+
+    asyncio.run(_single())
 
 
 # --- walmart-search ---
@@ -790,62 +873,70 @@ def walmart_search(
         inputs = read_input_file(input_file)
         usage_info = get_batch_usage(obj["api_key"])
         validate_batch_run(obj["concurrency"], len(inputs), usage_info)
-        concurrency = resolve_batch_concurrency(
-            obj["concurrency"], usage_info, len(inputs)
-        )
-        client = Client(key, BASE_URL)
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        def do_one(q: str) -> tuple[bytes, int, Exception | None]:
-            try:
-                data, _, status_code = client.walmart_search(
-                    q,
-                    min_price=min_price,
-                    max_price=max_price,
-                    sort_by=sort_by,
-                    device=device,
-                    domain=domain,
-                    fulfillment_speed=fulfillment_speed,
-                    fulfillment_type=fulfillment_type,
-                    delivery_zip=delivery_zip,
-                    store_id=store_id,
-                    add_html=_parse_bool(add_html),
-                    light_request=_parse_bool(light_request),
-                    screenshot=_parse_bool(screenshot),
+        async def _batch() -> None:
+            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
+
+                async def do_one(q: str):
+                    try:
+                        data, headers, status_code = await client.walmart_search(
+                            q,
+                            min_price=min_price,
+                            max_price=max_price,
+                            sort_by=sort_by,
+                            device=device,
+                            domain=domain,
+                            fulfillment_speed=fulfillment_speed,
+                            fulfillment_type=fulfillment_type,
+                            delivery_zip=delivery_zip,
+                            store_id=store_id,
+                            add_html=_parse_bool(add_html),
+                            light_request=_parse_bool(light_request),
+                            screenshot=_parse_bool(screenshot),
+                        )
+                        if status_code >= 400:
+                            err = RuntimeError(f"HTTP {status_code}")
+                            return data, headers, status_code, err, "json"
+                        return data, headers, status_code, None, "json"
+                    except Exception as e:
+                        return b"", {}, 0, e, "json"
+
+                results = await run_batch_async(
+                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
                 )
-                if status_code >= 400:
-                    return data, status_code, RuntimeError(f"HTTP {status_code}")
-                return data, status_code, None
-            except Exception as e:
-                return b"", 0, e
+            out_dir = write_batch_output_to_dir(
+                results, obj["batch_output_dir"] or None, obj["verbose"]
+            )
+            click.echo(f"Batch complete. Output written to {out_dir}")
 
-        results = run_batch(inputs, concurrency, do_one)
-        out_dir = write_batch_output_to_dir(
-            results, obj["batch_output_dir"] or None, obj["verbose"]
-        )
-        click.echo(f"Batch complete. Output written to {out_dir}")
+        asyncio.run(_batch())
         return
 
     if not query:
         click.echo("expected one search query, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
-    client = Client(key, BASE_URL)
-    data, headers, status_code = client.walmart_search(
-        query,
-        min_price=min_price,
-        max_price=max_price,
-        sort_by=sort_by,
-        device=device,
-        domain=domain,
-        fulfillment_speed=fulfillment_speed,
-        fulfillment_type=fulfillment_type,
-        delivery_zip=delivery_zip,
-        store_id=store_id,
-        add_html=_parse_bool(add_html),
-        light_request=_parse_bool(light_request),
-        screenshot=_parse_bool(screenshot),
-    )
-    _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.walmart_search(
+                query,
+                min_price=min_price,
+                max_price=max_price,
+                sort_by=sort_by,
+                device=device,
+                domain=domain,
+                fulfillment_speed=fulfillment_speed,
+                fulfillment_type=fulfillment_type,
+                delivery_zip=delivery_zip,
+                store_id=store_id,
+                add_html=_parse_bool(add_html),
+                light_request=_parse_bool(light_request),
+                screenshot=_parse_bool(screenshot),
+            )
+        _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+
+    asyncio.run(_single())
 
 
 # --- walmart-product ---
@@ -884,50 +975,58 @@ def walmart_product(
         inputs = read_input_file(input_file)
         usage_info = get_batch_usage(obj["api_key"])
         validate_batch_run(obj["concurrency"], len(inputs), usage_info)
-        concurrency = resolve_batch_concurrency(
-            obj["concurrency"], usage_info, len(inputs)
-        )
-        client = Client(key, BASE_URL)
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        def do_one(pid: str) -> tuple[bytes, int, Exception | None]:
-            try:
-                data, _, status_code = client.walmart_product(
-                    pid,
-                    domain=domain,
-                    delivery_zip=delivery_zip,
-                    store_id=store_id,
-                    add_html=_parse_bool(add_html),
-                    light_request=_parse_bool(light_request),
-                    screenshot=_parse_bool(screenshot),
+        async def _batch() -> None:
+            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
+
+                async def do_one(pid: str):
+                    try:
+                        data, headers, status_code = await client.walmart_product(
+                            pid,
+                            domain=domain,
+                            delivery_zip=delivery_zip,
+                            store_id=store_id,
+                            add_html=_parse_bool(add_html),
+                            light_request=_parse_bool(light_request),
+                            screenshot=_parse_bool(screenshot),
+                        )
+                        if status_code >= 400:
+                            err = RuntimeError(f"HTTP {status_code}")
+                            return data, headers, status_code, err, "json"
+                        return data, headers, status_code, None, "json"
+                    except Exception as e:
+                        return b"", {}, 0, e, "json"
+
+                results = await run_batch_async(
+                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
                 )
-                if status_code >= 400:
-                    return data, status_code, RuntimeError(f"HTTP {status_code}")
-                return data, status_code, None
-            except Exception as e:
-                return b"", 0, e
+            out_dir = write_batch_output_to_dir(
+                results, obj["batch_output_dir"] or None, obj["verbose"]
+            )
+            click.echo(f"Batch complete. Output written to {out_dir}")
 
-        results = run_batch(inputs, concurrency, do_one)
-        out_dir = write_batch_output_to_dir(
-            results, obj["batch_output_dir"] or None, obj["verbose"]
-        )
-        click.echo(f"Batch complete. Output written to {out_dir}")
+        asyncio.run(_batch())
         return
 
     if not product_id:
         click.echo("expected one product ID, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
-    client = Client(key, BASE_URL)
-    data, headers, status_code = client.walmart_product(
-        product_id,
-        domain=domain,
-        delivery_zip=delivery_zip,
-        store_id=store_id,
-        add_html=_parse_bool(add_html),
-        light_request=_parse_bool(light_request),
-        screenshot=_parse_bool(screenshot),
-    )
-    _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.walmart_product(
+                product_id,
+                domain=domain,
+                delivery_zip=delivery_zip,
+                store_id=store_id,
+                add_html=_parse_bool(add_html),
+                light_request=_parse_bool(light_request),
+                screenshot=_parse_bool(screenshot),
+            )
+        _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+
+    asyncio.run(_single())
 
 
 # --- youtube-search ---
@@ -982,66 +1081,75 @@ def youtube_search(
         inputs = read_input_file(input_file)
         usage_info = get_batch_usage(obj["api_key"])
         validate_batch_run(obj["concurrency"], len(inputs), usage_info)
-        concurrency = resolve_batch_concurrency(
-            obj["concurrency"], usage_info, len(inputs)
-        )
-        client = Client(key, BASE_URL)
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        def do_one(q: str) -> tuple[bytes, int, Exception | None]:
-            try:
-                data, _, status_code = client.youtube_search(
-                    q,
-                    upload_date=upload_date,
-                    type=type_,
-                    duration=duration,
-                    sort_by=sort_by,
-                    hd=_parse_bool(hd),
-                    is_4k=_parse_bool(is_4k),
-                    subtitles=_parse_bool(subtitles),
-                    creative_commons=_parse_bool(creative_commons),
-                    live=_parse_bool(live),
-                    is_360=_parse_bool(is_360),
-                    is_3d=_parse_bool(is_3d),
-                    hdr=_parse_bool(hdr),
-                    location=_parse_bool(location),
-                    vr180=_parse_bool(vr180),
+        async def _batch() -> None:
+            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
+
+                async def do_one(q: str):
+                    try:
+                        data, headers, status_code = await client.youtube_search(
+                            q,
+                            upload_date=upload_date,
+                            type=type_,
+                            duration=duration,
+                            sort_by=sort_by,
+                            hd=_parse_bool(hd),
+                            is_4k=_parse_bool(is_4k),
+                            subtitles=_parse_bool(subtitles),
+                            creative_commons=_parse_bool(creative_commons),
+                            live=_parse_bool(live),
+                            is_360=_parse_bool(is_360),
+                            is_3d=_parse_bool(is_3d),
+                            hdr=_parse_bool(hdr),
+                            location=_parse_bool(location),
+                            vr180=_parse_bool(vr180),
+                        )
+                        if status_code >= 400:
+                            err = RuntimeError(f"HTTP {status_code}")
+                            return data, headers, status_code, err, "json"
+                        return data, headers, status_code, None, "json"
+                    except Exception as e:
+                        return b"", {}, 0, e, "json"
+
+                results = await run_batch_async(
+                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
                 )
-                if status_code >= 400:
-                    return data, status_code, RuntimeError(f"HTTP {status_code}")
-                return data, status_code, None
-            except Exception as e:
-                return b"", 0, e
+            out_dir = write_batch_output_to_dir(
+                results, obj["batch_output_dir"] or None, obj["verbose"]
+            )
+            click.echo(f"Batch complete. Output written to {out_dir}")
 
-        results = run_batch(inputs, concurrency, do_one)
-        out_dir = write_batch_output_to_dir(
-            results, obj["batch_output_dir"] or None, obj["verbose"]
-        )
-        click.echo(f"Batch complete. Output written to {out_dir}")
+        asyncio.run(_batch())
         return
 
     if not query:
         click.echo("expected one search query, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
-    client = Client(key, BASE_URL)
-    data, headers, status_code = client.youtube_search(
-        query,
-        upload_date=upload_date,
-        type=type_,
-        duration=duration,
-        sort_by=sort_by,
-        hd=_parse_bool(hd),
-        is_4k=_parse_bool(is_4k),
-        subtitles=_parse_bool(subtitles),
-        creative_commons=_parse_bool(creative_commons),
-        live=_parse_bool(live),
-        is_360=_parse_bool(is_360),
-        is_3d=_parse_bool(is_3d),
-        hdr=_parse_bool(hdr),
-        location=_parse_bool(location),
-        vr180=_parse_bool(vr180),
-    )
-    _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.youtube_search(
+                query,
+                upload_date=upload_date,
+                type=type_,
+                duration=duration,
+                sort_by=sort_by,
+                hd=_parse_bool(hd),
+                is_4k=_parse_bool(is_4k),
+                subtitles=_parse_bool(subtitles),
+                creative_commons=_parse_bool(creative_commons),
+                live=_parse_bool(live),
+                is_360=_parse_bool(is_360),
+                is_3d=_parse_bool(is_3d),
+                hdr=_parse_bool(hdr),
+                location=_parse_bool(location),
+                vr180=_parse_bool(vr180),
+            )
+        _check_api_response(data, status_code)
+        _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+
+    asyncio.run(_single())
 
 
 # --- youtube-metadata ---
@@ -1068,34 +1176,43 @@ def youtube_metadata(
         inputs = read_input_file(input_file)
         usage_info = get_batch_usage(obj["api_key"])
         validate_batch_run(obj["concurrency"], len(inputs), usage_info)
-        concurrency = resolve_batch_concurrency(
-            obj["concurrency"], usage_info, len(inputs)
-        )
-        client = Client(key, BASE_URL)
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        def do_one(vid: str) -> tuple[bytes, int, Exception | None]:
-            try:
-                data, _, status_code = client.youtube_metadata(vid)
-                if status_code >= 400:
-                    return data, status_code, RuntimeError(f"HTTP {status_code}")
-                return data, status_code, None
-            except Exception as e:
-                return b"", 0, e
+        async def _batch() -> None:
+            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
 
-        results = run_batch(inputs, concurrency, do_one)
-        out_dir = write_batch_output_to_dir(
-            results, obj["batch_output_dir"] or None, obj["verbose"]
-        )
-        click.echo(f"Batch complete. Output written to {out_dir}")
+                async def do_one(vid: str):
+                    try:
+                        data, headers, status_code = await client.youtube_metadata(vid)
+                        if status_code >= 400:
+                            err = RuntimeError(f"HTTP {status_code}")
+                            return data, headers, status_code, err, "json"
+                        return data, headers, status_code, None, "json"
+                    except Exception as e:
+                        return b"", {}, 0, e, "json"
+
+                results = await run_batch_async(
+                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
+                )
+            out_dir = write_batch_output_to_dir(
+                results, obj["batch_output_dir"] or None, obj["verbose"]
+            )
+            click.echo(f"Batch complete. Output written to {out_dir}")
+
+        asyncio.run(_batch())
         return
 
     if not video_id:
         click.echo("expected one video ID, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
-    client = Client(key, BASE_URL)
-    data, headers, status_code = client.youtube_metadata(video_id)
-    _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.youtube_metadata(video_id)
+        _check_api_response(data, status_code)
+        _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+
+    asyncio.run(_single())
 
 
 # --- youtube-transcript ---
@@ -1126,42 +1243,51 @@ def youtube_transcript(
         inputs = read_input_file(input_file)
         usage_info = get_batch_usage(obj["api_key"])
         validate_batch_run(obj["concurrency"], len(inputs), usage_info)
-        concurrency = resolve_batch_concurrency(
-            obj["concurrency"], usage_info, len(inputs)
-        )
-        client = Client(key, BASE_URL)
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        def do_one(vid: str) -> tuple[bytes, int, Exception | None]:
-            try:
-                data, _, status_code = client.youtube_transcript(
-                    vid,
-                    language=language,
-                    transcript_origin=transcript_origin,
+        async def _batch() -> None:
+            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
+
+                async def do_one(vid: str):
+                    try:
+                        data, headers, status_code = await client.youtube_transcript(
+                            vid,
+                            language=language,
+                            transcript_origin=transcript_origin,
+                        )
+                        if status_code >= 400:
+                            err = RuntimeError(f"HTTP {status_code}")
+                            return data, headers, status_code, err, "json"
+                        return data, headers, status_code, None, "json"
+                    except Exception as e:
+                        return b"", {}, 0, e, "json"
+
+                results = await run_batch_async(
+                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
                 )
-                if status_code >= 400:
-                    return data, status_code, RuntimeError(f"HTTP {status_code}")
-                return data, status_code, None
-            except Exception as e:
-                return b"", 0, e
+            out_dir = write_batch_output_to_dir(
+                results, obj["batch_output_dir"] or None, obj["verbose"]
+            )
+            click.echo(f"Batch complete. Output written to {out_dir}")
 
-        results = run_batch(inputs, concurrency, do_one)
-        out_dir = write_batch_output_to_dir(
-            results, obj["batch_output_dir"] or None, obj["verbose"]
-        )
-        click.echo(f"Batch complete. Output written to {out_dir}")
+        asyncio.run(_batch())
         return
 
     if not video_id:
         click.echo("expected one video ID, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
-    client = Client(key, BASE_URL)
-    data, headers, status_code = client.youtube_transcript(
-        video_id,
-        language=language,
-        transcript_origin=transcript_origin,
-    )
-    _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.youtube_transcript(
+                video_id,
+                language=language,
+                transcript_origin=transcript_origin,
+            )
+        _check_api_response(data, status_code)
+        _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+
+    asyncio.run(_single())
 
 
 # --- youtube-trainability ---
@@ -1188,34 +1314,43 @@ def youtube_trainability(
         inputs = read_input_file(input_file)
         usage_info = get_batch_usage(obj["api_key"])
         validate_batch_run(obj["concurrency"], len(inputs), usage_info)
-        concurrency = resolve_batch_concurrency(
-            obj["concurrency"], usage_info, len(inputs)
-        )
-        client = Client(key, BASE_URL)
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        def do_one(vid: str) -> tuple[bytes, int, Exception | None]:
-            try:
-                data, _, status_code = client.youtube_trainability(vid)
-                if status_code >= 400:
-                    return data, status_code, RuntimeError(f"HTTP {status_code}")
-                return data, status_code, None
-            except Exception as e:
-                return b"", 0, e
+        async def _batch() -> None:
+            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
 
-        results = run_batch(inputs, concurrency, do_one)
-        out_dir = write_batch_output_to_dir(
-            results, obj["batch_output_dir"] or None, obj["verbose"]
-        )
-        click.echo(f"Batch complete. Output written to {out_dir}")
+                async def do_one(vid: str):
+                    try:
+                        data, headers, status_code = await client.youtube_trainability(vid)
+                        if status_code >= 400:
+                            err = RuntimeError(f"HTTP {status_code}")
+                            return data, headers, status_code, err, "json"
+                        return data, headers, status_code, None, "json"
+                    except Exception as e:
+                        return b"", {}, 0, e, "json"
+
+                results = await run_batch_async(
+                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
+                )
+            out_dir = write_batch_output_to_dir(
+                results, obj["batch_output_dir"] or None, obj["verbose"]
+            )
+            click.echo(f"Batch complete. Output written to {out_dir}")
+
+        asyncio.run(_batch())
         return
 
     if not video_id:
         click.echo("expected one video ID, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
-    client = Client(key, BASE_URL)
-    data, headers, status_code = client.youtube_trainability(video_id)
-    _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.youtube_trainability(video_id)
+        _check_api_response(data, status_code)
+        _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+
+    asyncio.run(_single())
 
 
 # --- chatgpt ---
@@ -1242,25 +1377,30 @@ def chatgpt(
         inputs = read_input_file(input_file)
         usage_info = get_batch_usage(obj["api_key"])
         validate_batch_run(obj["concurrency"], len(inputs), usage_info)
-        concurrency = resolve_batch_concurrency(
-            obj["concurrency"], usage_info, len(inputs)
-        )
-        client = Client(key, BASE_URL)
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        def do_one(p: str) -> tuple[bytes, int, Exception | None]:
-            try:
-                data, _, status_code = client.chatgpt(p)
-                if status_code >= 400:
-                    return data, status_code, RuntimeError(f"HTTP {status_code}")
-                return data, status_code, None
-            except Exception as e:
-                return b"", 0, e
+        async def _batch() -> None:
+            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
 
-        results = run_batch(inputs, concurrency, do_one)
-        out_dir = write_batch_output_to_dir(
-            results, obj["batch_output_dir"] or None, obj["verbose"]
-        )
-        click.echo(f"Batch complete. Output written to {out_dir}")
+                async def do_one(p: str):
+                    try:
+                        data, headers, status_code = await client.chatgpt(p)
+                        if status_code >= 400:
+                            err = RuntimeError(f"HTTP {status_code}")
+                            return data, headers, status_code, err, "json"
+                        return data, headers, status_code, None, "json"
+                    except Exception as e:
+                        return b"", {}, 0, e, "json"
+
+                results = await run_batch_async(
+                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
+                )
+            out_dir = write_batch_output_to_dir(
+                results, obj["batch_output_dir"] or None, obj["verbose"]
+            )
+            click.echo(f"Batch complete. Output written to {out_dir}")
+
+        asyncio.run(_batch())
         return
 
     if not prompt:
@@ -1268,9 +1408,13 @@ def chatgpt(
         raise SystemExit(1)
 
     prompt_str = " ".join(prompt)
-    client = Client(key, BASE_URL)
-    data, headers, status_code = client.chatgpt(prompt_str)
-    _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.chatgpt(prompt_str)
+        _write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+
+    asyncio.run(_single())
 
 
 def main() -> None:
