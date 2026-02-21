@@ -1,10 +1,10 @@
 # ScrapingBee CLI
 
-A command-line client for the [ScrapingBee](https://www.scrapingbee.com/) API. Use it to scrape web pages, run search (Google, Fast Search, Amazon, Walmart, YouTube), and call the ChatGPT endpoint from the terminal.
+A command-line client for the [ScrapingBee](https://www.scrapingbee.com/) API. Scrape pages (single or batch), crawl sites with Scrapy or quick-crawl from URLs, check usage and credits, and use Google Search, Fast Search, Amazon, Walmart, YouTube, and ChatGPT from the terminal.
 
 ## Requirements
 
-- **Python 3.8+**
+- **Python 3.10+**
 
 ## Installation
 
@@ -135,6 +135,7 @@ scrapingbee amazon-product --input-file asins.txt --domain=com
 |-----------------------|--------------------------------------------------|
 | `usage`               | Check API credit usage and concurrency           |
 | `scrape [url]`        | Scrape a URL with the HTML API (JS, proxies, etc.) |
+| `crawl`               | Run Scrapy with ScrapingBee (project spider or URLs) |
 | `google [query]`      | Google Search API (structured JSON)             |
 | `fast-search [query]` | Fast Search API (sub-second SERP results)       |
 | `amazon-product [ASIN]` | Fetch Amazon product details by ASIN          |
@@ -208,6 +209,35 @@ scrapingbee youtube-metadata dQw4w9WgXcQ
 ```bash
 scrapingbee chatgpt "Explain quantum computing in one sentence"
 ```
+
+**Crawl with Scrapy (ScrapingBee middleware):**
+
+```bash
+# Run a spider from your Scrapy project (must have scrapy.cfg in current dir)
+scrapingbee crawl myspider
+
+# Or run from a specific project directory
+scrapingbee crawl myspider --project /path/to/myproject
+
+# Quick crawl: fetch URLs without a Scrapy project (built-in spider)
+scrapingbee crawl https://example.com https://example.org
+
+# Quick crawl: start from URL(s), follow same-domain links (default: unlimited depth/pages)
+scrapingbee crawl https://example.com
+scrapingbee crawl https://example.com --max-depth 3 --max-pages 100 --render-js false
+scrapingbee crawl https://example.com --concurrency 10 --return-markdown true
+
+# Save crawled pages to a folder (one file per page; extension inferred)
+scrapingbee crawl https://example.com --output-dir ./my_crawl
+
+# Allow specific domains or follow external links
+scrapingbee crawl https://example.com --allowed-domains example.com,example.org
+scrapingbee crawl https://example.com --allow-external-domains
+```
+
+Requires `scrapy` and `scrapy-scrapingbee`. **Quick crawl** starts from the given URL(s) and follows same-domain links by default. Use `--max-depth` and `--max-pages` (0 = unlimited by default), `--output-dir` to save one file per page, `--allowed-domains` for a comma-separated list of domains to crawl, or `--allow-external-domains` to follow links to any domain. Concurrency uses the global `--concurrency` or your plan limit from the usage API (same as batch). Same ScrapingBee options as `scrape`. **Project spider:** pass params in your spider; you control link following.
+
+See [scrapy-scrapingbee](https://github.com/ScrapingBee/scrapy-scrapingbee).
 
 ## Output
 
@@ -417,6 +447,22 @@ No parameters (only global flags).
 ### `chatgpt [prompt]`
 
 No parameters; the prompt is the positional argument (or multiple words joined). Only global flags apply.
+
+---
+
+### `crawl`
+
+| Argument / option | Description |
+|-------------------|-------------|
+| `SPIDER_NAME` or `URL [URL ...]` | Spider name (one) or one or more start URLs |
+| `--project` / `-p` | Path to Scrapy project. Spider mode only. |
+| `--max-depth` | Max link depth when following links (0 = unlimited). Quick-crawl only. |
+| `--max-pages` | Max pages to fetch (0 = unlimited). Quick-crawl only. |
+| `--output-dir` | Directory to save crawled pages (one file per page). Quick-crawl only. Default: `crawl_<timestamp>`. |
+| `--allowed-domains` | Comma-separated domains to crawl (default: same domain as start URL(s)). Quick-crawl only. |
+| `--allow-external-domains` | Follow links to any domain (default: same domain only). Quick-crawl only. |
+
+Quick-crawl also accepts the same ScrapingBee options as `scrape` (e.g. `--render-js`, `--return-markdown`, `--return-text`, `--screenshot`, `--json-response`). **Quick crawl** starts from the given URL(s) and follows same-domain links by default. Concurrency comes from the global `--concurrency` or the usage API. **Project spider** — run from a directory with `scrapy.cfg`; you control crawling in your spider.
 
 ---
 

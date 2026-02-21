@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from typing import Any
 
 import click
 
 from . import __version__
+from .crawl import (
+    default_crawl_output_dir,
+    _preferred_extension_from_scrape_params,
+    run_project_spider,
+    run_urls_spider,
+)
 from .batch import (
+    extension_for_crawl,
     get_batch_usage,
     read_input_file,
     resolve_batch_concurrency,
@@ -25,6 +33,104 @@ def _parse_bool(val: str | None) -> bool | None:
     if not val:
         return None
     return val.lower() in ("true", "1", "yes")
+
+
+def _build_scrape_kwargs(
+    *,
+    method: str = "GET",
+    render_js: str | None = None,
+    js_scenario: str | None = None,
+    wait: int | None = None,
+    wait_for: str | None = None,
+    wait_browser: str | None = None,
+    block_ads: str | None = None,
+    block_resources: str | None = None,
+    window_width: int | None = None,
+    window_height: int | None = None,
+    premium_proxy: str | None = None,
+    stealth_proxy: str | None = None,
+    country_code: str | None = None,
+    own_proxy: str | None = None,
+    forward_headers: str | None = None,
+    forward_headers_pure: str | None = None,
+    custom_headers: dict[str, str] | None = None,
+    json_response: str | None = None,
+    screenshot: str | None = None,
+    screenshot_selector: str | None = None,
+    screenshot_full_page: str | None = None,
+    return_page_source: str | None = None,
+    return_markdown: str | None = None,
+    return_text: str | None = None,
+    extract_rules: str | None = None,
+    ai_query: str | None = None,
+    ai_selector: str | None = None,
+    ai_extract_rules: str | None = None,
+    session_id: int | None = None,
+    timeout: int | None = None,
+    cookies: str | None = None,
+    device: str | None = None,
+    custom_google: str | None = None,
+    transparent_status_code: str | None = None,
+    scraping_config: str | None = None,
+    body: str | None = None,
+    content_type: str | None = None,
+) -> dict[str, Any]:
+    """Build kwargs for Client.scrape() from scrape command options. Single source of _parse_bool for bool-like opts."""
+    return {
+        "method": method,
+        "render_js": _parse_bool(render_js),
+        "js_scenario": js_scenario,
+        "wait": wait,
+        "wait_for": wait_for,
+        "wait_browser": wait_browser,
+        "block_ads": _parse_bool(block_ads),
+        "block_resources": _parse_bool(block_resources),
+        "window_width": window_width,
+        "window_height": window_height,
+        "premium_proxy": _parse_bool(premium_proxy),
+        "stealth_proxy": _parse_bool(stealth_proxy),
+        "country_code": country_code,
+        "own_proxy": own_proxy,
+        "forward_headers": _parse_bool(forward_headers),
+        "forward_headers_pure": _parse_bool(forward_headers_pure),
+        "custom_headers": custom_headers,
+        "json_response": _parse_bool(json_response),
+        "screenshot": _parse_bool(screenshot),
+        "screenshot_selector": screenshot_selector,
+        "screenshot_full_page": _parse_bool(screenshot_full_page),
+        "return_page_source": _parse_bool(return_page_source),
+        "return_page_markdown": _parse_bool(return_markdown),
+        "return_page_text": _parse_bool(return_text),
+        "extract_rules": extract_rules,
+        "ai_query": ai_query,
+        "ai_selector": ai_selector,
+        "ai_extract_rules": ai_extract_rules,
+        "session_id": session_id,
+        "timeout": timeout,
+        "cookies": cookies,
+        "device": device,
+        "custom_google": _parse_bool(custom_google),
+        "transparent_status_code": _parse_bool(transparent_status_code),
+        "scraping_config": scraping_config,
+        "body": body,
+        "content_type": content_type,
+    }
+
+
+def _scrape_kwargs_to_api_params(kwargs: dict[str, Any]) -> dict[str, str]:
+    """Convert _build_scrape_kwargs output to ScrapingBee API params dict (str values; omit None/empty)."""
+    skip_keys = frozenset(("method", "body", "content_type", "custom_headers"))
+    out: dict[str, str] = {}
+    for k, v in kwargs.items():
+        if k in skip_keys or v is None or v == "":
+            continue
+        if isinstance(v, bool):
+            out[k] = "true" if v else "false"
+        elif isinstance(v, int):
+            out[k] = str(v)
+        elif isinstance(v, str):
+            out[k] = v
+    return out
 
 
 def _check_api_response(data: bytes, status_code: int, err_prefix: str = "Error") -> None:
@@ -119,8 +225,8 @@ def cli(
 ) -> None:
     """ScrapingBee CLI - Web scraping API client.
 
-    Supports HTML scraping, Google Search, Fast Search, Amazon, Walmart,
-    YouTube, and ChatGPT endpoints.
+    Commands: scrape (single or batch), crawl (Scrapy/quick-crawl), usage,
+    Google Search, Fast Search, Amazon, Walmart, YouTube, and ChatGPT.
 
     Set your API key via --api-key or SCRAPINGBEE_API_KEY.
     """
@@ -288,6 +394,46 @@ def scrape(
             err=True,
         )
 
+    scrape_kwargs = _build_scrape_kwargs(
+        method=method,
+        render_js=render_js,
+        js_scenario=js_scenario,
+        wait=wait,
+        wait_for=wait_for,
+        wait_browser=wait_browser,
+        block_ads=block_ads,
+        block_resources=block_resources,
+        window_width=window_width,
+        window_height=window_height,
+        premium_proxy=premium_proxy,
+        stealth_proxy=stealth_proxy,
+        country_code=country_code,
+        own_proxy=own_proxy,
+        forward_headers=forward_headers,
+        forward_headers_pure=forward_headers_pure,
+        custom_headers=custom_headers or None,
+        json_response=json_response,
+        screenshot=screenshot,
+        screenshot_selector=screenshot_selector,
+        screenshot_full_page=screenshot_full_page,
+        return_page_source=return_page_source,
+        return_markdown=return_markdown,
+        return_text=return_text,
+        extract_rules=extract_rules,
+        ai_query=ai_query,
+        ai_selector=ai_selector,
+        ai_extract_rules=ai_extract_rules,
+        session_id=session_id,
+        timeout=timeout,
+        cookies=cookies,
+        device=device,
+        custom_google=custom_google,
+        transparent_status_code=transparent_status_code,
+        scraping_config=scraping_config,
+        body=body,
+        content_type=content_type,
+    )
+
     if input_file:
         if url:
             click.echo("cannot use both --input-file and positional URL", err=True)
@@ -302,47 +448,8 @@ def scrape(
 
                 async def do_one(u: str):
                     try:
-                        data, resp_headers, status_code = await client.scrape(
-                            u,
-                            method=method,
-                            render_js=_parse_bool(render_js),
-                            js_scenario=js_scenario,
-                            wait=wait,
-                            wait_for=wait_for,
-                            wait_browser=wait_browser,
-                            block_ads=_parse_bool(block_ads),
-                            block_resources=_parse_bool(block_resources),
-                            window_width=window_width,
-                            window_height=window_height,
-                            premium_proxy=_parse_bool(premium_proxy),
-                            stealth_proxy=_parse_bool(stealth_proxy),
-                            country_code=country_code,
-                            own_proxy=own_proxy,
-                            forward_headers=_parse_bool(forward_headers),
-                            forward_headers_pure=_parse_bool(forward_headers_pure),
-                            custom_headers=custom_headers or None,
-                            json_response=_parse_bool(json_response),
-                            screenshot=_parse_bool(screenshot),
-                            screenshot_selector=screenshot_selector,
-                            screenshot_full_page=_parse_bool(screenshot_full_page),
-                            return_page_source=_parse_bool(return_page_source),
-                            return_page_markdown=_parse_bool(return_markdown),
-                            return_page_text=_parse_bool(return_text),
-                            extract_rules=extract_rules,
-                            ai_query=ai_query,
-                            ai_selector=ai_selector,
-                            ai_extract_rules=ai_extract_rules,
-                            session_id=session_id,
-                            timeout=timeout,
-                            cookies=cookies,
-                            device=device,
-                            custom_google=_parse_bool(custom_google),
-                            transparent_status_code=_parse_bool(transparent_status_code),
-                            scraping_config=scraping_config,
-                            body=body,
-                            content_type=content_type,
-                        )
-                        if not _parse_bool(transparent_status_code) and status_code >= 400:
+                        data, resp_headers, status_code = await client.scrape(u, **scrape_kwargs)
+                        if not scrape_kwargs.get("transparent_status_code") and status_code >= 400:
                             return (
                                 data,
                                 resp_headers,
@@ -371,56 +478,329 @@ def scrape(
 
     async def _single() -> None:
         async with Client(key, BASE_URL) as client:
-            data, resp_headers, status_code = await client.scrape(
-                url,
-                method=method,
-                render_js=_parse_bool(render_js),
-                js_scenario=js_scenario,
-                wait=wait,
-                wait_for=wait_for,
-                wait_browser=wait_browser,
-                block_ads=_parse_bool(block_ads),
-                block_resources=_parse_bool(block_resources),
-                window_width=window_width,
-                window_height=window_height,
-                premium_proxy=_parse_bool(premium_proxy),
-                stealth_proxy=_parse_bool(stealth_proxy),
-                country_code=country_code,
-                own_proxy=own_proxy,
-                forward_headers=_parse_bool(forward_headers),
-                forward_headers_pure=_parse_bool(forward_headers_pure),
-                custom_headers=custom_headers or None,
-                json_response=_parse_bool(json_response),
-                screenshot=_parse_bool(screenshot),
-                screenshot_selector=screenshot_selector,
-                screenshot_full_page=_parse_bool(screenshot_full_page),
-                return_page_source=_parse_bool(return_page_source),
-                return_page_markdown=_parse_bool(return_markdown),
-                return_page_text=_parse_bool(return_text),
-                extract_rules=extract_rules,
-                ai_query=ai_query,
-                ai_selector=ai_selector,
-                ai_extract_rules=ai_extract_rules,
-                session_id=session_id,
-                timeout=timeout,
-                cookies=cookies,
-                device=device,
-                custom_google=_parse_bool(custom_google),
-                transparent_status_code=_parse_bool(transparent_status_code),
-                scraping_config=scraping_config,
-                body=body,
-                content_type=content_type,
-            )
-        if not _parse_bool(transparent_status_code) and status_code >= 400:
+            data, resp_headers, status_code = await client.scrape(url, **scrape_kwargs)
+        if not scrape_kwargs.get("transparent_status_code") and status_code >= 400:
             click.echo(f"Error: HTTP {status_code}", err=True)
             try:
                 click.echo(pretty_json(data), err=True)
             except Exception:
                 click.echo(data.decode("utf-8", errors="replace"), err=True)
             raise SystemExit(1)
-        _write_output(data, resp_headers, status_code, obj["output_file"], obj["verbose"])
+        output_path = obj["output_file"]
+        if output_path:
+            # Same extension logic as crawl/batch: preferred → URL path → body/Content-Type
+            preferred = _preferred_extension_from_scrape_params(scrape_kwargs)
+            ext = extension_for_crawl(url, resp_headers, data, preferred)
+            if "." not in os.path.basename(output_path):
+                output_path = output_path.rstrip("/") + "." + ext
+        _write_output(data, resp_headers, status_code, output_path, obj["verbose"])
 
     asyncio.run(_single())
+
+
+# --- crawl ---
+def _crawl_build_params(
+    *,
+    render_js: str | None,
+    js_scenario: str | None,
+    wait: int | None,
+    wait_for: str | None,
+    wait_browser: str | None,
+    block_ads: str | None,
+    block_resources: str | None,
+    window_width: int | None,
+    window_height: int | None,
+    premium_proxy: str | None,
+    stealth_proxy: str | None,
+    country_code: str | None,
+    own_proxy: str | None,
+    forward_headers: str | None,
+    forward_headers_pure: str | None,
+    json_response: str | None,
+    screenshot: str | None,
+    screenshot_selector: str | None,
+    screenshot_full_page: str | None,
+    return_page_source: str | None,
+    return_markdown: str | None,
+    return_text: str | None,
+    extract_rules: str | None,
+    ai_query: str | None,
+    ai_selector: str | None,
+    ai_extract_rules: str | None,
+    session_id: int | None,
+    timeout: int | None,
+    cookies: str | None,
+    device: str | None,
+    custom_google: str | None,
+    transparent_status_code: str | None,
+    scraping_config: str | None,
+) -> dict[str, str]:
+    """Build ScrapingBee API params dict from crawl options (quick-crawl URL mode)."""
+    kwargs = _build_scrape_kwargs(
+        method="GET",
+        render_js=render_js,
+        js_scenario=js_scenario,
+        wait=wait,
+        wait_for=wait_for,
+        wait_browser=wait_browser,
+        block_ads=block_ads,
+        block_resources=block_resources,
+        window_width=window_width,
+        window_height=window_height,
+        premium_proxy=premium_proxy,
+        stealth_proxy=stealth_proxy,
+        country_code=country_code,
+        own_proxy=own_proxy,
+        forward_headers=forward_headers,
+        forward_headers_pure=forward_headers_pure,
+        custom_headers=None,
+        json_response=json_response,
+        screenshot=screenshot,
+        screenshot_selector=screenshot_selector,
+        screenshot_full_page=screenshot_full_page,
+        return_page_source=return_page_source,
+        return_markdown=return_markdown,
+        return_text=return_text,
+        extract_rules=extract_rules,
+        ai_query=ai_query,
+        ai_selector=ai_selector,
+        ai_extract_rules=ai_extract_rules,
+        session_id=session_id,
+        timeout=timeout,
+        cookies=cookies,
+        device=device,
+        custom_google=custom_google,
+        transparent_status_code=transparent_status_code,
+        scraping_config=scraping_config,
+        body=None,
+        content_type=None,
+    )
+    return _scrape_kwargs_to_api_params(kwargs)
+
+
+@cli.command()
+@click.argument("target", nargs=-1, required=True)
+@click.option("--project", "-p", type=click.Path(exists=True, file_okay=False, path_type=str), default=None)
+@click.option("--render-js", type=str, default=None)
+@click.option("--js-scenario", type=str, default=None)
+@click.option("--wait", type=int, default=None)
+@click.option("--wait-for", type=str, default=None)
+@click.option("--wait-browser", type=str, default=None)
+@click.option("--block-ads", type=str, default=None)
+@click.option("--block-resources", type=str, default=None)
+@click.option("--window-width", type=int, default=None)
+@click.option("--window-height", type=int, default=None)
+@click.option("--premium-proxy", type=str, default=None)
+@click.option("--stealth-proxy", type=str, default=None)
+@click.option("--country-code", type=str, default=None)
+@click.option("--own-proxy", type=str, default=None)
+@click.option("--forward-headers", type=str, default=None)
+@click.option("--forward-headers-pure", type=str, default=None)
+@click.option("-H", "--header", "headers", multiple=True)
+@click.option("--json-response", type=str, default=None)
+@click.option("--screenshot", type=str, default=None)
+@click.option("--screenshot-selector", type=str, default=None)
+@click.option("--screenshot-full-page", type=str, default=None)
+@click.option("--return-page-source", type=str, default=None)
+@click.option("--return-markdown", type=str, default=None)
+@click.option("--return-text", type=str, default=None)
+@click.option("--extract-rules", type=str, default=None)
+@click.option("--ai-query", type=str, default=None)
+@click.option("--ai-selector", type=str, default=None)
+@click.option("--ai-extract-rules", type=str, default=None)
+@click.option("--session-id", type=int, default=None)
+@click.option("--timeout", type=int, default=None)
+@click.option("--cookies", type=str, default=None)
+@click.option("--device", type=str, default=None)
+@click.option("--custom-google", type=str, default=None)
+@click.option("--transparent-status-code", type=str, default=None)
+@click.option("--scraping-config", type=str, default=None)
+@click.option(
+    "--max-depth",
+    type=int,
+    default=0,
+    help="Max link depth when following same-domain links (0 = unlimited). Quick-crawl only.",
+)
+@click.option(
+    "--max-pages",
+    type=int,
+    default=0,
+    help="Max number of pages to fetch (0 = unlimited). Quick-crawl only.",
+)
+@click.option(
+    "--output-dir",
+    type=str,
+    default=None,
+    help="Directory to save crawled pages (one file per page). Quick-crawl only. Default: crawl_<timestamp>.",
+)
+@click.option(
+    "--allowed-domains",
+    type=str,
+    default=None,
+    help="Comma-separated list of domains to crawl (default: same domain as start URL(s)). Quick-crawl only.",
+)
+@click.option(
+    "--allow-external-domains",
+    is_flag=True,
+    default=False,
+    help="Follow links to any domain (default: same domain only). Quick-crawl only.",
+)
+@click.pass_obj
+def crawl(
+    obj: dict,
+    target: tuple[str, ...],
+    project: str | None,
+    render_js: str | None,
+    js_scenario: str | None,
+    wait: int | None,
+    wait_for: str | None,
+    wait_browser: str | None,
+    block_ads: str | None,
+    block_resources: str | None,
+    window_width: int | None,
+    window_height: int | None,
+    premium_proxy: str | None,
+    stealth_proxy: str | None,
+    country_code: str | None,
+    own_proxy: str | None,
+    forward_headers: str | None,
+    forward_headers_pure: str | None,
+    headers: tuple[str, ...],
+    json_response: str | None,
+    screenshot: str | None,
+    screenshot_selector: str | None,
+    screenshot_full_page: str | None,
+    return_page_source: str | None,
+    return_markdown: str | None,
+    return_text: str | None,
+    extract_rules: str | None,
+    ai_query: str | None,
+    ai_selector: str | None,
+    ai_extract_rules: str | None,
+    session_id: int | None,
+    timeout: int | None,
+    cookies: str | None,
+    device: str | None,
+    custom_google: str | None,
+    transparent_status_code: str | None,
+    scraping_config: str | None,
+    max_depth: int,
+    max_pages: int,
+    output_dir: str | None,
+    allowed_domains: str | None,
+    allow_external_domains: bool,
+) -> None:
+    """Run a Scrapy spider with ScrapingBee.
+
+    Two modes:
+
+    \b
+    1. Project spider: scrapingbee crawl SPIDER_NAME [--project /path]
+       Runs the named spider from a Scrapy project. Pass params in your spider.
+
+    2. Quick crawl: scrapingbee crawl URL [URL ...] [options]
+       Starts from the given URL(s), follows same-domain links (0 = unlimited).
+       Concurrency from --concurrency or usage API. Same options as scrape.
+    """
+    try:
+        key = get_api_key(obj["api_key"])
+    except ValueError as e:
+        click.echo(str(e), err=True)
+        raise SystemExit(1)
+    if not target:
+        click.echo("Provide a spider name or one or more URLs.", err=True)
+        raise SystemExit(1)
+    # Resolve concurrency: --concurrency or usage API (same as batch)
+    try:
+        from .batch import get_batch_usage, resolve_batch_concurrency
+
+        usage_info = get_batch_usage(obj["api_key"])
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, 1)
+        from_concurrency = obj["concurrency"] > 0
+    except Exception:
+        concurrency = 16
+        from_concurrency = False
+    first = target[0]
+    if first.startswith("http://") or first.startswith("https://"):
+        urls = list(target)
+        if from_concurrency:
+            click.echo(f"Crawl: concurrency {concurrency} (from --concurrency)", err=True)
+        else:
+            click.echo(f"Crawl: concurrency {concurrency} (from usage API)", err=True)
+        scrape_params = _crawl_build_params(
+            render_js=render_js,
+            js_scenario=js_scenario,
+            wait=wait,
+            wait_for=wait_for,
+            wait_browser=wait_browser,
+            block_ads=block_ads,
+            block_resources=block_resources,
+            window_width=window_width,
+            window_height=window_height,
+            premium_proxy=premium_proxy,
+            stealth_proxy=stealth_proxy,
+            country_code=country_code,
+            own_proxy=own_proxy,
+            forward_headers=forward_headers,
+            forward_headers_pure=forward_headers_pure,
+            json_response=json_response,
+            screenshot=screenshot,
+            screenshot_selector=screenshot_selector,
+            screenshot_full_page=screenshot_full_page,
+            return_page_source=return_page_source,
+            return_markdown=return_markdown,
+            return_text=return_text,
+            extract_rules=extract_rules,
+            ai_query=ai_query,
+            ai_selector=ai_selector,
+            ai_extract_rules=ai_extract_rules,
+            session_id=session_id,
+            timeout=timeout,
+            cookies=cookies,
+            device=device,
+            custom_google=custom_google,
+            transparent_status_code=transparent_status_code,
+            scraping_config=scraping_config,
+        )
+        custom_headers = {}
+        for h in headers:
+            if ":" in h:
+                k, _, v = h.partition(":")
+                custom_headers[k.strip()] = v.strip()
+        out_dir = output_dir or default_crawl_output_dir()
+        allowed_list: list[str] | None = None
+        if allowed_domains:
+            allowed_list = [d.strip() for d in allowed_domains.split(",") if d.strip()]
+        try:
+            run_urls_spider(
+                urls,
+                key,
+                scrape_params=scrape_params or None,
+                custom_headers=custom_headers or None,
+                max_depth=max_depth,
+                max_pages=max_pages,
+                concurrency=concurrency,
+                output_dir=out_dir,
+                allowed_domains=allowed_list,
+                allow_external_domains=allow_external_domains,
+            )
+        except ValueError as e:
+            click.echo(str(e), err=True)
+            raise SystemExit(1)
+        click.echo(f"Saved to {out_dir}", err=True)
+    else:
+        if len(target) > 1:
+            click.echo(
+                "Spider name must be a single argument. For multiple URLs use: "
+                "scrapingbee crawl URL [URL ...]",
+                err=True,
+            )
+            raise SystemExit(1)
+        try:
+            run_project_spider(first, key, project_path=project, concurrency=concurrency)
+        except FileNotFoundError as e:
+            click.echo(str(e), err=True)
+            raise SystemExit(1)
 
 
 # --- google ---

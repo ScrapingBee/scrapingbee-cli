@@ -267,12 +267,48 @@ def test_batch_output_dir_has_files(api_key):
         assert code == 0, err or out
         assert "Batch complete" in out
         assert out_dir.exists()
-        files = list(out_dir.iterdir())
-        assert len(files) >= 2, f"expected at least 2 output files, got {files}"
-        exts = {f.suffix for f in files}
-        assert ".html" in exts or ".json" in exts or ".txt" in exts
+        # Count files (may be in root or in screenshots/ / files/ subdirs)
+        all_files = [f for f in out_dir.rglob("*") if f.is_file()]
+        assert len(all_files) >= 2, f"expected at least 2 output files, got {all_files}"
+        exts = {f.suffix for f in all_files}
+        assert ".html" in exts or ".json" in exts or ".txt" in exts or ".png" in exts
     finally:
         Path(input_path).unlink(missing_ok=True)
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+
+
+@pytest.mark.integration
+def test_crawl_output_dir_writes_files(api_key):
+    """Crawl with --output-dir and --max-pages 2 must write at least one file to that dir."""
+    if not api_key:
+        pytest.skip("SCRAPINGBEE_API_KEY not set")
+
+    out_dir = Path(__file__).resolve().parent.parent / "crawl_out_integration_test"
+    out_dir.mkdir(exist_ok=True)
+    try:
+        code, out, err = cli_run(
+            [
+                "--api-key",
+                api_key,
+                "crawl",
+                "https://crawler-test.com/",
+                "--output-dir",
+                str(out_dir),
+                "--max-pages",
+                "2",
+                "--max-depth",
+                "1",
+            ],
+            timeout=120,
+        )
+        assert code == 0, err or out
+        assert "Saved to" in err
+        assert out_dir.exists()
+        # Files may be in root (1.html) or in screenshots/ / files/ subdirs
+        file_files = [f for f in out_dir.rglob("*") if f.is_file()]
+        assert len(file_files) >= 1, f"expected at least 1 file under {out_dir}, got {list(out_dir.rglob('*'))}"
+    finally:
         if out_dir.exists():
             shutil.rmtree(out_dir)
 

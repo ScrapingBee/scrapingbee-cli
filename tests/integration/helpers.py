@@ -220,6 +220,7 @@ def build_api_matrix_tests(
 CLI_COMMANDS = [
     ("usage", []),
     ("scrape", ["https://httpbin.scrapingbee.com/"]),
+    ("crawl", ["https://crawler-test.com/"]),
     ("google", ["query"]),
     ("fast-search", ["query"]),
     ("amazon-product", ["B001"]),

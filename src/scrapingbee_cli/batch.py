@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .client import Client, parse_usage
 from .config import get_api_key
@@ -18,6 +19,7 @@ CONTENT_TYPE_EXTENSION: dict[str, str] = {
     "application/json": "json",
     "application/ld+json": "json",
     "text/html": "html",
+    "text/markdown": "md",
     "text/plain": "txt",
     "image/png": "png",
     "image/jpeg": "jpg",
@@ -32,6 +34,12 @@ CONTENT_TYPE_EXTENSION: dict[str, str] = {
 # HTML API (scrape) can return multiple types. Put images in screenshots/, other binary in files/.
 SCREENSHOT_EXTENSIONS = frozenset({"png", "jpg", "gif", "webp"})
 BINARY_FILE_EXTENSIONS = frozenset({"pdf", "zip"})
+
+# Known file extensions for URL path detection (e.g. index.html, sitemap.xml, archive.zip).
+URL_PATH_EXTENSIONS = frozenset({
+    "html", "htm", "xml", "json", "zip", "pdf", "md", "txt", "svg",
+    "png", "jpg", "jpeg", "gif", "webp", "ico", "css", "js",
+})
 
 
 def _batch_subdir_for_extension(ext: str) -> str | None:
@@ -56,6 +64,35 @@ def extension_from_content_type(headers: dict) -> str:
     return "unidentified.txt"
 
 
+def _looks_like_json(body: bytes) -> bool:
+    """True if body starts with { or [ and next token looks like JSON (not e.g. Markdown [text](url))."""
+    if not body:
+        return False
+    body = body.lstrip()
+    if body[:1] not in (b"{", b"["):
+        return False
+    rest = body[1:].lstrip()
+    # Empty object {} or array [] or just "{" / "[" (minimal valid start)
+    if not rest:
+        return True
+    # After [ or {, next non-whitespace must be a JSON value starter or closing } ]
+    first = rest[0:1]
+    return first in (
+        b'"', b"{", b"[", b"}", b"]",
+        b"0", b"1", b"2", b"3", b"4", b"5", b"6", b"7", b"8", b"9",
+        b"-", b"n", b"t", b"f",
+    )
+
+
+def _looks_like_markdown(body: bytes) -> bool:
+    """True if body looks like Markdown (e.g. [text](url) link syntax). ScrapingBee may not send correct Content-Type."""
+    if not body or body[:1] != b"[":
+        return False
+    # Markdown link pattern ]( in first 2KB is a strong signal
+    chunk = body.lstrip()[:2048]
+    return b"](" in chunk
+
+
 def extension_from_body_sniff(body: bytes) -> str | None:
     """Return extension if body has obvious magic bytes; else None (API type can be wrong)."""
     if not body:
@@ -69,8 +106,10 @@ def extension_from_body_sniff(body: bytes) -> str | None:
         return "gif"
     if len(body) >= 12 and body[:4] == b"RIFF" and body[8:12] == b"WEBP":
         return "webp"
-    if body[:1] in (b"{", b"["):
+    if _looks_like_json(body):
         return "json"
+    if _looks_like_markdown(body):
+        return "md"
     if body.startswith(b"<!") or body.startswith(b"<html"):
         return "html"
     return None
@@ -85,6 +124,36 @@ def extension_for_scrape(headers: dict, body: bytes) -> str:
     if from_header != "unidentified.txt":
         return from_header
     return "unidentified.txt"
+
+
+def extension_from_url_path(url: str) -> str | None:
+    """Return file extension from the last path segment of URL, or None if unknown.
+    E.g. index.html -> html, sitemap.xml -> xml, archive.zip -> zip.
+    """
+    path = urlparse(url).path.strip("/")
+    if not path:
+        return None
+    last = path.split("/")[-1]
+    if "." not in last:
+        return None
+    _, _, ext = last.rpartition(".")
+    ext = ext.lower().split("?")[0]
+    return ext if ext in URL_PATH_EXTENSIONS else None
+
+
+def extension_for_crawl(
+    url: str,
+    headers: dict,
+    body: bytes,
+    preferred_extension: str | None,
+) -> str:
+    """Extension for crawl: 1) preferred (from scrape params), 2) URL path, 3) body/Content-Type."""
+    if preferred_extension:
+        return preferred_extension
+    from_url = extension_from_url_path(url)
+    if from_url is not None:
+        return from_url
+    return extension_for_scrape(headers, body)
 
 
 def read_input_file(path: str) -> list[str]:
@@ -211,10 +280,13 @@ def write_batch_output_to_dir(
             continue
         if verbose:
             print(f"Item {n}: HTTP {result.status_code}", file=sys.stderr)
-        if result.expected_extension is not None:
-            ext = result.expected_extension
-        else:
-            ext = extension_for_scrape(result.headers, result.body)
+        # Same order as crawl: preferred (expected) → URL path → body/Content-Type
+        ext = extension_for_crawl(
+            result.input,
+            result.headers,
+            result.body,
+            result.expected_extension,
+        )
         subdir = _batch_subdir_for_extension(ext)
         if subdir:
             out_dir = os.path.join(abs_dir, subdir)

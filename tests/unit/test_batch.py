@@ -11,9 +11,11 @@ from scrapingbee_cli.batch import (
     BatchResult,
     _batch_subdir_for_extension,
     default_batch_output_dir,
+    extension_for_crawl,
     extension_for_scrape,
     extension_from_body_sniff,
     extension_from_content_type,
+    extension_from_url_path,
     get_batch_usage,
     read_input_file,
     resolve_batch_concurrency,
@@ -118,7 +120,14 @@ class TestExtensionFromBodySniff:
 
     def test_json(self):
         assert extension_from_body_sniff(b"  {") == "json"
+        assert extension_from_body_sniff(b"{}") == "json"
         assert extension_from_body_sniff(b"[1,2]") == "json"
+        assert extension_from_body_sniff(b"[]") == "json"
+
+    def test_markdown_not_json(self):
+        # [text](url) is markdown, not JSON
+        assert extension_from_body_sniff(b"[Crawler Test](/)") == "md"
+        assert extension_from_body_sniff(b"[link](https://example.com)") == "md"
 
     def test_html(self):
         assert extension_from_body_sniff(b"<!doctype html>") == "html"
@@ -287,3 +296,58 @@ class TestBatchSubdirForExtension:
         assert _batch_subdir_for_extension("html") is None
         assert _batch_subdir_for_extension("txt") is None
         assert _batch_subdir_for_extension("unidentified.txt") is None
+
+
+class TestExtensionFromUrlPath:
+    """Tests for extension_from_url_path()."""
+
+    def test_known_extensions(self):
+        assert extension_from_url_path("https://example.com/index.html") == "html"
+        assert extension_from_url_path("https://example.com/sitemap.xml") == "xml"
+        assert extension_from_url_path("https://example.com/archive.zip") == "zip"
+        assert extension_from_url_path("https://example.com/doc.pdf") == "pdf"
+        assert extension_from_url_path("https://example.com/page.json") == "json"
+        assert extension_from_url_path("https://example.com/readme.md") == "md"
+
+    def test_no_extension(self):
+        assert extension_from_url_path("https://example.com/") is None
+        assert extension_from_url_path("https://example.com/page") is None
+
+    def test_unknown_extension(self):
+        assert extension_from_url_path("https://example.com/file.xyz") is None
+
+
+class TestExtensionForCrawl:
+    """Tests for extension_for_crawl(): preferred → URL path → body/Content-Type."""
+
+    def test_preferred_first(self):
+        assert extension_for_crawl("https://x.co/p.html", {}, b"???", "md") == "md"
+        assert extension_for_crawl("https://x.co/", {}, b"{}", "json") == "json"
+
+    def test_url_path_second(self):
+        assert extension_for_crawl("https://x.co/page.html", {}, b"???", None) == "html"
+        assert extension_for_crawl("https://x.co/sitemap.xml", {}, b"???", None) == "xml"
+
+    def test_body_content_type_fallback(self):
+        assert extension_for_crawl("https://x.co/", {}, b"{}", None) == "json"
+        assert extension_for_crawl("https://x.co/", {"Content-Type": "image/png"}, b"???", None) == "png"
+
+
+class TestWriteBatchOutputToDirUrlPath:
+    """Tests for write_batch_output_to_dir() using URL path for extension."""
+
+    def test_url_path_used_when_no_expected_extension(self, tmp_path):
+        # result.input is URL with path; extension should come from URL when body is ambiguous
+        results = [
+            BatchResult(
+                0,
+                "https://example.com/index.html",
+                b"plain text no magic bytes",
+                {},
+                200,
+                None,
+                None,
+            ),
+        ]
+        write_batch_output_to_dir(results, str(tmp_path), verbose=False)
+        assert (tmp_path / "1.html").read_bytes() == b"plain text no magic bytes"
