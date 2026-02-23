@@ -1,3 +1,7 @@
+# Environment (never commit secrets)
+.env
+.env.local
+
 # macOS
 .DS_Store
 
@@ -5,12 +9,25 @@
 .venv/
 venv/
 __pycache__/
+.ruff_cache/
 *.py[cod]
 *.egg-info/
 .eggs/
 dist/
 build/
 *.egg
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+failed_requests.txt
+test_failures/
+test_results/
+
+# CLI output (default dirs when --output-dir not set)
+batch_*/
+crawl_*/
 
 # IDE
 .idea/

@@ -1,44 +1,133 @@
-"""HTTP client for ScrapingBee API."""
+"""HTTP client for ScrapingBee API (async, aiohttp)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
-import requests
+import aiohttp
 
 from .config import BASE_URL
 
 
-class Client:
-    """ScrapingBee API client."""
+def _clean_params(params: dict) -> dict:
+    """Drop None and empty string values for API query/body params."""
+    return {k: v for k, v in params.items() if v is not None and v != ""}
 
-    def __init__(self, api_key: str, base_url: str = BASE_URL, timeout: int = 150):
+
+class Client:
+    """ScrapingBee API client (async, use as context manager)."""
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = BASE_URL,
+        timeout: int = 150,
+        connector_limit: int | None = None,
+    ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self._session = requests.Session()
+        self._connector_limit = connector_limit
+        self._session: aiohttp.ClientSession | None = None
 
-    def _get(self, path: str, params: dict[str, Any]) -> tuple[bytes, dict, int]:
-        params = {k: v for k, v in params.items() if v is not None and v != ""}
-        params.setdefault("api_key", self.api_key)
-        url = f"{self.base_url}{path}"
-        resp = self._session.get(url, params=params, timeout=self.timeout)
-        return resp.content, dict(resp.headers), resp.status_code
+    async def __aenter__(self) -> Client:
+        connector = (
+            aiohttp.TCPConnector(limit=self._connector_limit)
+            if self._connector_limit is not None
+            else None
+        )
+        timeout = aiohttp.ClientTimeout(total=self.timeout)
+        self._session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout,
+            headers={"User-Agent": "ScrapingBee/CLI"},
+        )
+        return self
 
-    def _request(
-        self, method: str, path: str, params: dict, data: str | None = None, content_type: str | None = None
+    async def __aexit__(self, *args: object) -> None:
+        if self._session:
+            await self._session.close()
+            self._session = None
+
+    def _ensure_session(self) -> aiohttp.ClientSession:
+        if self._session is None:
+            raise RuntimeError("Client must be used as async with Client(...) as client")
+        return self._session
+
+    async def _get(
+        self,
+        path: str,
+        params: dict[str, Any],
+        headers: dict[str, str] | None = None,
     ) -> tuple[bytes, dict, int]:
-        params = {k: v for k, v in params.items() if v is not None and v != ""}
+        params = _clean_params(params)
         params.setdefault("api_key", self.api_key)
-        url = f"{self.base_url}{path}"
-        kwargs = {"params": params, "timeout": self.timeout}
+        url = f"{self.base_url}{path}" if path else self.base_url
+        session = self._ensure_session()
+        req_kwargs: dict[str, Any] = {"params": params}
+        if headers:
+            req_kwargs["headers"] = headers
+        async with session.get(url, **req_kwargs) as resp:
+            body = await resp.read()
+            out_headers = dict(resp.headers)
+            return body, out_headers, resp.status
+
+    async def _get_with_retry(
+        self,
+        path: str,
+        params: dict[str, Any],
+        headers: dict[str, str] | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
+    ) -> tuple[bytes, dict, int]:
+        """GET with optional retries on 5xx or connection/timeout errors."""
+        last_error: BaseException | None = None
+        last_result: tuple[bytes, dict, int] = (b"", {}, 500)
+        for attempt in range(max(0, retries) + 1):
+            try:
+                body_out, out_headers, status = await self._get(path, params, headers=headers)
+                last_result = (body_out, out_headers, status)
+                if status < 500 or attempt >= max(0, retries):
+                    return body_out, out_headers, status
+                last_error = None
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                last_error = e
+            if attempt < max(0, retries):
+                await asyncio.sleep(backoff**attempt)
+        if last_error is not None:
+            raise last_error
+        return last_result
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        params: dict,
+        data: str | None = None,
+        content_type: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[bytes, dict, int]:
+        params = _clean_params(params)
+        params.setdefault("api_key", self.api_key)
+        url = f"{self.base_url}{path}" if path else self.base_url
+        session = self._ensure_session()
+        req_kwargs: dict[str, Any] = {"params": params}
+        if headers:
+            req_kwargs["headers"] = headers
         if data is not None:
-            kwargs["data"] = data
+            req_kwargs["data"] = data
             if content_type:
-                kwargs["headers"] = {"Content-Type": content_type}
-        resp = self._session.request(method, url, **kwargs)
-        return resp.content, dict(resp.headers), resp.status_code
+                existing = req_kwargs.get("headers")
+                req_kwargs["headers"] = (
+                    {**existing, "Content-Type": content_type}
+                    if isinstance(existing, dict)
+                    else {"Content-Type": content_type}
+                )
+        async with session.request(method, url, **req_kwargs) as resp:
+            body = await resp.read()
+            return body, dict(resp.headers), resp.status
 
     @staticmethod
     def _bool(val: bool | None) -> str | None:
@@ -46,7 +135,7 @@ class Client:
             return None
         return "true" if val else "false"
 
-    def scrape(
+    async def scrape(
         self,
         url: str,
         method: str = "GET",
@@ -83,9 +172,9 @@ class Client:
         device: str | None = None,
         custom_google: bool | None = None,
         transparent_status_code: bool | None = None,
-        scraping_config: str | None = None,
         body: str | None = None,
-        content_type: str | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
         **kwargs: Any,
     ) -> tuple[bytes, dict, int]:
         params = {"url": url}
@@ -94,13 +183,13 @@ class Client:
         for k, v in [
             ("render_js", self._bool(render_js)),
             ("js_scenario", js_scenario),
-            ("wait", wait if wait else None),
+            ("wait", wait if wait is not None else None),
             ("wait_for", wait_for),
             ("wait_browser", wait_browser),
             ("block_ads", self._bool(block_ads)),
             ("block_resources", self._bool(block_resources)),
-            ("window_width", window_width if window_width else None),
-            ("window_height", window_height if window_height else None),
+            ("window_width", window_width if window_width is not None else None),
+            ("window_height", window_height if window_height is not None else None),
             ("premium_proxy", self._bool(premium_proxy)),
             ("stealth_proxy", self._bool(stealth_proxy)),
             ("country_code", country_code),
@@ -118,39 +207,74 @@ class Client:
             ("ai_query", ai_query),
             ("ai_selector", ai_selector),
             ("ai_extract_rules", ai_extract_rules),
-            ("session_id", session_id if session_id else None),
-            ("timeout", timeout if timeout else None),
+            ("session_id", session_id if session_id is not None else None),
+            ("timeout", timeout if timeout is not None else None),
             ("cookies", cookies),
             ("device", device),
             ("custom_google", self._bool(custom_google)),
             ("transparent_status_code", self._bool(transparent_status_code)),
-            ("scraping_config", scraping_config),
         ]:
             if v is not None:
                 params[k] = str(v) if not isinstance(v, str) else v
-        if custom_headers:
-            for k, v in custom_headers.items():
-                params[f"Spb-{k}"] = v
-        # Scrape endpoint is base URL with query params (no path)
         method_upper = (method or "GET").upper()
-        if method_upper == "GET":
-            return self._get("", params)
-        # POST/PUT with body
-        params = {k: v for k, v in params.items() if v is not None and v != ""}
-        params["api_key"] = self.api_key
-        url_req = self.base_url
-        kwargs_req = {"params": params, "timeout": self.timeout}
-        if body is not None:
-            kwargs_req["data"] = body
-            if content_type:
-                kwargs_req["headers"] = {"Content-Type": content_type}
-        resp = self._session.request(method_upper, url_req, **kwargs_req)
-        return resp.content, dict(resp.headers), resp.status_code
+        req_headers: dict[str, str] | None = None
+        if custom_headers:
+            if method_upper == "GET":
+                req_headers = {f"Spb-{k}": v for k, v in custom_headers.items()}
+            else:
+                req_headers = dict(custom_headers)
+        last_error: BaseException | None = None
+        last_result: tuple[bytes, dict, int] = (b"", {}, 500)
+        for attempt in range(max(0, retries) + 1):
+            try:
+                if method_upper == "GET":
+                    body_out, out_headers, status = await self._get(
+                        "", params, headers=req_headers
+                    )
+                else:
+                    params_clean = _clean_params(params)
+                    params_clean["api_key"] = self.api_key
+                    # ScrapingBee API expects POST to it as application/x-www-form-urlencoded
+                    content_type = "application/x-www-form-urlencoded; charset=utf-8"
+                    # Don't send user's Content-Type to ScrapingBee; forward via params if needed
+                    req_headers_send = (
+                        {k: v for k, v in req_headers.items() if k.lower() != "content-type"}
+                        if req_headers
+                        else None
+                    )
+                    body_out, out_headers, status = await self._request(
+                        method_upper,
+                        "",
+                        params_clean,
+                        data=body,
+                        content_type=content_type,
+                        headers=req_headers_send,
+                    )
+                last_result = (body_out, out_headers, status)
+                if status < 500 or attempt >= max(0, retries):
+                    return body_out, out_headers, status
+                last_error = None
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                last_error = e
+            if attempt < max(0, retries):
+                await asyncio.sleep(backoff**attempt)
+        if last_error is not None:
+            raise last_error
+        return last_result
 
-    def usage(self) -> tuple[bytes, dict, int]:
-        return self._get("/usage", {"api_key": self.api_key})
+    async def usage(
+        self,
+        retries: int = 3,
+        backoff: float = 2.0,
+    ) -> tuple[bytes, dict, int]:
+        return await self._get_with_retry(
+            "/usage",
+            {"api_key": self.api_key},
+            retries=retries,
+            backoff=backoff,
+        )
 
-    def google_search(
+    async def google_search(
         self,
         search: str,
         search_type: str | None = None,
@@ -162,37 +286,51 @@ class Client:
         extra_params: str | None = None,
         add_html: bool | None = None,
         light_request: bool | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
         params = {
             "search": search,
             "search_type": search_type,
             "country_code": country_code,
             "device": device,
-            "page": page if page else None,
+            "page": page if page is not None else None,
             "language": language,
             "nfpr": self._bool(nfpr),
             "extra_params": extra_params,
             "add_html": self._bool(add_html),
             "light_request": self._bool(light_request),
         }
-        return self._get("/google", params)
+        return await self._get_with_retry(
+            "/google",
+            params,
+            retries=retries,
+            backoff=backoff,
+        )
 
-    def fast_search(
+    async def fast_search(
         self,
         search: str,
         page: int | None = None,
         country_code: str | None = None,
         language: str | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
         params = {
             "search": search,
-            "page": page if page else None,
+            "page": page if page is not None else None,
             "country_code": country_code,
             "language": language,
         }
-        return self._get("/fast_search", params)
+        return await self._get_with_retry(
+            "/fast_search",
+            params,
+            retries=retries,
+            backoff=backoff,
+        )
 
-    def amazon_product(
+    async def amazon_product(
         self,
         query: str,
         device: str | None = None,
@@ -204,6 +342,8 @@ class Client:
         add_html: bool | None = None,
         light_request: bool | None = None,
         screenshot: bool | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
         params = {
             "query": query,
@@ -217,9 +357,14 @@ class Client:
             "light_request": self._bool(light_request),
             "screenshot": self._bool(screenshot),
         }
-        return self._get("/amazon/product", params)
+        return await self._get_with_retry(
+            "/amazon/product",
+            params,
+            retries=retries,
+            backoff=backoff,
+        )
 
-    def amazon_search(
+    async def amazon_search(
         self,
         query: str,
         start_page: int | None = None,
@@ -237,11 +382,13 @@ class Client:
         add_html: bool | None = None,
         light_request: bool | None = None,
         screenshot: bool | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
         params = {
             "query": query,
-            "start_page": start_page if start_page else None,
-            "pages": pages if pages else None,
+            "start_page": start_page if start_page is not None else None,
+            "pages": pages if pages is not None else None,
             "sort_by": sort_by,
             "device": device,
             "domain": domain,
@@ -256,9 +403,14 @@ class Client:
             "light_request": self._bool(light_request),
             "screenshot": self._bool(screenshot),
         }
-        return self._get("/amazon/search", params)
+        return await self._get_with_retry(
+            "/amazon/search",
+            params,
+            retries=retries,
+            backoff=backoff,
+        )
 
-    def walmart_search(
+    async def walmart_search(
         self,
         query: str,
         min_price: int | None = None,
@@ -273,11 +425,13 @@ class Client:
         add_html: bool | None = None,
         light_request: bool | None = None,
         screenshot: bool | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
         params = {
             "query": query,
-            "min_price": min_price if min_price else None,
-            "max_price": max_price if max_price else None,
+            "min_price": min_price if min_price is not None else None,
+            "max_price": max_price if max_price is not None else None,
             "sort_by": sort_by,
             "device": device,
             "domain": domain,
@@ -289,9 +443,14 @@ class Client:
             "light_request": self._bool(light_request),
             "screenshot": self._bool(screenshot),
         }
-        return self._get("/walmart/search", params)
+        return await self._get_with_retry(
+            "/walmart/search",
+            params,
+            retries=retries,
+            backoff=backoff,
+        )
 
-    def walmart_product(
+    async def walmart_product(
         self,
         product_id: str,
         domain: str | None = None,
@@ -300,6 +459,8 @@ class Client:
         add_html: bool | None = None,
         light_request: bool | None = None,
         screenshot: bool | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
         params = {
             "product_id": product_id,
@@ -310,9 +471,14 @@ class Client:
             "light_request": self._bool(light_request),
             "screenshot": self._bool(screenshot),
         }
-        return self._get("/walmart/product", params)
+        return await self._get_with_retry(
+            "/walmart/product",
+            params,
+            retries=retries,
+            backoff=backoff,
+        )
 
-    def youtube_search(
+    async def youtube_search(
         self,
         search: str,
         upload_date: str | None = None,
@@ -329,6 +495,8 @@ class Client:
         hdr: bool | None = None,
         location: bool | None = None,
         vr180: bool | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
         params = {
             "search": search,
@@ -347,63 +515,91 @@ class Client:
             "location": self._bool(location),
             "vr180": self._bool(vr180),
         }
-        return self._get("/youtube/search", params)
+        return await self._get_with_retry(
+            "/youtube/search",
+            params,
+            retries=retries,
+            backoff=backoff,
+        )
 
-    def youtube_metadata(self, video_id: str) -> tuple[bytes, dict, int]:
-        return self._get("/youtube/metadata", {"video_id": video_id})
-
-    def youtube_transcript(
+    async def youtube_metadata(
         self,
         video_id: str,
-        language: str | None = None,
-        transcript_origin: str | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
-        params = {"video_id": video_id, "language": language, "transcript_origin": transcript_origin}
-        return self._get("/youtube/transcript", params)
+        return await self._get_with_retry(
+            "/youtube/metadata",
+            {"video_id": video_id},
+            retries=retries,
+            backoff=backoff,
+        )
 
-    def youtube_trainability(self, video_id: str) -> tuple[bytes, dict, int]:
-        return self._get("/youtube/trainability", {"video_id": video_id})
-
-    def chatgpt(self, prompt: str) -> tuple[bytes, dict, int]:
-        return self._get("/chatgpt", {"prompt": prompt})
+    async def chatgpt(
+        self,
+        prompt: str,
+        retries: int = 3,
+        backoff: float = 2.0,
+    ) -> tuple[bytes, dict, int]:
+        return await self._get_with_retry(
+            "/chatgpt",
+            {"prompt": prompt},
+            retries=retries,
+            backoff=backoff,
+        )
 
 
 def parse_usage(body: bytes) -> dict:
-    """Extract max_concurrency and credits from usage API response."""
+    """Extract max_concurrency and credits from usage API response.
+
+    API returns: max_api_credit, used_api_credit, max_concurrency,
+    current_concurrency, renewal_subscription_date. Credits = max_api_credit - used_api_credit.
+    """
     out = {"max_concurrency": 5, "credits": 0}
     try:
-        m = json.loads(body)
+        data = json.loads(body)
     except json.JSONDecodeError:
         return out
-    for key in (
-        "max_concurrency",
-        "max_concurrent_requests",
-        "concurrent_request_limit",
-        "concurrency",
-        "concurrent_requests",
-    ):
-        v = m.get(key)
-        if v is not None and isinstance(v, (int, float)) and 0 < v <= 10000:
-            out["max_concurrency"] = int(v)
-            break
-    for key in (
-        "credits",
-        "available_credits",
-        "credit_balance",
-        "balance",
-        "credits_remaining",
-        "remaining_credits",
-    ):
-        v = m.get(key)
-        if v is not None and isinstance(v, (int, float)) and v >= 0:
-            out["credits"] = int(v)
-            return out
-    max_credit = m.get("max_api_credit")
-    used_credit = m.get("used_api_credit")
+
+    # Exact API shape: max_api_credit, used_api_credit, max_concurrency
+    max_credit = data.get("max_api_credit")
+    used_credit = data.get("used_api_credit")
     if isinstance(max_credit, (int, float)) and isinstance(used_credit, (int, float)):
         avail = int(max_credit) - int(used_credit)
         if avail >= 0:
             out["credits"] = avail
+
+    max_concurrency_val = data.get("max_concurrency")
+    if max_concurrency_val is not None and isinstance(max_concurrency_val, (int, float)):
+        v = int(max_concurrency_val)
+        if 0 < v <= 10000:
+            out["max_concurrency"] = v
+
+    # Fallbacks only when exact API keys were not present
+    if out["max_concurrency"] == 5:
+        for key in (
+            "max_concurrent_requests",
+            "concurrent_request_limit",
+            "concurrency",
+            "concurrent_requests",
+        ):
+            value = data.get(key)
+            if value is not None and isinstance(value, (int, float)) and 0 < value <= 10000:
+                out["max_concurrency"] = int(value)
+                break
+    if out["credits"] == 0:
+        for key in (
+            "credits",
+            "available_credits",
+            "credit_balance",
+            "balance",
+            "credits_remaining",
+            "remaining_credits",
+        ):
+            value = data.get(key)
+            if value is not None and isinstance(value, (int, float)) and value >= 0:
+                out["credits"] = int(value)
+                break
     return out
 
 

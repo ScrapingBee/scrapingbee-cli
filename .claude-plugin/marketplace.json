@@ -1,0 +1,14 @@
+{
+  "name": "scrapingbee",
+  "owner": {
+    "name": "ScrapingBee"
+  },
+  "plugins": [
+    {
+      "name": "scrapingbee",
+      "source": "./",
+      "description": "Official ScrapingBee CLI: scrape URLs (HTML/JS/screenshot/extract), batch & crawl, Google/Fast Search SERP, Amazon/Walmart, YouTube (search/metadata), ChatGPT. One tool for scraping + SERP + e-commerce + YouTube; credit-based API.",
+      "skills": ["./skills/scrapingbee-cli"]
+    }
+  ]
+}

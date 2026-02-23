@@ -5,34 +5,57 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "scrapingbee-cli"
 version = "1.0.0"
-description = "Command-line client for the ScrapingBee API - scrape, search (Google, Fast Search, Amazon, Walmart, YouTube), and ChatGPT from the terminal."
+description = "Command-line client for the ScrapingBee API: scrape pages (single or batch), crawl sites, check usage/credits, and use Google Search, Fast Search, Amazon, Walmart, YouTube, and ChatGPT from the terminal."
 readme = "README.md"
-license = { text = "MIT" }
-requires-python = ">=3.8"
+license = "MIT"
+requires-python = ">=3.10"
 authors = [{ name = "ScrapingBee" }]
-keywords = ["scrapingbee", "scraping", "cli", "api"]
+keywords = [
+    "scrapingbee",
+    "scraping",
+    "crawl",
+    "scrapy",
+    "batch",
+    "google-search",
+    "amazon",
+    "walmart",
+    "youtube",
+    "chatgpt",
+    "cli",
+    "api",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: WWW/HTTP",
 ]
 dependencies = [
+    "aiohttp>=3.9",
     "click>=8.0",
-    "requests>=2.28",
+    "click-option-group>=0.5.6",
+    "scrapy>=2.11",
+    "scrapy-scrapingbee>=0.0.5",
 ]
+
+[project.urls]
+Homepage = "https://www.scrapingbee.com/"
+Documentation = "https://www.scrapingbee.com/documentation/"
+Repository = "https://github.com/ScrapingBee/scrapingbee-cli"
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7",
     "pytest-cov>=4",
+    "ruff>=0.8",
+    "ty>=0.0.17",
+    "build",
+    "twine",
 ]
 
 [project.scripts]
@@ -40,3 +63,28 @@ scrapingbee = "scrapingbee_cli.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.ty]
+[tool.ty.environment]
+python-version = "3.10"
+[tool.ty.src]
+include = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "integration: marks tests that call the live API (deselect with '-m \"not integration\"')",
+]
+addopts = "-v --tb=short"
