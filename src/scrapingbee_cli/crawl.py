@@ -6,16 +6,17 @@ import json
 import os
 import re
 import threading
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 from scrapy import Spider
 from scrapy.crawler import CrawlerProcess
 from scrapy.http import Response
+from scrapy.settings import Settings
 from scrapy.utils.project import get_project_settings
-
 from scrapy_scrapingbee import ScrapingBeeRequest
 
 from .batch import _batch_subdir_for_extension, extension_for_crawl
@@ -35,12 +36,10 @@ def _normalize_url(url: str) -> str:
     """Strip fragment and trailing slash for deduplication."""
     parsed = urlparse(url)
     path = parsed.path.rstrip("/") or "/"
-    return f"{parsed.scheme}://{parsed.netloc}{path}" + (
-        f"?{parsed.query}" if parsed.query else ""
-    )
+    return f"{parsed.scheme}://{parsed.netloc}{path}" + (f"?{parsed.query}" if parsed.query else "")
 
 
-# Markdown link pattern: ](url) — used when response is markdown (e.g. --return-markdown=true)
+# Markdown link pattern: ](url) — used when response is markdown (e.g. --return-page-markdown true)
 _MARKDOWN_LINK_RE = re.compile(rb"\]\s*\(\s*([^)\s]+)\s*\)")
 
 
@@ -64,17 +63,24 @@ def _needs_discovery_phase(params: dict[str, Any]) -> bool:
 
 
 def _params_for_discovery(params: dict[str, Any]) -> dict[str, Any]:
-    """Params with screenshot, return_page_text, json_response stripped so API returns HTML for link extraction."""
+    """Params with screenshot, return_page_text, json_response stripped
+    so API returns HTML for link extraction."""
     out = dict(params)
-    for k in ("screenshot", "screenshot_selector", "screenshot_full_page", "return_page_text", "json_response"):
+    for k in (
+        "screenshot",
+        "screenshot_selector",
+        "screenshot_full_page",
+        "return_page_text",
+        "json_response",
+    ):
         out.pop(k, None)
     return out
 
 
 def _preferred_extension_from_scrape_params(params: dict[str, Any]) -> str | None:
     """Return extension when scrape params force a response type (skip detection).
-    Priority: screenshot+json_response -> json; screenshot -> png; return_page_markdown -> md;
-    return_page_text -> txt; json_response -> json.
+    Priority: screenshot+json_response -> json; screenshot -> png;
+    return_page_markdown -> md; return_page_text -> txt; json_response -> json.
     """
     if _param_truthy(params, "screenshot") and _param_truthy(params, "json_response"):
         return "json"
@@ -90,7 +96,8 @@ def _preferred_extension_from_scrape_params(params: dict[str, Any]) -> str | Non
 
 
 def _body_from_json_response(body: bytes) -> bytes | None:
-    """If body is JSON with a 'body' or 'content' field (ScrapingBee json_response), return that inner content."""
+    """If body is JSON with a 'body' or 'content' field (ScrapingBee
+    json_response), return that inner content."""
     if not body or body.lstrip()[:1] != b"{":
         return None
     try:
@@ -112,9 +119,8 @@ def _body_from_json_response(body: bytes) -> bytes | None:
 def _extract_hrefs_from_body(body: bytes) -> list[str]:
     """Extract link URLs from raw body: HTML a[href], then Markdown ](url)."""
     hrefs: list[str] = []
-    # We can't use response.css on raw bytes; use regex for <a href="..."> and ](url)
+    # Raw bytes: use regex for <a href="..."> and ](url), not response.css
     if body:
-        # HTML: href="..." or href='...'
         for m in re.finditer(rb'<a\s+[^>]*href\s*=\s*["\']([^"\']+)["\']', body, re.I):
             hrefs.append(m.group(1).decode("utf-8", errors="replace").strip())
         if not hrefs:
@@ -133,11 +139,10 @@ def _extract_hrefs_from_response(response: Response) -> list[str]:
     if inner is not None:
         return _extract_hrefs_from_body(inner)
     hrefs: list[str] = []
-    # HTML links (when body is HTML)
     for href in response.css("a[href]::attr(href)").getall():
         if href and isinstance(href, str):
             hrefs.append(href.strip())
-    # Markdown links (when body is markdown, e.g. --return-markdown=true)
+    # Markdown links (when body is markdown, e.g. --return-page-markdown true)
     if not hrefs and body:
         for m in _MARKDOWN_LINK_RE.finditer(body):
             raw = m.group(1).decode("utf-8", errors="replace").strip()
@@ -162,9 +167,10 @@ class GenericScrapingBeeSpider(Spider):
         output_dir: str | None = None,
         allowed_domains: list[str] | None = None,
         allow_external_domains: bool = False,
-        **kwargs: object,
+        name: str | None = None,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(name=name, **kwargs)
         self.start_urls = start_urls or []
         self.scrape_params = scrape_params or {}
         self.custom_headers = custom_headers
@@ -175,7 +181,9 @@ class GenericScrapingBeeSpider(Spider):
         # None = derive from start_urls (same-domain); else only these netlocs
         self.allowed_domains = allowed_domains
         self._allowed_netlocs: set[str] | None = None  # set when first request runs
-        self._discovery_params: dict[str, Any] | None = None  # cached when _needs_discovery_phase, avoid repeated dict copy
+        self._discovery_params: dict[str, Any] | None = (
+            None  # cached when _needs_discovery_phase, avoid repeated dict copy
+        )
         self.seen_urls: set[str] = set()
         self._write_lock = threading.Lock()
         self._write_counter = 0
@@ -199,7 +207,7 @@ class GenericScrapingBeeSpider(Spider):
         allowed = self._allowed_netlocs_set()
         return not allowed or netloc in allowed
 
-    def start_requests(self) -> list[Request]:
+    def start_requests(self) -> Iterator[Request]:
         use_discovery = _needs_discovery_phase(self.scrape_params)
         if use_discovery:
             self._discovery_params = _params_for_discovery(self.scrape_params)
@@ -254,7 +262,8 @@ class GenericScrapingBeeSpider(Spider):
         params: dict[str, Any],
         callback: Any,
     ) -> Any:
-        """Yield ScrapingBeeRequests for allowed, same-domain (or allowed-domains) links from response."""
+        """Yield ScrapingBeeRequests for allowed, same-domain
+        (or allowed-domains) links from response."""
         depth = response.meta.get("depth", 0)
         if self.max_depth != 0 and depth >= self.max_depth:
             return
@@ -284,17 +293,18 @@ class GenericScrapingBeeSpider(Spider):
             )
 
     def parse(self, response: Response, **kwargs: object) -> Any:
-        """Log the page, optionally save to output_dir, and yield ScrapingBeeRequests for same-domain links."""
+        """Log the page, optionally save to output_dir, and yield
+        ScrapingBeeRequests for same-domain links."""
         self.logger.info("Fetched %s (%d bytes)", response.url, len(response.body))
         self._save_response(response)
-        yield from self._iter_follow_requests(
-            response, dict(self.scrape_params), self.parse
-        )
+        yield from self._iter_follow_requests(response, dict(self.scrape_params), self.parse)
 
     def parse_discovery(self, response: Response, **kwargs: object) -> Any:
-        """Called when we fetched HTML for link discovery. Yield save request for this URL, then discovery for links."""
+        """Called when we fetched HTML for link discovery. Yield save request
+        for this URL, then discovery for links."""
         self.logger.info("Fetched %s (%d bytes) [discovery]", response.url, len(response.body))
-        # Schedule save request for this URL (screenshot/return_text). dont_filter=True: same URL already requested for discovery.
+        # Schedule save request for this URL (screenshot/return_page_text).
+        # dont_filter=True: same URL already requested for discovery.
         yield ScrapingBeeRequest(
             response.url,
             params=dict(self.scrape_params),
@@ -307,7 +317,7 @@ class GenericScrapingBeeSpider(Spider):
         yield from self._iter_follow_requests(response, discovery_params, self.parse_discovery)
 
     def parse_save_only(self, response: Response, **kwargs: object) -> Any:
-        """Save response (screenshot/return_text) only; no link extraction."""
+        """Save response (screenshot/return_page_text) only; no link extraction."""
         self.logger.info("Fetched %s (%d bytes) [save]", response.url, len(response.body))
         self._save_response(response)
 
@@ -322,16 +332,20 @@ def default_crawl_output_dir() -> str:
 
 def _settings_with_scrapingbee(
     api_key: str,
-    base_settings: dict | None = None,
+    base_settings: dict | Settings | None = None,
     concurrency: int = 16,
-) -> dict:
+    download_delay: float | None = None,
+    autothrottle_enabled: bool | None = None,
+) -> Settings:
     """Build Scrapy settings with ScrapingBee middleware, API key, and concurrency."""
-    from scrapy.settings import Settings
-
     settings = Settings(base_settings) if base_settings else Settings()
     settings.set("SCRAPINGBEE_API_KEY", api_key)
     settings.set("USER_AGENT", USER_AGENT_CLI)
     settings.set("CONCURRENT_REQUESTS", max(1, concurrency))
+    if download_delay is not None:
+        settings.set("DOWNLOAD_DELAY", download_delay)
+    if autothrottle_enabled is not None:
+        settings.set("AUTOTHROTTLE_ENABLED", autothrottle_enabled)
     middlewares = dict(settings.get("DOWNLOADER_MIDDLEWARES", {}))
     middlewares[SCRAPINGBEE_MIDDLEWARE] = MIDDLEWARE_PRIORITY
     settings.set("DOWNLOADER_MIDDLEWARES", middlewares)
@@ -343,8 +357,11 @@ def run_project_spider(
     api_key: str,
     project_path: str | Path | None = None,
     concurrency: int = 16,
+    download_delay: float | None = None,
+    autothrottle_enabled: bool | None = None,
 ) -> None:
-    """Run a Scrapy project spider with ScrapingBee middleware and API key injected."""
+    """Run a Scrapy project spider with ScrapingBee middleware and API key injected.
+    Concurrency is controlled by --concurrency (or usage API when 0)."""
     project_path = Path(project_path or os.getcwd()).resolve()
     scrapy_cfg = project_path / "scrapy.cfg"
     if not scrapy_cfg.is_file():
@@ -356,7 +373,13 @@ def run_project_spider(
     try:
         os.chdir(project_path)
         base_settings = get_project_settings()
-        settings = _settings_with_scrapingbee(api_key, base_settings, concurrency=concurrency)
+        settings = _settings_with_scrapingbee(
+            api_key,
+            base_settings,
+            concurrency=concurrency,
+            download_delay=download_delay,
+            autothrottle_enabled=autothrottle_enabled,
+        )
         process = CrawlerProcess(settings)
         process.crawl(spider_name)
         process.start()
@@ -375,14 +398,22 @@ def run_urls_spider(
     output_dir: str | None = None,
     allowed_domains: list[str] | None = None,
     allow_external_domains: bool = False,
+    download_delay: float | None = None,
+    autothrottle_enabled: bool | None = None,
 ) -> None:
     """Run the built-in generic spider: start from URLs and follow links.
-    By default only same-domain links are followed; use allowed_domains or allow_external_domains to change.
-    If output_dir is set, each response is saved as a separate file.
+    By default only same-domain links are followed; use allowed_domains or
+    allow_external_domains to change. If output_dir is set, each response
+    is saved as a separate file.
     """
     if not urls:
         raise ValueError("At least one URL is required")
-    settings = _settings_with_scrapingbee(api_key, concurrency=concurrency)
+    settings = _settings_with_scrapingbee(
+        api_key,
+        concurrency=concurrency,
+        download_delay=download_delay,
+        autothrottle_enabled=autothrottle_enabled,
+    )
     settings.set("LOG_LEVEL", "INFO")
     process = CrawlerProcess(settings)
     process.crawl(

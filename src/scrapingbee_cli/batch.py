@@ -36,10 +36,27 @@ SCREENSHOT_EXTENSIONS = frozenset({"png", "jpg", "gif", "webp"})
 BINARY_FILE_EXTENSIONS = frozenset({"pdf", "zip"})
 
 # Known file extensions for URL path detection (e.g. index.html, sitemap.xml, archive.zip).
-URL_PATH_EXTENSIONS = frozenset({
-    "html", "htm", "xml", "json", "zip", "pdf", "md", "txt", "svg",
-    "png", "jpg", "jpeg", "gif", "webp", "ico", "css", "js",
-})
+URL_PATH_EXTENSIONS = frozenset(
+    {
+        "html",
+        "htm",
+        "xml",
+        "json",
+        "zip",
+        "pdf",
+        "md",
+        "txt",
+        "svg",
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "webp",
+        "ico",
+        "css",
+        "js",
+    }
+)
 
 
 def _batch_subdir_for_extension(ext: str) -> str | None:
@@ -65,7 +82,8 @@ def extension_from_content_type(headers: dict) -> str:
 
 
 def _looks_like_json(body: bytes) -> bool:
-    """True if body starts with { or [ and next token looks like JSON (not e.g. Markdown [text](url))."""
+    """True if body starts with { or [ and next token looks like JSON
+    (not e.g. Markdown [text](url))."""
     if not body:
         return False
     body = body.lstrip()
@@ -78,14 +96,31 @@ def _looks_like_json(body: bytes) -> bool:
     # After [ or {, next non-whitespace must be a JSON value starter or closing } ]
     first = rest[0:1]
     return first in (
-        b'"', b"{", b"[", b"}", b"]",
-        b"0", b"1", b"2", b"3", b"4", b"5", b"6", b"7", b"8", b"9",
-        b"-", b"n", b"t", b"f",
+        b'"',
+        b"{",
+        b"[",
+        b"}",
+        b"]",
+        b"0",
+        b"1",
+        b"2",
+        b"3",
+        b"4",
+        b"5",
+        b"6",
+        b"7",
+        b"8",
+        b"9",
+        b"-",
+        b"n",
+        b"t",
+        b"f",
     )
 
 
 def _looks_like_markdown(body: bytes) -> bool:
-    """True if body looks like Markdown (e.g. [text](url) link syntax). ScrapingBee may not send correct Content-Type."""
+    """True if body looks like Markdown (e.g. [text](url) link syntax).
+    ScrapingBee may not send correct Content-Type."""
     if not body or body[:1] != b"[":
         return False
     # Markdown link pattern ]( in first 2KB is a strong signal
@@ -180,8 +215,14 @@ def get_batch_usage(api_key_flag: str | None) -> dict:
     return asyncio.run(_fetch_usage_async(key))
 
 
+MIN_CREDITS_TO_RUN_BATCH = 100
+
+
 def validate_batch_run(user_concurrency: int, num_inputs: int, usage: dict) -> None:
-    """Raise ValueError if batch should not run (concurrency or credits)."""
+    """Raise ValueError if batch should not run (concurrency or credits).
+    Credits: block when balance is below MIN_CREDITS_TO_RUN_BATCH (we cannot
+    reliably estimate cost for batch/crawl). Concurrency: block when user
+    --concurrency exceeds plan limit."""
     max_concurrency = usage.get("max_concurrency", 5)
     if user_concurrency > 0 and user_concurrency > max_concurrency:
         raise ValueError(
@@ -189,19 +230,33 @@ def validate_batch_run(user_concurrency: int, num_inputs: int, usage: dict) -> N
             "(check with: scrapingbee usage)"
         )
     credits = usage.get("credits", 0)
-    if credits > 0 and num_inputs > credits:
+    if credits < MIN_CREDITS_TO_RUN_BATCH:
         raise ValueError(
-            f"not enough credits: {num_inputs} requested, {credits} available "
-            "(check with: scrapingbee usage)"
+            f"insufficient credits: {credits} available (need at least {MIN_CREDITS_TO_RUN_BATCH} to run batch). "
+            "Check with: scrapingbee usage"
         )
 
 
-def resolve_batch_concurrency(user_concurrency: int, usage: dict, num_inputs: int) -> int:
-    """Return concurrency to use: user value if set, else usage limit (at least 1)."""
+CONCURRENCY_CAP = 100
+
+
+def resolve_batch_concurrency(
+    user_concurrency: int, usage: dict, num_inputs: int, *, warn: bool = True
+) -> int:
+    """Return concurrency to use: user value if set (capped at plan limit and CONCURRENCY_CAP),
+    else usage limit (at least 1). When from user, caps at min(plan_limit, CONCURRENCY_CAP)."""
+    from_usage = usage.get("max_concurrency", 5) or 5
     if user_concurrency > 0:
-        return user_concurrency
-    from_usage = usage.get("max_concurrency", 5)
-    return max(1, from_usage) if from_usage else 5
+        cap = min(from_usage, CONCURRENCY_CAP)
+        if user_concurrency > cap and warn:
+            import sys
+            print(
+                f"Warning: concurrency capped at {cap} (plan limit or max {CONCURRENCY_CAP}). "
+                "Very high concurrency can overload your network.",
+                file=sys.stderr,
+            )
+        return min(user_concurrency, cap)
+    return max(1, from_usage)
 
 
 @dataclass
@@ -265,17 +320,23 @@ def write_batch_output_to_dir(
     output_dir: str | None,
     verbose: bool,
 ) -> str:
-    """Write 1.<ext>, 2.<ext>, ... (ext per docs or inferred for scrape) and N.err for failures."""
+    """Write 1.<ext>, 2.<ext>, ... (ext per docs or inferred for scrape) and N.err for failures.
+    Writes failures.txt at the end listing each failed item (index, input, error). Each N.err
+    starts with the error message line so failures are reported in files as well as stderr."""
     output_dir = output_dir or default_batch_output_dir()
     abs_dir = str(Path(output_dir).resolve())
     os.makedirs(abs_dir, exist_ok=True)
+    failures: list[tuple[int, str, str]] = []  # (index+1, input, error_msg)
     for result in results:
         n = result.index + 1
         if result.error is not None:
+            err_msg = str(result.error)
+            failures.append((n, result.input, err_msg))
             print(f"Item {n} ({result.input!r}): {result.error}", file=sys.stderr)
-            if result.body:
-                err_path = os.path.join(abs_dir, f"{n}.err")
-                with open(err_path, "wb") as out_file:
+            err_path = os.path.join(abs_dir, f"{n}.err")
+            with open(err_path, "wb") as out_file:
+                out_file.write(f"Error: {err_msg}\n\n".encode("utf-8"))
+                if result.body:
                     out_file.write(result.body)
             continue
         if verbose:
@@ -296,4 +357,10 @@ def write_batch_output_to_dir(
             out_path = os.path.join(abs_dir, f"{n}.{ext}")
         with open(out_path, "wb") as out_file:
             out_file.write(result.body)
+    if failures:
+        failures_path = os.path.join(abs_dir, "failures.txt")
+        with open(failures_path, "w", encoding="utf-8") as f:
+            f.write("Batch failures (index, input, error):\n\n")
+            for n, inp, err_msg in failures:
+                f.write(f"  {n}. {inp!r}\n    {err_msg}\n\n")
     return abs_dir

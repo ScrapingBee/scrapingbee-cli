@@ -54,9 +54,22 @@ class TestValidateBatchRun:
         with pytest.raises(ValueError, match="concurrency 20 exceeds"):
             validate_batch_run(20, 5, {"max_concurrency": 10, "credits": 100})
 
-    def test_raises_when_not_enough_credits(self):
-        with pytest.raises(ValueError, match="not enough credits"):
-            validate_batch_run(0, 50, {"max_concurrency": 10, "credits": 10})
+    def test_raises_when_credits_below_minimum(self):
+        with pytest.raises(ValueError, match="insufficient credits"):
+            validate_batch_run(0, 5, {"max_concurrency": 10, "credits": 10})
+        with pytest.raises(ValueError, match="insufficient credits"):
+            validate_batch_run(0, 5, {"max_concurrency": 10, "credits": 0})
+
+    def test_ok_when_credits_at_or_above_minimum_regardless_of_batch_size(self):
+        validate_batch_run(0, 5, {"max_concurrency": 10, "credits": 100})
+        validate_batch_run(0, 500, {"max_concurrency": 10, "credits": 200})
+
+    def test_raises_when_credits_just_below_minimum(self):
+        from scrapingbee_cli.batch import MIN_CREDITS_TO_RUN_BATCH
+
+        with pytest.raises(ValueError, match="insufficient credits"):
+            validate_batch_run(0, 5, {"max_concurrency": 10, "credits": MIN_CREDITS_TO_RUN_BATCH - 1})
+        validate_batch_run(0, 5, {"max_concurrency": 10, "credits": MIN_CREDITS_TO_RUN_BATCH})
 
 
 class TestResolveBatchConcurrency:
@@ -76,6 +89,13 @@ class TestResolveBatchConcurrency:
     def test_at_least_one(self):
         assert resolve_batch_concurrency(0, {"max_concurrency": 0}, 5) >= 1
         assert resolve_batch_concurrency(0, {}, 5) >= 1
+
+    def test_user_value_capped_at_concurrency_cap(self):
+        # When user sets --concurrency above plan limit or CONCURRENCY_CAP (100), we cap
+        from scrapingbee_cli.batch import CONCURRENCY_CAP
+
+        assert resolve_batch_concurrency(150, {"max_concurrency": 200}, 500, warn=False) == CONCURRENCY_CAP
+        assert resolve_batch_concurrency(50, {"max_concurrency": 200}, 500, warn=False) == 50
 
 
 class TestDefaultBatchOutputDir:
@@ -207,18 +227,25 @@ class TestWriteBatchOutputToDir:
         ]
         write_batch_output_to_dir(results, str(tmp_path), verbose=False)
         assert (tmp_path / "1.json").read_bytes() == b"{}"
-        assert (tmp_path / "2.err").read_bytes() == b"error body"
+        err2 = (tmp_path / "2.err").read_bytes()
+        assert err2.startswith(b"Error: HTTP 500\n\n")
+        assert err2.endswith(b"error body")
         assert (tmp_path / "3.json").read_bytes() == b"ok"
         assert not (tmp_path / "2.json").exists()
+        assert (tmp_path / "failures.txt").exists()
+        assert "url2" in (tmp_path / "failures.txt").read_text()
 
     def test_error_item_with_no_body_no_err_file(self, tmp_path):
-        # When result.error is set but result.body is empty, no .err file written
+        # When result.error is set but result.body is empty, .err is still written with error message
         results = [
             BatchResult(1, "url2", b"", {}, 0, ConnectionError("fail"), None),
         ]
         write_batch_output_to_dir(results, str(tmp_path), verbose=False)
-        assert not (tmp_path / "2.err").exists()
-        assert not list(tmp_path.iterdir())  # no files written
+        assert (tmp_path / "2.err").exists()
+        assert b"Error: fail" in (tmp_path / "2.err").read_bytes()
+        assert (tmp_path / "failures.txt").exists()
+        assert "url2" in (tmp_path / "failures.txt").read_text()
+        assert not (tmp_path / "2.json").exists()
 
 
 class TestRunBatchAsync:
@@ -228,9 +255,7 @@ class TestRunBatchAsync:
         async def async_fn(inp: str):
             return b"ok", {}, 200, None, "json"
 
-        results = asyncio.run(
-            run_batch_async(["a", "b", "c"], concurrency=2, async_fn=async_fn)
-        )
+        results = asyncio.run(run_batch_async(["a", "b", "c"], concurrency=2, async_fn=async_fn))
         assert len(results) == 3
         assert [r.input for r in results] == ["a", "b", "c"]
         assert [r.body for r in results] == [b"ok", b"ok", b"ok"]
@@ -240,9 +265,7 @@ class TestRunBatchAsync:
         async def async_fn(inp: str):
             raise ValueError("fail")
 
-        results = asyncio.run(
-            run_batch_async(["x"], concurrency=1, async_fn=async_fn)
-        )
+        results = asyncio.run(run_batch_async(["x"], concurrency=1, async_fn=async_fn))
         assert len(results) == 1
         assert results[0].input == "x"
         assert results[0].body == b""
@@ -255,9 +278,7 @@ class TestRunBatchAsync:
         async def async_fn(inp: str):
             return inp.encode(), {}, 200, None, "json"
 
-        results = asyncio.run(
-            run_batch_async(["1", "2"], concurrency=10, async_fn=async_fn)
-        )
+        results = asyncio.run(run_batch_async(["1", "2"], concurrency=10, async_fn=async_fn))
         assert len(results) == 2
         assert results[0].body == b"1"
         assert results[1].body == b"2"
@@ -330,7 +351,10 @@ class TestExtensionForCrawl:
 
     def test_body_content_type_fallback(self):
         assert extension_for_crawl("https://x.co/", {}, b"{}", None) == "json"
-        assert extension_for_crawl("https://x.co/", {"Content-Type": "image/png"}, b"???", None) == "png"
+        assert (
+            extension_for_crawl("https://x.co/", {"Content-Type": "image/png"}, b"???", None)
+            == "png"
+        )
 
 
 class TestWriteBatchOutputToDirUrlPath:

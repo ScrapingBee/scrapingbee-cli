@@ -22,9 +22,12 @@ build/
 .coverage
 htmlcov/
 failed_requests.txt
+test_failures/
+test_results/
 
-# CLI output
+# CLI output (default dirs when --output-dir not set)
 batch_*/
+crawl_*/
 
 # IDE
 .idea/

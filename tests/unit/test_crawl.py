@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from scrapingbee_cli.crawl import (
     _body_from_json_response,
     _extract_hrefs_from_body,
@@ -88,7 +86,10 @@ class TestPreferredExtensionFromScrapeParams:
     """Tests for _preferred_extension_from_scrape_params()."""
 
     def test_screenshot_and_json_response(self):
-        assert _preferred_extension_from_scrape_params({"screenshot": True, "json_response": True}) == "json"
+        assert (
+            _preferred_extension_from_scrape_params({"screenshot": True, "json_response": True})
+            == "json"
+        )
 
     def test_screenshot_only(self):
         assert _preferred_extension_from_scrape_params({"screenshot": True}) == "png"

@@ -13,7 +13,7 @@ def build_api_matrix_tests(
 
     tests.append(("usage", base + ["usage"], api_timeout))
 
-    scrape_base = base + ["scrape", "https://httpbin.scrapingbee.com/"]
+    scrape_base = base + ["scrape", "https://httpbin.org/"]
     for opt, val in [
         ("--render-js", "false"),
         ("--js-scenario", '{"instructions": [{"wait": 100}]}'),
@@ -35,8 +35,8 @@ def build_api_matrix_tests(
         ("--screenshot-selector", "body"),
         ("--screenshot-full-page", "false"),
         ("--return-page-source", "false"),
-        ("--return-markdown", "false"),
-        ("--return-text", "false"),
+        ("--return-page-markdown", "false"),
+        ("--return-page-text", "false"),
         ("--extract-rules", ""),
         ("--ai-query", "type of content in the page"),
         ("--ai-selector", "body"),
@@ -47,7 +47,6 @@ def build_api_matrix_tests(
         ("--device", "desktop"),
         ("--custom-google", "false"),
         ("--transparent-status-code", "false"),
-        ("--scraping-config", ""),
         ("-X", "GET"),
     ]:
         tests.append((f"scrape {opt}", scrape_base + [opt, val], api_timeout))
@@ -64,13 +63,13 @@ def build_api_matrix_tests(
             base
             + [
                 "scrape",
-                "https://httpbin.scrapingbee.com/post",
+                "https://httpbin.org/anything",
+                "--render-js",
+                "false",
                 "-X",
                 "POST",
                 "-d",
-                "{}",
-                "--content-type",
-                "application/json",
+                "KEY_1=VALUE_1",
             ],
             api_timeout,
         )
@@ -195,31 +194,18 @@ def build_api_matrix_tests(
 
     tests.append(("youtube-metadata", base + ["youtube-metadata", "dQw4w9WgXcQ"], api_timeout))
 
-    for opt, val in [
-        ("", ""),
-        ("--language", "en"),
-        ("--transcript-origin", "auto_generated"),
-    ]:
-        name = f"youtube-transcript {opt}" if opt else "youtube-transcript"
-        cmd = base + ["youtube-transcript", "dQw4w9WgXcQ"] + ([opt, val] if opt else [])
-        tests.append((name, cmd, api_timeout))
-
-    tests.append(
-        (
-            "youtube-trainability",
-            base + ["youtube-trainability", "dQw4w9WgXcQ"],
-            api_timeout,
-        )
-    )
     tests.append(("chatgpt", base + ["chatgpt", "Say hello"], chatgpt_timeout))
 
     return tests
 
 
-# Commands for help / no-api-key parametrized tests
+# Commands for help parametrized test (all commands)
 CLI_COMMANDS = [
     ("usage", []),
-    ("scrape", ["https://httpbin.scrapingbee.com/"]),
+    ("auth", []),
+    ("logout", []),
+    ("docs", []),
+    ("scrape", ["https://httpbin.org/"]),
     ("crawl", ["https://crawler-test.com/"]),
     ("google", ["query"]),
     ("fast-search", ["query"]),
@@ -229,7 +215,8 @@ CLI_COMMANDS = [
     ("walmart-product", ["1"]),
     ("youtube-search", ["query"]),
     ("youtube-metadata", ["dQw4w9WgXcQ"]),
-    ("youtube-transcript", ["dQw4w9WgXcQ"]),
-    ("youtube-trainability", ["dQw4w9WgXcQ"]),
     ("chatgpt", ["hi"]),
 ]
+
+# Commands that require an API key (for no-api-key test; auth, logout, docs are excluded)
+CLI_COMMANDS_REQUIRE_API_KEY = [(c, a) for c, a in CLI_COMMANDS if c not in ("auth", "logout", "docs")]
