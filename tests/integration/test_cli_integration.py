@@ -38,7 +38,7 @@ def test_root_help():
 def test_root_version():
     code, out, _ = cli_run(["--version"])
     assert code == 0
-    assert "1.0.0" in out or "scrapingbee" in out.lower()
+    assert "1.0" in out and "scrapingbee" in out.lower()
 
 
 @pytest.mark.parametrize("cmd,args", CLI_COMMANDS_REQUIRE_API_KEY)

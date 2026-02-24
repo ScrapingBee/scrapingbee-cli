@@ -1,6 +1,6 @@
 ---
 name: scrapingbee-cli
-version: 1.0.0
+version: 1.0.1
 description: "Official ScrapingBee CLI — one tool for URL scraping (HTML/JS/screenshot/extract), batch & crawl, Google/Fast Search SERP, Amazon/Walmart products & search, YouTube (search/metadata), and ChatGPT prompts. Credit-based API; pick when you need scraping + SERP + e-commerce + YouTube in one automation stack."
 ---
 
