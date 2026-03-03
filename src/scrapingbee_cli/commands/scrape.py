@@ -10,6 +10,7 @@ import click
 from click_option_group import optgroup
 
 from ..batch import (
+    _find_completed_n,
     extension_for_crawl,
     get_batch_usage,
     read_input_file,
@@ -18,8 +19,6 @@ from ..batch import (
     validate_batch_run,
     write_batch_output_to_dir,
 )
-from ..client import Client, pretty_json
-from ..config import BASE_URL, get_api_key
 from ..cli_utils import (
     CLIENT_TIMEOUT_BUFFER_SECONDS,
     DEFAULT_CLIENT_TIMEOUT_SECONDS,
@@ -28,16 +27,38 @@ from ..cli_utils import (
     _validate_json_option,
     _validate_range,
     build_scrape_kwargs,
-    write_output,
+    chunk_text,
     parse_bool,
+    write_output,
 )
+from ..client import Client, pretty_json
+from ..config import BASE_URL, get_api_key
+from ..crawl import _preferred_extension_from_scrape_params
 
-try:
-    from ..crawl import _preferred_extension_from_scrape_params
-    _crawl_available = True
-except ImportError:
-    _crawl_available = False
-    _preferred_extension_from_scrape_params = None  # type: ignore[assignment]
+
+def _apply_chunking(url: str, data: bytes, chunk_size: int, chunk_overlap: int) -> bytes:
+    """Split text/markdown content into NDJSON chunks for LLM/vector DB pipelines."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    text = data.decode("utf-8", errors="replace")
+    chunks = chunk_text(text, chunk_size, chunk_overlap)
+    total = len(chunks)
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    lines = [
+        _json.dumps(
+            {
+                "url": url,
+                "chunk_index": i,
+                "total_chunks": total,
+                "content": c,
+                "fetched_at": fetched_at,
+            },
+            ensure_ascii=False,
+        )
+        for i, c in enumerate(chunks)
+    ]
+    return ("\n".join(lines) + "\n").encode("utf-8")
 
 
 SCRAPE_PRESETS = (
@@ -148,12 +169,26 @@ SCRAPE_PRESETS = (
     default=None,
     help="Forward only custom headers, no ScrapingBee headers (true/false).",
 )
-@optgroup.group("Output", help="Response format")
+@optgroup.group("Output", help="Response format and chunking")
 @optgroup.option(
     "--json-response",
     type=str,
     default=None,
     help="Wrap response in JSON (use with --screenshot to get both HTML and image in one response)",
+)
+@optgroup.option(
+    "--chunk-size",
+    "chunk_size",
+    type=int,
+    default=0,
+    help="Split text/markdown output into chunks of N chars for LLM/vector DB pipelines (0 = disabled). Outputs NDJSON.",
+)
+@optgroup.option(
+    "--chunk-overlap",
+    "chunk_overlap",
+    type=int,
+    default=0,
+    help="Overlap chars between consecutive chunks (default 0). Only used when --chunk-size > 0.",
 )
 @optgroup.option(
     "--return-page-source",
@@ -279,6 +314,8 @@ def scrape_cmd(
     forward_headers_pure: str | None,
     headers: tuple[str, ...],
     json_response: str | None,
+    chunk_size: int,
+    chunk_overlap: int,
     screenshot: str | None,
     screenshot_selector: str | None,
     screenshot_full_page: str | None,
@@ -300,11 +337,11 @@ def scrape_cmd(
 ) -> None:
     """Scrape a web page using the HTML API.
 
-    Usage: scrapingbee scrape [URL] [OPTIONS].     Use --output-file FILE (before command) to save output. For batch,
-    use global --input-file with one URL per line (before command). Use --preset for common option sets
+    Usage: scrapingbee scrape [URL] [OPTIONS].     Use --output-file FILE (before or after command) to save output. For batch,
+    use global --input-file with one URL per line (before or after command). Use --preset for common option sets
     (e.g. screenshot-and-html, fetch, extract-links, scroll-page). Default response
     is raw HTML (or image if screenshot).
-    Use --json-response=true to wrap body, headers, and cost in JSON (required when
+    Use --json-response true to wrap body, headers, and cost in JSON (required when
     combining --screenshot with extraction). See documentation for full parameter list.
     """
     input_file = obj.get("input_file")
@@ -331,20 +368,28 @@ def scrape_cmd(
         elif preset_lower == "fetch":
             render_js = render_js or "false"
         elif preset_lower == "extract-links":
-            extract_rules = extract_rules or '{"links":{"selector":"a","type":"list","output":"@href"}}'
+            extract_rules = (
+                extract_rules or '{"links":{"selector":"a","type":"list","output":"@href"}}'
+            )
             # No json_response: API returns raw body = extracted JSON only
         elif preset_lower == "extract-emails":
-            extract_rules = extract_rules or json.dumps({
-                "emails": {"selector": 'a[href^="mailto:"]', "output": "@href", "type": "list"},
-            })
+            extract_rules = extract_rules or json.dumps(
+                {
+                    "emails": {"selector": 'a[href^="mailto:"]', "output": "@href", "type": "list"},
+                }
+            )
             # No json_response: API returns raw body = extracted JSON only
         elif preset_lower == "extract-phones":
-            extract_rules = extract_rules or json.dumps({
-                "phones": {"selector": 'a[href^="tel:"]', "output": "@href", "type": "list"},
-            })
+            extract_rules = extract_rules or json.dumps(
+                {
+                    "phones": {"selector": 'a[href^="tel:"]', "output": "@href", "type": "list"},
+                }
+            )
             # No json_response: API returns raw body = extracted JSON only
         elif preset_lower == "scroll-page":
-            js_scenario = js_scenario or '{"instructions":[{"infinite_scroll":{"max_count":0,"delay":1000}}]}'
+            js_scenario = (
+                js_scenario or '{"instructions":[{"infinite_scroll":{"max_count":0,"delay":1000}}]}'
+            )
             render_js = render_js or "true"
 
     try:
@@ -431,10 +476,22 @@ def scrape_cmd(
         if url:
             click.echo("cannot use both global --input-file and positional URL", err=True)
             raise SystemExit(1)
-        inputs = read_input_file(input_file)
+        try:
+            inputs = read_input_file(input_file)
+        except ValueError as e:
+            click.echo(str(e), err=True)
+            raise SystemExit(1)
         usage_info = get_batch_usage(None)
-        validate_batch_run(obj["concurrency"], len(inputs), usage_info)
+        try:
+            validate_batch_run(obj["concurrency"], len(inputs), usage_info)
+        except ValueError as e:
+            click.echo(str(e), err=True)
+            raise SystemExit(1)
         concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
+
+        skip_n = (
+            _find_completed_n(obj.get("output_dir") or "") if obj.get("resume") else frozenset()
+        )
 
         async def _batch() -> None:
             async with Client(
@@ -452,17 +509,28 @@ def scrape_cmd(
                                 RuntimeError(f"HTTP {status_code}"),
                                 None,
                             )
+                        if chunk_size > 0:
+                            data = _apply_chunking(u, data, chunk_size, chunk_overlap)
+                            return data, resp_headers, status_code, None, "ndjson"
                         return data, resp_headers, status_code, None, None
                     except Exception as e:
                         return b"", {}, 0, e, None
 
                 results = await run_batch_async(
-                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
+                    inputs,
+                    concurrency,
+                    do_one,
+                    from_user=obj["concurrency"] > 0,
+                    skip_n=skip_n,
+                    show_progress=obj.get("progress", True),
                 )
             out_dir = write_batch_output_to_dir(
-                results, obj.get("output_dir") or None, obj["verbose"]
+                results,
+                obj.get("output_dir") or None,
+                obj["verbose"],
+                diff_dir=obj.get("diff_dir"),
             )
-            click.echo(f"Batch complete. Output written to {out_dir}")
+            click.echo(f"Batch complete. Output written to {out_dir}", err=True)
 
         asyncio.run(_batch())
         return
@@ -481,24 +549,36 @@ def scrape_cmd(
             except Exception:
                 click.echo(data.decode("utf-8", errors="replace"), err=True)
             raise SystemExit(1)
+        if chunk_size > 0:
+            data = _apply_chunking(url, data, chunk_size, chunk_overlap)
+            # Force .ndjson extension when chunking
+            output_path = obj["output_file"]
+            if output_path and "." not in os.path.basename(output_path):
+                output_path = output_path.rstrip("/") + ".ndjson"
+            write_output(data, resp_headers, status_code, output_path, obj["verbose"])
+            return
         output_path = obj["output_file"]
         if output_path:
             if force_extension:
                 if "." not in os.path.basename(output_path):
                     output_path = output_path.rstrip("/") + "." + force_extension.lstrip(".")
             else:
-                preferred = (
-                    _preferred_extension_from_scrape_params(scrape_kwargs)
-                    if _crawl_available and _preferred_extension_from_scrape_params
-                    else None
-                )
+                preferred = _preferred_extension_from_scrape_params(scrape_kwargs)
                 ext = extension_for_crawl(url, resp_headers, data, preferred)
                 if "." not in os.path.basename(output_path):
                     output_path = output_path.rstrip("/") + "." + ext
-        write_output(data, resp_headers, status_code, output_path, obj["verbose"])
+        write_output(
+            data,
+            resp_headers,
+            status_code,
+            output_path,
+            obj["verbose"],
+            extract_field=obj.get("extract_field"),
+            fields=obj.get("fields"),
+        )
 
     asyncio.run(_single())
 
 
-def register(cli):  # noqa: ANN001
+def register(cli: click.Group) -> None:
     cli.add_command(scrape_cmd, "scrape")

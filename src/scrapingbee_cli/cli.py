@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 import click
-from click_option_group import optgroup
 
 from . import __version__
 from .commands import register_commands
@@ -35,9 +34,9 @@ def _global_options(f: Any) -> Any:
     f = click.option(
         "--input-file",
         "input_file",
-        type=click.Path(exists=True),
+        type=str,
         default=None,
-        help="Batch: one item per line (URL, query, ASIN, etc. depending on command)",
+        help="Batch: one item per line (URL, query, ASIN, etc. depending on command). Use - for stdin.",
     )(f)
     f = click.option(
         "--concurrency",
@@ -57,6 +56,53 @@ def _global_options(f: Any) -> Any:
         default=2.0,
         help="Backoff multiplier for retries (default: 2.0). Delay = backoff^attempt seconds.",
     )(f)
+    f = click.option(
+        "--resume",
+        is_flag=True,
+        default=False,
+        help=(
+            "Resume a previous batch or crawl: skip items already saved in --output-dir. "
+            "Requires --output-dir pointing to the previous run folder."
+        ),
+    )(f)
+    f = click.option(
+        "--no-progress",
+        "no_progress",
+        is_flag=True,
+        default=False,
+        help="Suppress per-item progress counter during batch runs.",
+    )(f)
+    f = click.option(
+        "--extract-field",
+        "extract_field",
+        type=str,
+        default=None,
+        help=(
+            "Extract values from JSON response using a dot path and output "
+            "one value per line (e.g. 'organic_results.url' or 'title'). "
+            "Useful for piping SERP/search results into --input-file."
+        ),
+    )(f)
+    f = click.option(
+        "--fields",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated top-level JSON keys to include in output "
+            "(e.g. 'title,price,rating'). Filters single-item responses. "
+            "Ignored when --extract-field is set."
+        ),
+    )(f)
+    f = click.option(
+        "--diff-dir",
+        "diff_dir",
+        type=click.Path(exists=True, file_okay=False),
+        default=None,
+        help=(
+            "Batch: compare with a previous run's output directory. "
+            "Files whose content is unchanged are not re-written; manifest marks them unchanged=true."
+        ),
+    )(f)
     return f
 
 
@@ -73,6 +119,11 @@ def cli(
     concurrency: int,
     retries: int,
     backoff: float,
+    resume: bool,
+    no_progress: bool,
+    extract_field: str | None,
+    fields: str | None,
+    diff_dir: str | None,
 ) -> None:
     """ScrapingBee CLI - Web scraping API client.
 
@@ -91,9 +142,119 @@ def cli(
     ctx.obj["concurrency"] = concurrency or 0
     ctx.obj["retries"] = retries if retries is not None else 3
     ctx.obj["backoff"] = backoff if backoff is not None else 2.0
+    ctx.obj["resume"] = resume
+    ctx.obj["progress"] = not no_progress
+    ctx.obj["extract_field"] = extract_field
+    ctx.obj["fields"] = fields
+    ctx.obj["diff_dir"] = diff_dir
 
 
 register_commands(cli)
+
+# ---------------------------------------------------------------------------
+# Global-option reordering: let users place global flags after the subcommand
+# ---------------------------------------------------------------------------
+
+_GLOBAL_OPTION_SPECS: dict[str, bool] = {  # name → takes_value
+    "--output-file": True,
+    "--verbose": False,
+    "--output-dir": True,
+    "--input-file": True,
+    "--concurrency": True,
+    "--retries": True,
+    "--backoff": True,
+    "--resume": False,
+    "--no-progress": False,
+    "--extract-field": True,
+    "--fields": True,
+    "--diff-dir": True,
+}
+
+_SUBCOMMAND_NAMES = frozenset(
+    {
+        "usage",
+        "auth",
+        "docs",
+        "logout",
+        "scrape",
+        "crawl",
+        "google",
+        "fast-search",
+        "amazon-product",
+        "amazon-search",
+        "walmart-search",
+        "walmart-product",
+        "youtube-search",
+        "youtube-metadata",
+        "chatgpt",
+        "export",
+        "schedule",
+    }
+)
+
+_NO_REORDER = frozenset({"schedule"})  # passes raw args to subprocess
+
+# Options that exist on both the group level *and* a specific subcommand.
+# When the subcommand matches, leave the option in place (it belongs to the subcommand).
+_SUBCOMMAND_COLLISIONS: dict[str, frozenset[str]] = {
+    "export": frozenset({"--diff-dir"}),
+}
+
+
+def _reorder_global_options(argv: list[str]) -> list[str]:
+    """Move global options that appear after the subcommand to before it.
+
+    This lets users write ``scrapingbee google --verbose "query"`` instead of
+    requiring ``scrapingbee --verbose google "query"``.
+    """
+    if not argv:
+        return argv
+
+    # Phase 1 — find the subcommand index, skipping global options + their values
+    sub_idx: int | None = None
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok in _GLOBAL_OPTION_SPECS:
+            i += 1  # skip the option itself
+            if _GLOBAL_OPTION_SPECS[tok]:  # takes a value — skip the value too
+                i += 1
+            continue
+        if tok in _SUBCOMMAND_NAMES:
+            sub_idx = i
+            break
+        # Not a global option and not a subcommand (e.g. --help, --version)
+        break
+    # end while
+
+    if sub_idx is None:
+        return argv  # no subcommand found (--help, --version, etc.)
+
+    subcmd = argv[sub_idx]
+    if subcmd in _NO_REORDER:
+        return argv  # schedule passes raw args to subprocess
+
+    collisions = _SUBCOMMAND_COLLISIONS.get(subcmd, frozenset())
+
+    # Phase 2 — scan args after the subcommand, move global options to before it
+    before = list(argv[:sub_idx])
+    after_cmd: list[str] = []
+    moved: list[str] = []
+
+    j = sub_idx + 1
+    while j < len(argv):
+        tok = argv[j]
+        if tok in _GLOBAL_OPTION_SPECS and tok not in collisions:
+            moved.append(tok)
+            j += 1
+            if _GLOBAL_OPTION_SPECS[tok] and j < len(argv):
+                moved.append(argv[j])
+                j += 1
+        else:
+            after_cmd.append(tok)
+            j += 1
+
+    return before + moved + [subcmd] + after_cmd
 
 
 def _reject_equals_syntax() -> None:
@@ -114,6 +275,7 @@ def main() -> None:
     """Entry point for scrapingbee console script."""
     import sys
 
+    sys.argv[1:] = _reorder_global_options(sys.argv[1:])
     _reject_equals_syntax()
     try:
         cli.main(standalone_mode=False)

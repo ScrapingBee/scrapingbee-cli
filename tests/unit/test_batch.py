@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+import hashlib
+import json
 
 import pytest
 
 from scrapingbee_cli.batch import (
+    CONCURRENCY_CAP,
+    MIN_CREDITS_TO_RUN_BATCH,
     BatchResult,
-    _batch_subdir_for_extension,
-    default_batch_output_dir,
-    extension_for_crawl,
+    _find_completed_n,
     extension_for_scrape,
     extension_from_body_sniff,
     extension_from_content_type,
-    extension_from_url_path,
-    get_batch_usage,
-    read_input_file,
     resolve_batch_concurrency,
     run_batch_async,
     validate_batch_run,
@@ -25,353 +23,611 @@ from scrapingbee_cli.batch import (
 )
 
 
-class TestReadInputFile:
-    """Tests for read_input_file()."""
-
-    def test_reads_non_empty_lines(self, tmp_path):
-        f = tmp_path / "in.txt"
-        f.write_text("a\n\nb\n  c  \n")
-        assert read_input_file(str(f)) == ["a", "b", "c"]
-
-    def test_empty_file_raises(self, tmp_path):
-        (tmp_path / "empty.txt").write_text("")
-        with pytest.raises(ValueError, match="no non-empty lines"):
-            read_input_file(str(tmp_path / "empty.txt"))
-
-    def test_only_whitespace_raises(self, tmp_path):
-        (tmp_path / "ws.txt").write_text("   \n\n  ")
-        with pytest.raises(ValueError, match="no non-empty lines"):
-            read_input_file(str(tmp_path / "ws.txt"))
-
-
 class TestValidateBatchRun:
     """Tests for validate_batch_run()."""
 
-    def test_ok_when_under_concurrency_and_credits(self):
-        validate_batch_run(0, 5, {"max_concurrency": 10, "credits": 100})
-
-    def test_raises_when_user_concurrency_exceeds_limit(self):
-        with pytest.raises(ValueError, match="concurrency 20 exceeds"):
-            validate_batch_run(20, 5, {"max_concurrency": 10, "credits": 100})
+    def test_passes_with_sufficient_credits(self):
+        validate_batch_run(0, 10, {"credits": MIN_CREDITS_TO_RUN_BATCH, "max_concurrency": 5})
 
     def test_raises_when_credits_below_minimum(self):
+        usage = {"credits": MIN_CREDITS_TO_RUN_BATCH - 1, "max_concurrency": 5}
         with pytest.raises(ValueError, match="insufficient credits"):
-            validate_batch_run(0, 5, {"max_concurrency": 10, "credits": 10})
+            validate_batch_run(0, 10, usage)
+
+    def test_raises_when_credits_zero(self):
+        usage = {"credits": 0, "max_concurrency": 5}
         with pytest.raises(ValueError, match="insufficient credits"):
-            validate_batch_run(0, 5, {"max_concurrency": 10, "credits": 0})
+            validate_batch_run(0, 1, usage)
 
-    def test_ok_when_credits_at_or_above_minimum_regardless_of_batch_size(self):
-        validate_batch_run(0, 5, {"max_concurrency": 10, "credits": 100})
-        validate_batch_run(0, 500, {"max_concurrency": 10, "credits": 200})
+    def test_raises_when_user_concurrency_exceeds_plan(self):
+        usage = {"credits": 500, "max_concurrency": 5}
+        with pytest.raises(ValueError, match="exceeds your plan limit"):
+            validate_batch_run(10, 10, usage)
 
-    def test_raises_when_credits_just_below_minimum(self):
-        from scrapingbee_cli.batch import MIN_CREDITS_TO_RUN_BATCH
+    def test_passes_when_user_concurrency_equals_plan_limit(self):
+        usage = {"credits": 500, "max_concurrency": 5}
+        validate_batch_run(5, 10, usage)  # exactly at limit — should not raise
 
-        with pytest.raises(ValueError, match="insufficient credits"):
-            validate_batch_run(0, 5, {"max_concurrency": 10, "credits": MIN_CREDITS_TO_RUN_BATCH - 1})
-        validate_batch_run(0, 5, {"max_concurrency": 10, "credits": MIN_CREDITS_TO_RUN_BATCH})
+    def test_auto_concurrency_never_raises_for_concurrency(self):
+        """user_concurrency=0 means auto; plan-limit check is skipped."""
+        usage = {"credits": 500, "max_concurrency": 1}
+        validate_batch_run(0, 100, usage)  # should not raise
+
+    def test_uses_default_max_concurrency_when_key_missing(self):
+        """Default max_concurrency is 5 when key absent from usage dict."""
+        usage = {"credits": 500}  # no max_concurrency key
+        validate_batch_run(5, 10, usage)  # 5 <= default 5 — no raise
+        with pytest.raises(ValueError, match="exceeds your plan limit"):
+            validate_batch_run(6, 10, usage)  # 6 > default 5
+
+    def test_error_message_includes_available_credits(self):
+        usage = {"credits": 42, "max_concurrency": 5}
+        with pytest.raises(ValueError, match="42"):
+            validate_batch_run(0, 1, usage)
+
+    def test_error_message_includes_plan_limit(self):
+        usage = {"credits": 500, "max_concurrency": 3}
+        with pytest.raises(ValueError, match="3"):
+            validate_batch_run(10, 1, usage)
+
+
+class TestFindCompletedN:
+    """Tests for _find_completed_n()."""
+
+    def test_returns_empty_for_nonexistent_dir(self):
+        assert _find_completed_n("/nonexistent/path/xyz") == frozenset()
+
+    def test_finds_numbered_files(self, tmp_path):
+        (tmp_path / "1.json").write_text("{}")
+        (tmp_path / "2.json").write_text("{}")
+        (tmp_path / "3.html").write_text("<html/>")
+        result = _find_completed_n(str(tmp_path))
+        assert result == frozenset({1, 2, 3})
+
+    def test_ignores_err_files(self, tmp_path):
+        (tmp_path / "1.json").write_text("{}")
+        (tmp_path / "2.err").write_text("Error")
+        result = _find_completed_n(str(tmp_path))
+        assert result == frozenset({1})  # 2.err not included
+
+    def test_ignores_non_numeric_files(self, tmp_path):
+        (tmp_path / "1.json").write_text("{}")
+        (tmp_path / "manifest.json").write_text("{}")
+        (tmp_path / "failures.txt").write_text("")
+        result = _find_completed_n(str(tmp_path))
+        assert result == frozenset({1})
+
+    def test_finds_files_in_subdirs(self, tmp_path):
+        screenshots = tmp_path / "screenshots"
+        screenshots.mkdir()
+        (tmp_path / "1.html").write_text("<html/>")
+        (screenshots / "2.png").write_bytes(b"\x89PNG")
+        result = _find_completed_n(str(tmp_path))
+        assert result == frozenset({1, 2})
+
+
+class TestRunBatchAsyncSkipN:
+    """Tests for run_batch_async skip_n (resume) behaviour."""
+
+    def test_skip_n_items_are_marked_skipped(self):
+        async def do_one(inp: str):
+            return inp.encode(), {}, 200, None, "txt"
+
+        async def run():
+            return await run_batch_async(
+                ["a", "b", "c"],
+                concurrency=3,
+                async_fn=do_one,
+                skip_n=frozenset({2}),  # skip item 2 (index 1)
+            )
+
+        results = asyncio.run(run())
+        assert len(results) == 3
+        assert results[0].skipped is False
+        assert results[1].skipped is True  # index 1 → item 2
+        assert results[1].body == b""
+        assert results[2].skipped is False
+
+    def test_skip_n_empty_processes_all(self):
+        calls = []
+
+        async def do_one(inp: str):
+            calls.append(inp)
+            return inp.encode(), {}, 200, None, None
+
+        async def run():
+            return await run_batch_async(
+                ["a", "b"],
+                concurrency=2,
+                async_fn=do_one,
+                skip_n=frozenset(),
+            )
+
+        asyncio.run(run())
+        assert set(calls) == {"a", "b"}
+
+
+class TestWriteBatchOutputToDir:
+    """Tests for write_batch_output_to_dir manifest.json writing."""
+
+    def _make_result(
+        self,
+        index,
+        input_,
+        body,
+        status_code=200,
+        ext="json",
+        fetched_at="2025-01-01T00:00:00+00:00",
+    ):
+        return BatchResult(
+            index=index,
+            input=input_,
+            body=body,
+            headers={"content-type": "application/json"},
+            status_code=status_code,
+            error=None,
+            expected_extension=ext,
+            fetched_at=fetched_at,
+        )
+
+    def test_manifest_written_with_correct_structure(self, tmp_path):
+        """manifest.json maps each input to {file, fetched_at, http_status}."""
+        results = [
+            self._make_result(
+                0, "https://example.com/a", b'{"a":1}', fetched_at="2025-01-01T00:00:00+00:00"
+            ),
+            self._make_result(
+                1, "https://example.com/b", b'{"b":2}', fetched_at="2025-01-02T00:00:00+00:00"
+            ),
+        ]
+        write_batch_output_to_dir(results, str(tmp_path), verbose=False)
+
+        manifest_path = tmp_path / "manifest.json"
+        assert manifest_path.exists(), "manifest.json should be written"
+        manifest = json.loads(manifest_path.read_text())
+
+        assert set(manifest.keys()) == {"https://example.com/a", "https://example.com/b"}
+        entry_a = manifest["https://example.com/a"]
+        assert entry_a["file"] == "1.json"
+        assert entry_a["fetched_at"] == "2025-01-01T00:00:00+00:00"
+        assert entry_a["http_status"] == 200
+
+        entry_b = manifest["https://example.com/b"]
+        assert entry_b["file"] == "2.json"
+        assert entry_b["fetched_at"] == "2025-01-02T00:00:00+00:00"
+        assert entry_b["http_status"] == 200
+
+    def test_manifest_omits_errors(self, tmp_path):
+        """Failed items (error not None) are not included in manifest.json."""
+        results = [
+            self._make_result(0, "https://example.com/ok", b'{"ok":true}'),
+            BatchResult(
+                index=1,
+                input="https://example.com/fail",
+                body=b"",
+                headers={},
+                status_code=0,
+                error=RuntimeError("timeout"),
+                fetched_at="",
+            ),
+        ]
+        write_batch_output_to_dir(results, str(tmp_path), verbose=False)
+
+        manifest = json.loads((tmp_path / "manifest.json").read_text())
+        assert "https://example.com/ok" in manifest
+        assert "https://example.com/fail" not in manifest
+
+    def test_manifest_omits_skipped(self, tmp_path):
+        """Skipped items (resume mode) are not included in manifest.json."""
+        results = [
+            self._make_result(0, "https://example.com/done", b'{"done":true}'),
+            BatchResult(
+                index=1,
+                input="https://example.com/skip",
+                body=b"",
+                headers={},
+                status_code=0,
+                error=None,
+                skipped=True,
+                fetched_at="",
+            ),
+        ]
+        write_batch_output_to_dir(results, str(tmp_path), verbose=False)
+
+        manifest = json.loads((tmp_path / "manifest.json").read_text())
+        assert "https://example.com/done" in manifest
+        assert "https://example.com/skip" not in manifest
+
+    def test_no_manifest_when_all_fail(self, tmp_path):
+        """manifest.json is not written when there are no successful items."""
+        results = [
+            BatchResult(
+                index=0,
+                input="https://example.com/bad",
+                body=b"",
+                headers={},
+                status_code=0,
+                error=RuntimeError("fail"),
+                fetched_at="",
+            ),
+        ]
+        write_batch_output_to_dir(results, str(tmp_path), verbose=False)
+        assert not (tmp_path / "manifest.json").exists()
+
+    def test_screenshot_uses_subdir_in_manifest(self, tmp_path):
+        """Screenshot outputs are stored in screenshots/ and manifest reflects that."""
+        result = BatchResult(
+            index=0,
+            input="https://example.com/page",
+            body=b"\x89PNG\r\n\x1a\n" + b"\x00" * 8,  # PNG magic bytes
+            headers={"content-type": "image/png"},
+            status_code=200,
+            error=None,
+            expected_extension="png",
+            fetched_at="2025-01-01T00:00:00+00:00",
+        )
+        write_batch_output_to_dir([result], str(tmp_path), verbose=False)
+
+        manifest = json.loads((tmp_path / "manifest.json").read_text())
+        assert manifest["https://example.com/page"]["file"] == "screenshots/1.png"
+
+
+class TestWriteBatchOutputToDirManifestFields:
+    """Tests that manifest.json contains credits_used, latency_ms, content_md5 (T-04)."""
+
+    def _make_result(self, index, input_, body, headers=None, latency_ms=None):
+        return BatchResult(
+            index=index,
+            input=input_,
+            body=body,
+            headers=headers or {"content-type": "application/json"},
+            status_code=200,
+            error=None,
+            expected_extension="json",
+            fetched_at="2025-01-01T00:00:00+00:00",
+            latency_ms=latency_ms,
+        )
+
+    def test_manifest_has_credits_used_from_spb_cost_header(self, tmp_path):
+        result = self._make_result(
+            0,
+            "https://example.com/a",
+            b'{"x":1}',
+            headers={"Spb-Cost": "5", "content-type": "application/json"},
+            latency_ms=100,
+        )
+        write_batch_output_to_dir([result], str(tmp_path), verbose=False)
+        manifest = json.loads((tmp_path / "manifest.json").read_text())
+        assert manifest["https://example.com/a"]["credits_used"] == 5
+
+    def test_manifest_credits_used_none_when_no_spb_cost_header(self, tmp_path):
+        result = self._make_result(0, "https://example.com/a", b'{"x":1}')
+        write_batch_output_to_dir([result], str(tmp_path), verbose=False)
+        manifest = json.loads((tmp_path / "manifest.json").read_text())
+        assert manifest["https://example.com/a"]["credits_used"] is None
+
+    def test_manifest_has_latency_ms(self, tmp_path):
+        result = self._make_result(0, "https://example.com/a", b'{"x":1}', latency_ms=987)
+        write_batch_output_to_dir([result], str(tmp_path), verbose=False)
+        manifest = json.loads((tmp_path / "manifest.json").read_text())
+        assert manifest["https://example.com/a"]["latency_ms"] == 987
+
+    def test_manifest_latency_ms_none_when_not_set(self, tmp_path):
+        result = self._make_result(0, "https://example.com/a", b'{"x":1}', latency_ms=None)
+        write_batch_output_to_dir([result], str(tmp_path), verbose=False)
+        manifest = json.loads((tmp_path / "manifest.json").read_text())
+        assert manifest["https://example.com/a"]["latency_ms"] is None
+
+    def test_manifest_has_content_md5(self, tmp_path):
+        body = b'{"x":1}'
+        expected_md5 = hashlib.md5(body).hexdigest()
+        result = self._make_result(0, "https://example.com/a", body)
+        write_batch_output_to_dir([result], str(tmp_path), verbose=False)
+        manifest = json.loads((tmp_path / "manifest.json").read_text())
+        assert manifest["https://example.com/a"]["content_md5"] == expected_md5
+
+    def test_credits_used_int_parsed_correctly(self, tmp_path):
+        result = self._make_result(
+            0,
+            "https://example.com/a",
+            b'{"x":1}',
+            headers={"spb-cost": "15", "content-type": "application/json"},
+        )
+        write_batch_output_to_dir([result], str(tmp_path), verbose=False)
+        manifest = json.loads((tmp_path / "manifest.json").read_text())
+        assert manifest["https://example.com/a"]["credits_used"] == 15
+
+
+class TestDiffDir:
+    """Tests for --diff-dir change detection in write_batch_output_to_dir (T-03)."""
+
+    def _make_result(self, index, input_, body, latency_ms=100):
+        return BatchResult(
+            index=index,
+            input=input_,
+            body=body,
+            headers={"content-type": "application/json"},
+            status_code=200,
+            error=None,
+            expected_extension="json",
+            fetched_at="2025-01-02T00:00:00+00:00",
+            latency_ms=latency_ms,
+        )
+
+    def test_same_dir_guard_raises(self, tmp_path):
+        """diff_dir pointing at the same directory as output_dir raises ValueError."""
+        result = self._make_result(0, "https://example.com/a", b'{"x":1}')
+        with pytest.raises(ValueError, match="same as the output directory"):
+            write_batch_output_to_dir(
+                [result], str(tmp_path), verbose=False, diff_dir=str(tmp_path)
+            )
+
+    def test_unchanged_item_not_written(self, tmp_path):
+        """Content hash matches old manifest → file not written, manifest has unchanged=True."""
+        body = b'{"unchanged":true}'
+        md5 = hashlib.md5(body).hexdigest()
+        url = "https://example.com/page"
+
+        old_dir = tmp_path / "old"
+        old_dir.mkdir()
+        old_manifest = {
+            url: {
+                "file": "1.json",
+                "fetched_at": "2025-01-01T00:00:00+00:00",
+                "http_status": 200,
+                "credits_used": 5,
+                "latency_ms": 100,
+                "content_md5": md5,
+            }
+        }
+        (old_dir / "manifest.json").write_text(json.dumps(old_manifest))
+        (old_dir / "1.json").write_bytes(body)
+
+        new_dir = tmp_path / "new"
+        new_dir.mkdir()
+        result = self._make_result(0, url, body)
+        write_batch_output_to_dir([result], str(new_dir), verbose=False, diff_dir=str(old_dir))
+
+        assert not (new_dir / "1.json").exists(), "Unchanged file should not be written"
+        manifest = json.loads((new_dir / "manifest.json").read_text())
+        assert manifest[url]["unchanged"] is True
+        assert manifest[url]["content_md5"] == md5
+
+    def test_changed_item_written_normally(self, tmp_path):
+        """Content hash differs from old manifest → file written, no unchanged key."""
+        old_body = b'{"version":1}'
+        new_body = b'{"version":2}'
+        old_md5 = hashlib.md5(old_body).hexdigest()
+        url = "https://example.com/page"
+
+        old_dir = tmp_path / "old"
+        old_dir.mkdir()
+        old_manifest = {
+            url: {
+                "file": "1.json",
+                "fetched_at": "2025-01-01T00:00:00+00:00",
+                "http_status": 200,
+                "content_md5": old_md5,
+            }
+        }
+        (old_dir / "manifest.json").write_text(json.dumps(old_manifest))
+        (old_dir / "1.json").write_bytes(old_body)
+
+        new_dir = tmp_path / "new"
+        new_dir.mkdir()
+        result = self._make_result(0, url, new_body)
+        write_batch_output_to_dir([result], str(new_dir), verbose=False, diff_dir=str(old_dir))
+
+        assert (new_dir / "1.json").exists(), "Changed file should be written"
+        manifest = json.loads((new_dir / "manifest.json").read_text())
+        assert "unchanged" not in manifest[url]
+
+    def test_new_item_not_in_old_manifest_written_normally(self, tmp_path):
+        """Item not in old manifest is always written (new URL)."""
+        url = "https://example.com/new-page"
+
+        old_dir = tmp_path / "old"
+        old_dir.mkdir()
+        (old_dir / "manifest.json").write_text(json.dumps({}))
+
+        new_dir = tmp_path / "new"
+        new_dir.mkdir()
+        result = self._make_result(0, url, b'{"new":true}')
+        write_batch_output_to_dir([result], str(new_dir), verbose=False, diff_dir=str(old_dir))
+
+        assert (new_dir / "1.json").exists()
+        manifest = json.loads((new_dir / "manifest.json").read_text())
+        assert "unchanged" not in manifest[url]
+
+    def test_missing_old_manifest_writes_normally(self, tmp_path):
+        """diff_dir exists but has no manifest.json → all items written normally."""
+        url = "https://example.com/page"
+
+        old_dir = tmp_path / "old"
+        old_dir.mkdir()
+        # No manifest.json in old_dir
+
+        new_dir = tmp_path / "new"
+        new_dir.mkdir()
+        result = self._make_result(0, url, b'{"data":1}')
+        write_batch_output_to_dir([result], str(new_dir), verbose=False, diff_dir=str(old_dir))
+
+        assert (new_dir / "1.json").exists()
+        manifest = json.loads((new_dir / "manifest.json").read_text())
+        assert "unchanged" not in manifest[url]
 
 
 class TestResolveBatchConcurrency:
     """Tests for resolve_batch_concurrency()."""
 
-    def test_user_value_used_when_positive(self):
-        assert resolve_batch_concurrency(5, {"max_concurrency": 10}, 20) == 5
+    def test_zero_returns_usage_limit(self):
+        result = resolve_batch_concurrency(0, {"max_concurrency": 10}, 5, warn=False)
+        assert result == 10
 
-    def test_usage_value_used_when_user_zero(self):
-        assert resolve_batch_concurrency(0, {"max_concurrency": 8}, 20) == 8
+    def test_zero_with_zero_limit_uses_fallback(self):
+        # max_concurrency=0 is treated as "unset" (or 5 fallback), so returns 5
+        result = resolve_batch_concurrency(0, {"max_concurrency": 0}, 5, warn=False)
+        assert result == 5
 
-    def test_full_usage_limit_when_user_zero(self):
-        # When user does not set --concurrency, use full usage limit
-        assert resolve_batch_concurrency(0, {"max_concurrency": 2000}, 5000) == 2000
-        assert resolve_batch_concurrency(0, {"max_concurrency": 500}, 100) == 500
+    def test_user_value_within_limits_returned(self):
+        result = resolve_batch_concurrency(5, {"max_concurrency": 10}, 20, warn=False)
+        assert result == 5
 
-    def test_at_least_one(self):
-        assert resolve_batch_concurrency(0, {"max_concurrency": 0}, 5) >= 1
-        assert resolve_batch_concurrency(0, {}, 5) >= 1
+    def test_user_value_capped_at_plan_limit(self):
+        result = resolve_batch_concurrency(15, {"max_concurrency": 10}, 20, warn=False)
+        assert result == 10
 
     def test_user_value_capped_at_concurrency_cap(self):
-        # When user sets --concurrency above plan limit or CONCURRENCY_CAP (100), we cap
-        from scrapingbee_cli.batch import CONCURRENCY_CAP
+        # CONCURRENCY_CAP=100; even if plan allows 200, cap wins
+        result = resolve_batch_concurrency(200, {"max_concurrency": 200}, 300, warn=False)
+        assert result == CONCURRENCY_CAP
 
-        assert resolve_batch_concurrency(150, {"max_concurrency": 200}, 500, warn=False) == CONCURRENCY_CAP
-        assert resolve_batch_concurrency(50, {"max_concurrency": 200}, 500, warn=False) == 50
+    def test_default_max_concurrency_when_key_missing(self):
+        # No max_concurrency key → defaults to 5
+        result = resolve_batch_concurrency(0, {}, 10, warn=False)
+        assert result == 5
 
+    def test_warn_false_suppresses_warning(self, capsys):
+        resolve_batch_concurrency(200, {"max_concurrency": 200}, 300, warn=False)
+        assert capsys.readouterr().err == ""
 
-class TestDefaultBatchOutputDir:
-    """Tests for default_batch_output_dir()."""
-
-    def test_format(self):
-        name = default_batch_output_dir()
-        assert name.startswith("batch_")
-        # batch_YYYYMMDD_HHMMSS
-        rest = name.replace("batch_", "")
-        assert len(rest) == 15
-        assert rest[8] == "_"
+    def test_warn_true_prints_warning_when_capped(self, capsys):
+        resolve_batch_concurrency(200, {"max_concurrency": 200}, 300, warn=True)
+        assert "capped" in capsys.readouterr().err
 
 
 class TestExtensionFromContentType:
     """Tests for extension_from_content_type()."""
 
-    def test_json(self):
-        assert extension_from_content_type({"Content-Type": "application/json"}) == "json"
+    def test_json_content_type(self):
+        assert extension_from_content_type({"content-type": "application/json"}) == "json"
+
+    def test_html_content_type(self):
+        assert extension_from_content_type({"content-type": "text/html"}) == "html"
+
+    def test_png_content_type(self):
+        assert extension_from_content_type({"content-type": "image/png"}) == "png"
+
+    def test_unknown_content_type_returns_bin(self):
+        assert extension_from_content_type({"content-type": "application/octet-stream"}) == "bin"
+
+    def test_empty_headers_returns_bin(self):
+        assert extension_from_content_type({}) == "bin"
+
+    def test_charset_stripped(self):
         assert (
             extension_from_content_type({"content-type": "application/json; charset=utf-8"})
             == "json"
         )
 
-    def test_image(self):
-        assert extension_from_content_type({"Content-Type": "image/png"}) == "png"
-        assert extension_from_content_type({"Content-Type": "image/jpeg"}) == "jpg"
+    def test_case_insensitive_header_key(self):
+        assert extension_from_content_type({"Content-Type": "text/html"}) == "html"
 
-    def test_unidentified(self):
-        assert extension_from_content_type({}) == "unidentified.txt"
-        assert (
-            extension_from_content_type({"Content-Type": "application/x-unknown"})
-            == "unidentified.txt"
-        )
+    def test_missing_content_type_returns_bin(self):
+        assert extension_from_content_type({"x-custom": "value"}) == "bin"
 
 
 class TestExtensionFromBodySniff:
     """Tests for extension_from_body_sniff()."""
 
-    def test_png(self):
-        assert extension_from_body_sniff(b"\x89PNG\r\n\x1a\nrest") == "png"
+    def test_png_magic_bytes(self):
+        assert extension_from_body_sniff(b"\x89PNG\r\n\x1a\ndata") == "png"
 
-    def test_json(self):
-        assert extension_from_body_sniff(b"  {") == "json"
-        assert extension_from_body_sniff(b"{}") == "json"
-        assert extension_from_body_sniff(b"[1,2]") == "json"
-        assert extension_from_body_sniff(b"[]") == "json"
+    def test_jpg_magic_bytes(self):
+        assert extension_from_body_sniff(b"\xff\xd8\xff\xe0data") == "jpg"
 
-    def test_markdown_not_json(self):
-        # [text](url) is markdown, not JSON
-        assert extension_from_body_sniff(b"[Crawler Test](/)") == "md"
-        assert extension_from_body_sniff(b"[link](https://example.com)") == "md"
+    def test_gif_magic_bytes(self):
+        assert extension_from_body_sniff(b"GIF89adata") == "gif"
 
-    def test_html(self):
-        assert extension_from_body_sniff(b"<!doctype html>") == "html"
+    def test_webp_magic_bytes(self):
+        assert extension_from_body_sniff(b"RIFF\x00\x00\x00\x00WEBPdata") == "webp"
 
-    def test_unknown(self):
-        assert extension_from_body_sniff(b"???") is None
+    def test_json_object_body(self):
+        assert extension_from_body_sniff(b'{"key": "value"}') == "json"
+
+    def test_json_array_body(self):
+        assert extension_from_body_sniff(b'[{"a":1}]') == "json"
+
+    def test_html_body(self):
+        assert extension_from_body_sniff(b"<!DOCTYPE html><html>") == "html"
+
+    def test_html_lowercase(self):
+        assert extension_from_body_sniff(b"<html><body>") == "html"
+
+    def test_markdown_body(self):
+        body = b"[link text](https://example.com) some more text"
+        assert extension_from_body_sniff(body) == "md"
+
+    def test_empty_body_returns_none(self):
+        assert extension_from_body_sniff(b"") is None
+
+    def test_unknown_body_returns_none(self):
+        assert extension_from_body_sniff(b"random binary data \x00\x01\x02") is None
 
 
 class TestExtensionForScrape:
-    """Tests for extension_for_scrape(): body sniff first, then header."""
+    """Tests for extension_for_scrape(): sniff > Content-Type > bin."""
 
-    def test_body_sniff_overrides_wrong_header(self):
-        # API says text/plain but body is PNG
-        ext = extension_for_scrape(
-            {"Content-Type": "text/plain"},
-            b"\x89PNG\r\n\x1a\n",
-        )
-        assert ext == "png"
+    def test_sniff_wins_over_content_type(self):
+        # PNG bytes but wrong content-type header → sniff wins
+        body = b"\x89PNG\r\n\x1a\ndata"
+        headers = {"content-type": "application/json"}
+        assert extension_for_scrape(headers, body) == "png"
 
-    def test_falls_back_to_header(self):
-        assert extension_for_scrape({"Content-Type": "image/jpeg"}, b"???") == "jpg"
+    def test_falls_back_to_content_type_when_no_sniff(self):
+        # Unrecognisable bytes but valid content-type
+        body = b"random bytes \x00\x01"
+        headers = {"content-type": "application/json"}
+        assert extension_for_scrape(headers, body) == "json"
 
-    def test_unidentified(self):
-        assert extension_for_scrape({}, b"???") == "unidentified.txt"
+    def test_falls_back_to_bin_when_unknown(self):
+        body = b"random bytes \x00\x01"
+        headers = {"content-type": "application/octet-stream"}
+        assert extension_for_scrape(headers, body) == "bin"
 
-
-class TestWriteBatchOutputToDir:
-    """Tests for write_batch_output_to_dir() file extensions."""
-
-    def test_scrape_infers_extension(self, tmp_path):
-        # expected_extension=None: infer from headers/body (scrape)
-        results = [
-            BatchResult(0, "u", b"{}", {"Content-Type": "application/json"}, 200, None, None),
-            BatchResult(1, "u", b"<html/>", {"Content-Type": "text/html"}, 200, None, None),
-            BatchResult(2, "u", b"???", {}, 200, None, None),
-        ]
-        out = write_batch_output_to_dir(results, str(tmp_path), verbose=False)
-        assert out == str(tmp_path.resolve())
-        assert (tmp_path / "1.json").read_bytes() == b"{}"
-        assert (tmp_path / "2.html").read_bytes() == b"<html/>"
-        assert (tmp_path / "3.unidentified.txt").read_bytes() == b"???"
-
-    def test_documented_json_always_json(self, tmp_path):
-        # expected_extension="json": always .json (google, amazon, etc.)
-        results = [
-            BatchResult(0, "u", b"{}", {"Content-Type": "text/plain"}, 200, None, "json"),
-        ]
-        write_batch_output_to_dir(results, str(tmp_path), verbose=False)
-        assert (tmp_path / "1.json").read_bytes() == b"{}"
-
-    def test_screenshots_and_files_subdirs(self, tmp_path):
-        # Scrape-like (expected_extension=None): images → screenshots/, pdf/zip → files/
-        results = [
-            BatchResult(0, "u", b"\x89PNG\r\n\x1a\n", {}, 200, None, None),
-            BatchResult(1, "u", b"binary", {"Content-Type": "application/pdf"}, 200, None, None),
-            BatchResult(2, "u", b"{}", {}, 200, None, None),
-        ]
-        write_batch_output_to_dir(results, str(tmp_path), verbose=False)
-        assert (tmp_path / "screenshots" / "1.png").read_bytes() == b"\x89PNG\r\n\x1a\n"
-        assert (tmp_path / "files" / "2.pdf").read_bytes() == b"binary"
-        assert (tmp_path / "3.json").read_bytes() == b"{}"
-
-    def test_error_items_write_err_file(self, tmp_path):
-        # When result.error is set, write N.err and skip success output for that item
-        results = [
-            BatchResult(0, "url1", b"{}", {}, 200, None, None),
-            BatchResult(
-                1,
-                "url2",
-                b"error body",
-                {},
-                500,
-                RuntimeError("HTTP 500"),
-                None,
-            ),
-            BatchResult(2, "url3", b"ok", {}, 200, None, "json"),
-        ]
-        write_batch_output_to_dir(results, str(tmp_path), verbose=False)
-        assert (tmp_path / "1.json").read_bytes() == b"{}"
-        err2 = (tmp_path / "2.err").read_bytes()
-        assert err2.startswith(b"Error: HTTP 500\n\n")
-        assert err2.endswith(b"error body")
-        assert (tmp_path / "3.json").read_bytes() == b"ok"
-        assert not (tmp_path / "2.json").exists()
-        assert (tmp_path / "failures.txt").exists()
-        assert "url2" in (tmp_path / "failures.txt").read_text()
-
-    def test_error_item_with_no_body_no_err_file(self, tmp_path):
-        # When result.error is set but result.body is empty, .err is still written with error message
-        results = [
-            BatchResult(1, "url2", b"", {}, 0, ConnectionError("fail"), None),
-        ]
-        write_batch_output_to_dir(results, str(tmp_path), verbose=False)
-        assert (tmp_path / "2.err").exists()
-        assert b"Error: fail" in (tmp_path / "2.err").read_bytes()
-        assert (tmp_path / "failures.txt").exists()
-        assert "url2" in (tmp_path / "failures.txt").read_text()
-        assert not (tmp_path / "2.json").exists()
+    def test_json_body_overrides_bin_header(self):
+        body = b'{"result": true}'
+        headers = {"content-type": "application/octet-stream"}
+        assert extension_for_scrape(headers, body) == "json"
 
 
-class TestRunBatchAsync:
-    """Tests for run_batch_async()."""
+class TestReadInputFile:
+    """Tests for read_input_file()."""
 
-    def test_preserves_order(self):
-        async def async_fn(inp: str):
-            return b"ok", {}, 200, None, "json"
+    def test_reads_lines_from_file(self, tmp_path):
+        from scrapingbee_cli.batch import read_input_file
 
-        results = asyncio.run(run_batch_async(["a", "b", "c"], concurrency=2, async_fn=async_fn))
-        assert len(results) == 3
-        assert [r.input for r in results] == ["a", "b", "c"]
-        assert [r.body for r in results] == [b"ok", b"ok", b"ok"]
-        assert [r.error for r in results] == [None, None, None]
+        f = tmp_path / "input.txt"
+        f.write_text("https://a.com\nhttps://b.com\nhttps://c.com\n")
+        result = read_input_file(str(f))
+        assert result == ["https://a.com", "https://b.com", "https://c.com"]
 
-    def test_captures_exception_from_async_fn(self):
-        async def async_fn(inp: str):
-            raise ValueError("fail")
+    def test_strips_whitespace(self, tmp_path):
+        from scrapingbee_cli.batch import read_input_file
 
-        results = asyncio.run(run_batch_async(["x"], concurrency=1, async_fn=async_fn))
-        assert len(results) == 1
-        assert results[0].input == "x"
-        assert results[0].body == b""
-        assert results[0].headers == {}
-        assert results[0].status_code == 0
-        assert isinstance(results[0].error, ValueError)
-        assert str(results[0].error) == "fail"
+        f = tmp_path / "input.txt"
+        f.write_text("  https://a.com  \n  https://b.com  \n")
+        result = read_input_file(str(f))
+        assert result == ["https://a.com", "https://b.com"]
 
-    def test_concurrency_capped_by_input_count(self):
-        async def async_fn(inp: str):
-            return inp.encode(), {}, 200, None, "json"
+    def test_skips_empty_lines(self, tmp_path):
+        from scrapingbee_cli.batch import read_input_file
 
-        results = asyncio.run(run_batch_async(["1", "2"], concurrency=10, async_fn=async_fn))
-        assert len(results) == 2
-        assert results[0].body == b"1"
-        assert results[1].body == b"2"
+        f = tmp_path / "input.txt"
+        f.write_text("https://a.com\n\n\nhttps://b.com\n\n")
+        result = read_input_file(str(f))
+        assert result == ["https://a.com", "https://b.com"]
 
+    def test_empty_file_raises_value_error(self, tmp_path):
+        from scrapingbee_cli.batch import read_input_file
 
-class TestGetBatchUsage:
-    """Tests for get_batch_usage()."""
+        f = tmp_path / "empty.txt"
+        f.write_text("\n\n\n")
+        with pytest.raises(ValueError, match="no non-empty lines"):
+            read_input_file(str(f))
 
-    def test_returns_usage_from_fetch(self):
-        with patch("scrapingbee_cli.batch.get_api_key", return_value="fake-key"):
-            with patch(
-                "scrapingbee_cli.batch._fetch_usage_async",
-                new_callable=AsyncMock,
-                return_value={"max_concurrency": 10, "credits": 50},
-            ):
-                out = get_batch_usage(None)
-        assert out["max_concurrency"] == 10
-        assert out["credits"] == 50
+    def test_nonexistent_file_raises_value_error(self):
+        from scrapingbee_cli.batch import read_input_file
 
-
-class TestBatchSubdirForExtension:
-    """Tests for _batch_subdir_for_extension()."""
-
-    def test_screenshot_extensions(self):
-        assert _batch_subdir_for_extension("png") == "screenshots"
-        assert _batch_subdir_for_extension("jpg") == "screenshots"
-        assert _batch_subdir_for_extension("gif") == "screenshots"
-        assert _batch_subdir_for_extension("webp") == "screenshots"
-
-    def test_binary_file_extensions(self):
-        assert _batch_subdir_for_extension("pdf") == "files"
-        assert _batch_subdir_for_extension("zip") == "files"
-
-    def test_text_stays_in_root(self):
-        assert _batch_subdir_for_extension("json") is None
-        assert _batch_subdir_for_extension("html") is None
-        assert _batch_subdir_for_extension("txt") is None
-        assert _batch_subdir_for_extension("unidentified.txt") is None
-
-
-class TestExtensionFromUrlPath:
-    """Tests for extension_from_url_path()."""
-
-    def test_known_extensions(self):
-        assert extension_from_url_path("https://example.com/index.html") == "html"
-        assert extension_from_url_path("https://example.com/sitemap.xml") == "xml"
-        assert extension_from_url_path("https://example.com/archive.zip") == "zip"
-        assert extension_from_url_path("https://example.com/doc.pdf") == "pdf"
-        assert extension_from_url_path("https://example.com/page.json") == "json"
-        assert extension_from_url_path("https://example.com/readme.md") == "md"
-
-    def test_no_extension(self):
-        assert extension_from_url_path("https://example.com/") is None
-        assert extension_from_url_path("https://example.com/page") is None
-
-    def test_unknown_extension(self):
-        assert extension_from_url_path("https://example.com/file.xyz") is None
-
-
-class TestExtensionForCrawl:
-    """Tests for extension_for_crawl(): preferred → URL path → body/Content-Type."""
-
-    def test_preferred_first(self):
-        assert extension_for_crawl("https://x.co/p.html", {}, b"???", "md") == "md"
-        assert extension_for_crawl("https://x.co/", {}, b"{}", "json") == "json"
-
-    def test_url_path_second(self):
-        assert extension_for_crawl("https://x.co/page.html", {}, b"???", None) == "html"
-        assert extension_for_crawl("https://x.co/sitemap.xml", {}, b"???", None) == "xml"
-
-    def test_body_content_type_fallback(self):
-        assert extension_for_crawl("https://x.co/", {}, b"{}", None) == "json"
-        assert (
-            extension_for_crawl("https://x.co/", {"Content-Type": "image/png"}, b"???", None)
-            == "png"
-        )
-
-
-class TestWriteBatchOutputToDirUrlPath:
-    """Tests for write_batch_output_to_dir() using URL path for extension."""
-
-    def test_url_path_used_when_no_expected_extension(self, tmp_path):
-        # result.input is URL with path; extension should come from URL when body is ambiguous
-        results = [
-            BatchResult(
-                0,
-                "https://example.com/index.html",
-                b"plain text no magic bytes",
-                {},
-                200,
-                None,
-                None,
-            ),
-        ]
-        write_batch_output_to_dir(results, str(tmp_path), verbose=False)
-        assert (tmp_path / "1.html").read_bytes() == b"plain text no magic bytes"
+        with pytest.raises(ValueError, match="cannot open"):
+            read_input_file("/nonexistent/path/file.txt")

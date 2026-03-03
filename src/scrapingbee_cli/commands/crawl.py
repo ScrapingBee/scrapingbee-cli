@@ -6,23 +6,21 @@ import click
 from click_option_group import optgroup
 
 from ..batch import get_batch_usage, resolve_batch_concurrency
-from ..config import get_api_key
 from ..cli_utils import (
     DEVICE_DESKTOP_MOBILE,
     WAIT_BROWSER_HELP,
+    _validate_json_option,
     _validate_range,
     build_scrape_kwargs,
     scrape_kwargs_to_api_params,
 )
-
-try:
-    from ..crawl import default_crawl_output_dir, run_project_spider, run_urls_spider
-    _crawl_available = True
-except ImportError:
-    _crawl_available = False
-    default_crawl_output_dir = None  # type: ignore[assignment]
-    run_project_spider = None  # type: ignore[assignment]
-    run_urls_spider = None  # type: ignore[assignment]
+from ..config import get_api_key
+from ..crawl import (
+    _fetch_sitemap_urls,
+    default_crawl_output_dir,
+    run_project_spider,
+    run_urls_spider,
+)
 
 
 def _crawl_build_params(
@@ -102,7 +100,14 @@ def _crawl_build_params(
 
 
 @click.command()
-@click.argument("target", nargs=-1, required=True)
+@click.argument("target", nargs=-1, required=False)
+@click.option(
+    "--from-sitemap",
+    "from_sitemap",
+    type=str,
+    default=None,
+    help="Fetch URLs from a sitemap.xml and crawl them (URL or path to sitemap).",
+)
 @click.option(
     "--project",
     "-p",
@@ -162,7 +167,9 @@ def _crawl_build_params(
     help="Forward only custom headers (true/false).",
 )
 @optgroup.group("Output", help="Response format")
-@optgroup.option("--json-response", type=str, default=None, help="Wrap response in JSON (true/false).")
+@optgroup.option(
+    "--json-response", type=str, default=None, help="Wrap response in JSON (true/false)."
+)
 @optgroup.option(
     "--return-page-source",
     type=str,
@@ -197,16 +204,22 @@ def _crawl_build_params(
     "--screenshot-full-page", type=str, default=None, help="Full page screenshot (true/false)."
 )
 @optgroup.group("Extraction", help="CSS/XPath and AI extraction (+5 credits for AI)")
-@optgroup.option("--extract-rules", type=str, default=None, help="CSS/XPath extraction rules as JSON.")
+@optgroup.option(
+    "--extract-rules", type=str, default=None, help="CSS/XPath extraction rules as JSON."
+)
 @optgroup.option(
     "--ai-query", type=str, default=None, help="Natural language extraction query. +5 credits."
 )
-@optgroup.option("--ai-selector", type=str, default=None, help="CSS selector to focus AI extraction.")
+@optgroup.option(
+    "--ai-selector", type=str, default=None, help="CSS selector to focus AI extraction."
+)
 @optgroup.option(
     "--ai-extract-rules", type=str, default=None, help="AI extraction rules as JSON. +5 credits."
 )
 @optgroup.group("Request", help="Session, timeout, cookies, device")
-@optgroup.option("--session-id", type=int, default=None, help="Session ID for sticky IP (0-10000000).")
+@optgroup.option(
+    "--session-id", type=int, default=None, help="Session ID for sticky IP (0-10000000)."
+)
 @optgroup.option("--timeout", type=int, default=None, help="Timeout in ms (1000-140000).")
 @optgroup.option("--cookies", type=str, default=None, help="Custom cookies string.")
 @optgroup.option(
@@ -215,7 +228,9 @@ def _crawl_build_params(
     default=None,
     help="Device: desktop or mobile.",
 )
-@optgroup.option("--custom-google", type=str, default=None, help="Scrape Google domains (true/false).")
+@optgroup.option(
+    "--custom-google", type=str, default=None, help="Scrape Google domains (true/false)."
+)
 @optgroup.option(
     "--transparent-status-code",
     type=str,
@@ -266,6 +281,7 @@ def _crawl_build_params(
 def crawl_cmd(
     obj: dict,
     target: tuple[str, ...],
+    from_sitemap: str | None,
     project: str | None,
     render_js: str | None,
     js_scenario: str | None,
@@ -309,7 +325,7 @@ def crawl_cmd(
 ) -> None:
     """Run a Scrapy spider with ScrapingBee.
 
-    Two modes:
+    Three modes:
 
     \b
     1. Project spider: scrapingbee crawl SPIDER_NAME [--project /path]
@@ -320,21 +336,27 @@ def crawl_cmd(
        Starts from the given URL(s), follows same-domain links (0 = unlimited).
        Concurrency from --concurrency or usage API. Same options as scrape.
 
+    3. Sitemap crawl: scrapingbee crawl --from-sitemap https://example.com/sitemap.xml
+       Fetches all URLs from the sitemap and crawls them.
+
     See https://www.scrapingbee.com/documentation/ for parameter details.
     """
-    if not _crawl_available:
-        click.echo(
-            "Crawl support requires scrapy. Install with: pip install scrapingbee-cli[crawl]",
-            err=True,
-        )
-        raise SystemExit(1)
     try:
         key = get_api_key(None)
     except ValueError as e:
         click.echo(str(e), err=True)
         raise SystemExit(1)
+    # Resolve URLs: either from --from-sitemap or positional target arguments
+    if from_sitemap:
+        click.echo(f"Fetching sitemap: {from_sitemap}", err=True)
+        sitemap_urls = _fetch_sitemap_urls(from_sitemap)
+        if not sitemap_urls:
+            click.echo("No URLs found in sitemap.", err=True)
+            raise SystemExit(1)
+        click.echo(f"Found {len(sitemap_urls)} URLs in sitemap.", err=True)
+        target = tuple(sitemap_urls)
     if not target:
-        click.echo("Provide a spider name or one or more URLs.", err=True)
+        click.echo("Provide a spider name, one or more URLs, or --from-sitemap URL.", err=True)
         raise SystemExit(1)
     try:
         usage_info = get_batch_usage(None)
@@ -351,6 +373,8 @@ def crawl_cmd(
         else:
             click.echo(f"Crawl: concurrency {concurrency} (from usage API)", err=True)
         try:
+            _validate_json_option("--js-scenario", js_scenario)
+            _validate_json_option("--extract-rules", extract_rules)
             scrape_params = _crawl_build_params(
                 render_js=render_js,
                 js_scenario=js_scenario,
@@ -393,9 +417,11 @@ def crawl_cmd(
         _validate_range("wait", wait, 0, 35_000, "ms")
         custom_headers = {}
         for h in headers:
-            if ":" in h:
-                k, _, v = h.partition(":")
-                custom_headers[k.strip()] = v.strip()
+            if ":" not in h:
+                click.echo(f'Invalid header format "{h}", expected Key:Value', err=True)
+                raise SystemExit(1)
+            k, _, v = h.partition(":")
+            custom_headers[k.strip()] = v.strip()
         out_dir = (obj.get("output_dir") or "").strip() or None
         out_dir = out_dir or default_crawl_output_dir()
         allowed_list: list[str] | None = None
@@ -415,6 +441,7 @@ def crawl_cmd(
                 allow_external_domains=allow_external_domains,
                 download_delay=download_delay,
                 autothrottle_enabled=autothrottle or None,
+                resume=obj.get("resume", False),
             )
         except ValueError as e:
             click.echo(str(e), err=True)
@@ -442,5 +469,5 @@ def crawl_cmd(
             raise SystemExit(1)
 
 
-def register(cli):  # noqa: ANN001
+def register(cli: click.Group) -> None:
     cli.add_command(crawl_cmd, "crawl")

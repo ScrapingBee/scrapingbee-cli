@@ -6,7 +6,6 @@ from scrapingbee_cli.crawl import (
     _body_from_json_response,
     _extract_hrefs_from_body,
     _extract_hrefs_from_response,
-    _needs_discovery_phase,
     _normalize_url,
     _param_truthy,
     _params_for_discovery,
@@ -46,25 +45,6 @@ class TestParamTruthy:
         assert _param_truthy({}, "a") is False
 
 
-class TestNeedsDiscoveryPhase:
-    """Tests for _needs_discovery_phase()."""
-
-    def test_return_text_always_discovery(self):
-        assert _needs_discovery_phase({"return_page_text": True}) is True
-        assert _needs_discovery_phase({"return_page_text": "true"}) is True
-
-    def test_screenshot_without_json_response_discovery(self):
-        assert _needs_discovery_phase({"screenshot": True, "json_response": False}) is True
-        assert _needs_discovery_phase({"screenshot": True}) is True
-
-    def test_screenshot_with_json_response_no_discovery(self):
-        assert _needs_discovery_phase({"screenshot": True, "json_response": True}) is False
-
-    def test_no_special_params_no_discovery(self):
-        assert _needs_discovery_phase({}) is False
-        assert _needs_discovery_phase({"json_response": True}) is False
-
-
 class TestParamsForDiscovery:
     """Tests for _params_for_discovery()."""
 
@@ -80,6 +60,25 @@ class TestParamsForDiscovery:
         out = _params_for_discovery(params)
         assert "json_response" not in out
         assert out.get("wait") == 1000
+
+    def test_strips_ai_params(self):
+        params = {
+            "ai_query": "extract links",
+            "ai_selector": "a",
+            "ai_extract_rules": "{}",
+            "wait": 500,
+        }
+        out = _params_for_discovery(params)
+        assert "ai_query" not in out
+        assert "ai_selector" not in out
+        assert "ai_extract_rules" not in out
+        assert out.get("wait") == 500
+
+    def test_strips_extract_rules(self):
+        params = {"extract_rules": '{"title": "h1"}', "render_js": True}
+        out = _params_for_discovery(params)
+        assert "extract_rules" not in out
+        assert out.get("render_js") is True
 
 
 class TestPreferredExtensionFromScrapeParams:
@@ -166,6 +165,172 @@ class TestExtractHrefsFromResponse:
         hrefs = _extract_hrefs_from_response(response)
         assert "/foo" in hrefs
         assert "https://other.com/b" in hrefs
+
+
+class TestSpiderDiscovery:
+    """Tests for the double-fetch discovery mechanism in GenericScrapingBeeSpider."""
+
+    def _make_response(self, url: str, body: bytes, depth: int = 0):
+        """Create a Scrapy HtmlResponse with request meta attached."""
+        from scrapy.http import HtmlResponse, Request
+
+        response = HtmlResponse(url, body=body, encoding="utf-8")
+        response.request = Request(url, meta={"depth": depth})
+        return response
+
+    def test_parse_yields_discovery_request_when_no_links(self):
+        """parse() must yield exactly one discovery request when the body has no links."""
+        from scrapy_scrapingbee import ScrapingBeeRequest
+
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        spider = GenericScrapingBeeSpider(
+            start_urls=["https://example.com"],
+            scrape_params={"return_page_text": True},
+            output_dir=None,
+        )
+        response = self._make_response("https://example.com/page", b"Plain text, no links")
+        requests = list(spider.parse(response))
+
+        assert len(requests) == 1
+        assert isinstance(requests[0], ScrapingBeeRequest)
+        assert requests[0].callback == spider._parse_discovery_links_only
+        assert requests[0].dont_filter is True
+
+    def test_parse_does_not_yield_discovery_when_links_found(self):
+        """parse() must not yield a discovery request when the body already has links."""
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        spider = GenericScrapingBeeSpider(
+            start_urls=["https://example.com"],
+            scrape_params={},
+            output_dir=None,
+        )
+        spider.seen_urls.add("https://example.com")
+
+        response = self._make_response(
+            "https://example.com",
+            b'<a href="/page1">link1</a><a href="/page2">link2</a>',
+        )
+        requests = list(spider.parse(response))
+
+        # No request should target the discovery callback
+        for req in requests:
+            assert req.callback != spider._parse_discovery_links_only
+
+    def test_parse_discovery_links_only_follows_links_but_does_not_save(self, tmp_path):
+        """_parse_discovery_links_only must yield follow requests but never write files."""
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        spider = GenericScrapingBeeSpider(
+            start_urls=["https://example.com"],
+            scrape_params={"return_page_text": True},
+            output_dir=str(tmp_path),
+        )
+        spider.seen_urls.add("https://example.com")
+
+        response = self._make_response(
+            "https://example.com",
+            b'<a href="/page1">p1</a><a href="/page2">p2</a>',
+        )
+        requests = list(spider._parse_discovery_links_only(response))
+
+        # Should yield follow requests (not empty)
+        assert len(requests) > 0
+        # Each follow request must use the main parse callback (not discovery again)
+        for req in requests:
+            assert req.callback == spider.parse
+        # Nothing written — discovery does not save
+        assert list(tmp_path.iterdir()) == []
+
+
+class TestSpiderSaveResponse:
+    """Tests for _save_response manifest field extraction."""
+
+    def _make_spider(self, tmp_path):
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        return GenericScrapingBeeSpider(
+            start_urls=["https://example.com"],
+            scrape_params={},
+            output_dir=str(tmp_path),
+        )
+
+    def _make_response(self, url, body, headers=None, meta=None):
+        import scrapy
+
+        return scrapy.http.TextResponse(
+            url=url,
+            body=body,
+            encoding="utf-8",
+            headers=headers or {},
+            request=scrapy.Request(url, meta=meta or {}),
+        )
+
+    def test_save_response_extracts_credits_used(self, tmp_path):
+        spider = self._make_spider(tmp_path)
+        response = self._make_response(
+            "https://example.com/page",
+            b"<html>test</html>",
+            headers={"Spb-Cost": "5"},
+        )
+        spider._save_response(response)
+        entry = spider._url_file_map["https://example.com/page"]
+        assert entry["credits_used"] == 5
+
+    def test_save_response_credits_none_when_no_header(self, tmp_path):
+        spider = self._make_spider(tmp_path)
+        response = self._make_response(
+            "https://example.com/page",
+            b"<html>test</html>",
+        )
+        spider._save_response(response)
+        entry = spider._url_file_map["https://example.com/page"]
+        assert entry["credits_used"] is None
+
+    def test_save_response_extracts_latency_ms(self, tmp_path):
+        spider = self._make_spider(tmp_path)
+        response = self._make_response(
+            "https://example.com/page",
+            b"<html>test</html>",
+            meta={"download_latency": 1.5},
+        )
+        spider._save_response(response)
+        entry = spider._url_file_map["https://example.com/page"]
+        assert entry["latency_ms"] == 1500
+
+    def test_save_response_latency_none_when_no_meta(self, tmp_path):
+        spider = self._make_spider(tmp_path)
+        response = self._make_response(
+            "https://example.com/page",
+            b"<html>test</html>",
+        )
+        spider._save_response(response)
+        entry = spider._url_file_map["https://example.com/page"]
+        assert entry["latency_ms"] is None
+
+    def test_save_response_writes_file(self, tmp_path):
+        spider = self._make_spider(tmp_path)
+        response = self._make_response(
+            "https://example.com/page",
+            b"<html>test</html>",
+        )
+        spider._save_response(response)
+        assert (tmp_path / "1.html").exists()
+        assert (tmp_path / "1.html").read_bytes() == b"<html>test</html>"
+
+    def test_save_response_manifest_has_required_fields(self, tmp_path):
+        spider = self._make_spider(tmp_path)
+        response = self._make_response(
+            "https://example.com/page",
+            b"<html>test</html>",
+            headers={"Spb-Cost": "10"},
+            meta={"download_latency": 0.5},
+        )
+        spider._save_response(response)
+        entry = spider._url_file_map["https://example.com/page"]
+        for field in ("file", "fetched_at", "http_status", "credits_used", "latency_ms"):
+            assert field in entry, f"Missing field {field!r}"
 
 
 class TestDefaultCrawlOutputDir:

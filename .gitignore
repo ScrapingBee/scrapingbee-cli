@@ -24,6 +24,7 @@ htmlcov/
 failed_requests.txt
 test_failures/
 test_results/
+TEST_RESULTS.md
 
 # CLI output (default dirs when --output-dir not set)
 batch_*/

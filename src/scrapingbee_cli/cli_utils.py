@@ -9,6 +9,68 @@ from typing import Any
 import click
 
 
+def _extract_field_values(data: bytes, path: str) -> bytes:
+    """Extract values from JSON data using a simple path expression.
+
+    Supports:
+    - ``key.subkey``  — iterate the top-level list at *key*, extract *subkey*
+      from each dict item (one value per line).
+    - ``key``         — extract the top-level scalar (or list of scalars).
+
+    Returns newline-separated UTF-8 bytes, suitable for use as ``--input-file``.
+    Returns *data* unchanged if parsing fails or the path is not found.
+    """
+    try:
+        obj = json.loads(data.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return data
+
+    if "." in path:
+        array_key, _, subkey = path.partition(".")
+        arr = obj.get(array_key) if isinstance(obj, dict) else None
+        if not isinstance(arr, list):
+            return b""
+        values = [
+            str(item[subkey])
+            for item in arr
+            if isinstance(item, dict) and item.get(subkey) is not None
+        ]
+    else:
+        val = obj.get(path) if isinstance(obj, dict) else None
+        if val is None:
+            return b""
+        if isinstance(val, list):
+            values = [str(v) for v in val if v is not None]
+        else:
+            values = [str(val)]
+
+    return ("\n".join(values) + "\n").encode("utf-8") if values else b""
+
+
+def _filter_fields(data: bytes, fields: str) -> bytes:
+    """Filter JSON output to the specified comma-separated top-level keys.
+
+    Returns filtered JSON bytes.  Returns *data* unchanged if parsing fails.
+    """
+    keys = [k.strip() for k in fields.split(",") if k.strip()]
+    if not keys:
+        return data
+    try:
+        obj = json.loads(data.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return data
+    if isinstance(obj, dict):
+        filtered: Any = {k: obj[k] for k in keys if k in obj}
+    elif isinstance(obj, list):
+        filtered = [
+            {k: item[k] for k in keys if k in item} if isinstance(item, dict) else item
+            for item in obj
+        ]
+    else:
+        return data
+    return (json.dumps(filtered, ensure_ascii=False) + "\n").encode("utf-8")
+
+
 WAIT_BROWSER_HELP = "Browser wait: domcontentloaded, load, networkidle0, networkidle2"
 
 # Extra seconds added to ScrapingBee --timeout (ms) for aiohttp client timeout (send/receive).
@@ -50,11 +112,7 @@ def _validate_price_range(min_price: int | None, max_price: int | None) -> None:
     if max_price is not None and max_price < 0:
         click.echo("max_price must be >= 0", err=True)
         raise SystemExit(1)
-    if (
-        min_price is not None
-        and max_price is not None
-        and min_price > max_price
-    ):
+    if min_price is not None and max_price is not None and min_price > max_price:
         click.echo("min_price must be <= max_price", err=True)
         raise SystemExit(1)
 
@@ -193,17 +251,62 @@ def check_api_response(data: bytes, status_code: int, err_prefix: str = "Error")
         raise SystemExit(1)
 
 
+def norm_val(v: str | None) -> str | None:
+    """Normalise a CLI choice value: hyphens → underscores for the API.
+
+    CLI conventions use hyphens (e.g. ``most-recent``) but the ScrapingBee
+    API expects underscores (``most_recent``).  Apply *only* to
+    choice-constrained parameters — never to free-form text such as search
+    queries, URLs, or JS scenarios.
+    """
+    return v.replace("-", "_") if v is not None else None
+
+
+def chunk_text(text: str, size: int, overlap: int = 0) -> list[str]:
+    """Split text into chunks of `size` chars with `overlap` chars of context.
+
+    Args:
+        text: The text to split.
+        size: Maximum characters per chunk. If <= 0, returns [text].
+        overlap: How many trailing chars of the previous chunk to repeat at
+                 the start of the next one (must be < size).
+
+    Returns:
+        A list of non-empty string chunks.
+    """
+    if size <= 0:
+        return [text]
+    overlap = max(0, min(overlap, size - 1))
+    step = size - overlap
+    chunks = [text[i : i + size] for i in range(0, max(1, len(text)), step)]
+    return [c for c in chunks if c]
+
+
 def write_output(
     data: bytes,
     headers: dict,
     status_code: int,
     output_path: str | None,
     verbose: bool,
+    *,
+    extract_field: str | None = None,
+    fields: str | None = None,
+    command: str | None = None,
 ) -> None:
-    """Write response data to file or stdout; optionally print verbose headers."""
+    """Write response data to file or stdout; optionally print verbose headers.
+
+    When *extract_field* is set, extract values from JSON using a path expression
+    (e.g. ``organic_results.url``) and output one value per line.
+    When *fields* is set, filter JSON output to the specified comma-separated
+    top-level keys (e.g. ``title,price,rating``).
+    *extract_field* takes precedence over *fields*.
+    When *command* is set and verbose mode is on, estimated credit cost is shown
+    if the ``spb-cost`` header is absent (SERP endpoints omit this header).
+    """
     if verbose:
         click.echo(f"HTTP Status: {status_code}", err=True)
         headers_lower = {k.lower(): (k, v) for k, v in headers.items()}
+        spb_cost_present = False
         for key, label in [
             ("spb-cost", "Credit Cost"),
             ("spb-resolved-url", "Resolved URL"),
@@ -213,11 +316,26 @@ def write_output(
                 _, val = headers_lower[key]
                 if val:
                     click.echo(f"{label}: {val}", err=True)
+                    if key == "spb-cost":
+                        spb_cost_present = True
+        if not spb_cost_present and command:
+            from scrapingbee_cli.credits import ESTIMATED_CREDITS
+
+            if command in ESTIMATED_CREDITS:
+                click.echo(f"Credit Cost (estimated): {ESTIMATED_CREDITS[command]}", err=True)
         click.echo("---", err=True)
+    if extract_field:
+        data = _extract_field_values(data, extract_field)
+    elif fields:
+        data = _filter_fields(data, fields)
     if output_path:
         with open(output_path, "wb") as f:
             f.write(data)
     else:
         sys.stdout.buffer.write(data)
-        if not data.endswith(b"\n"):
-            click.echo()
+        # Only add a trailing newline for text-like content; binary data (PNG, PDF, etc.)
+        # must not have extra bytes appended.
+        if data and not data.endswith(b"\n"):
+            is_text = data[:1] in (b"{", b"[", b"<", b"#") or b"\x00" not in data[:512]
+            if is_text:
+                click.echo()

@@ -8,8 +8,7 @@ from pathlib import Path
 ENV_API_KEY = "SCRAPINGBEE_API_KEY"
 BASE_URL = "https://app.scrapingbee.com/api/v1"
 
-# Default paths for .env (first existing is used when loading)
-DOTENV_CWD = Path.cwd() / ".env"
+# Persistent auth .env path (evaluated once; cwd .env is evaluated at load_dotenv() call time)
 DOTENV_HOME = Path.home() / ".config" / "scrapingbee-cli" / ".env"
 
 
@@ -36,7 +35,9 @@ def load_dotenv() -> None:
     """Load .env from current directory and then ~/.config/scrapingbee-cli/.env.
     Sets variables in os.environ only if not already set (env takes precedence).
     """
-    for path in (DOTENV_CWD, DOTENV_HOME):
+    # Evaluate cwd at call time (not import time) so it picks up the actual working directory.
+    dotenv_cwd = Path.cwd() / ".env"
+    for path in (dotenv_cwd, DOTENV_HOME):
         if not path.is_file():
             continue
         try:
@@ -93,6 +94,7 @@ def save_api_key_to_dotenv(api_key: str) -> Path:
     with open(path, "w", encoding="utf-8") as f:
         for k, v in existing.items():
             f.write(f'{k}="{v}"\n')
+    os.chmod(path, 0o600)
     return path
 
 

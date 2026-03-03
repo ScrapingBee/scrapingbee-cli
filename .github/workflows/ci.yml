@@ -1,0 +1,89 @@
+# Run unit tests, linting, and version consistency check on every push and pull request.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install package and dev dependencies
+        run: pip install -e ".[dev,crawl]"
+
+      - name: Run unit tests
+        run: pytest -m "not integration" -v
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Ruff check
+        run: ruff check src tests
+
+      - name: Ruff format check
+        run: ruff format --check src tests
+
+  check-version:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Assert pyproject.toml version matches __init__.py
+        run: |
+          python - <<'EOF'
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as f:
+              toml_version = tomllib.load(f)["project"]["version"]
+
+          # Read __version__ without importing the package (avoids install requirement)
+          import re
+          text = open("src/scrapingbee_cli/__init__.py").read()
+          match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.M)
+          if not match:
+              print("Could not find __version__ in __init__.py")
+              sys.exit(1)
+          init_version = match.group(1)
+
+          if toml_version != init_version:
+              print(f"Version mismatch: pyproject.toml={toml_version}, __init__.py={init_version}")
+              sys.exit(1)
+          print(f"Version consistent: {toml_version}")
+          EOF

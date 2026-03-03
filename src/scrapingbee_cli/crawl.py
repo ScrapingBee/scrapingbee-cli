@@ -7,11 +7,12 @@ import os
 import re
 import threading
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+import click
 from scrapy import Spider
 from scrapy.crawler import CrawlerProcess
 from scrapy.http import Response
@@ -49,22 +50,9 @@ def _param_truthy(params: dict[str, Any], key: str) -> bool:
     return v is True or (isinstance(v, str) and v.lower() in ("true", "1", "yes"))
 
 
-def _needs_discovery_phase(params: dict[str, Any]) -> bool:
-    """True when we must fetch HTML first to get links because the save response won't contain any.
-    - return_page_text: response is plain text, no links -> discovery.
-    - screenshot without json_response: response is image only, no links -> discovery.
-    - screenshot + json_response: HTML is in JSON body -> crawl normally, no discovery.
-    """
-    if _param_truthy(params, "return_page_text"):
-        return True
-    if _param_truthy(params, "screenshot") and not _param_truthy(params, "json_response"):
-        return True
-    return False
-
-
 def _params_for_discovery(params: dict[str, Any]) -> dict[str, Any]:
-    """Params with screenshot, return_page_text, json_response stripped
-    so API returns HTML for link extraction."""
+    """Params that would yield non-HTML or non-link-bearing response stripped
+    so the discovery request returns HTML for link extraction."""
     out = dict(params)
     for k in (
         "screenshot",
@@ -72,6 +60,10 @@ def _params_for_discovery(params: dict[str, Any]) -> dict[str, Any]:
         "screenshot_full_page",
         "return_page_text",
         "json_response",
+        "ai_query",
+        "ai_selector",
+        "ai_extract_rules",
+        "extract_rules",
     ):
         out.pop(k, None)
     return out
@@ -168,6 +160,8 @@ class GenericScrapingBeeSpider(Spider):
         allowed_domains: list[str] | None = None,
         allow_external_domains: bool = False,
         name: str | None = None,
+        pre_seen_urls: set[str] | None = None,
+        initial_write_counter: int = 0,
         **kwargs: Any,
     ) -> None:
         super().__init__(name=name, **kwargs)
@@ -181,12 +175,11 @@ class GenericScrapingBeeSpider(Spider):
         # None = derive from start_urls (same-domain); else only these netlocs
         self.allowed_domains = allowed_domains
         self._allowed_netlocs: set[str] | None = None  # set when first request runs
-        self._discovery_params: dict[str, Any] | None = (
-            None  # cached when _needs_discovery_phase, avoid repeated dict copy
-        )
-        self.seen_urls: set[str] = set()
+        self.seen_urls: set[str] = set(pre_seen_urls) if pre_seen_urls else set()
         self._write_lock = threading.Lock()
-        self._write_counter = 0
+        self._write_counter = initial_write_counter
+        # Maps response URL → {file, fetched_at, http_status}; written to manifest.json on close.
+        self._url_file_map: dict[str, Any] = {}
 
     def _allowed_netlocs_set(self) -> set[str]:
         if self._allowed_netlocs is not None:
@@ -208,11 +201,6 @@ class GenericScrapingBeeSpider(Spider):
         return not allowed or netloc in allowed
 
     def start_requests(self) -> Iterator[Request]:
-        use_discovery = _needs_discovery_phase(self.scrape_params)
-        if use_discovery:
-            self._discovery_params = _params_for_discovery(self.scrape_params)
-        params = self._discovery_params if use_discovery else dict(self.scrape_params)
-        callback = self.parse_discovery if use_discovery else self.parse
         for url in self.start_urls:
             normalized = _normalize_url(url)
             if normalized in self.seen_urls:
@@ -222,10 +210,10 @@ class GenericScrapingBeeSpider(Spider):
             self.seen_urls.add(normalized)
             yield ScrapingBeeRequest(
                 url,
-                params=params,
+                params=dict(self.scrape_params),
                 headers=self.custom_headers,
                 meta={"depth": 0},
-                callback=callback,
+                callback=self.parse,
             )
 
     def _response_headers_dict(self, response: Response) -> dict:
@@ -246,15 +234,49 @@ class GenericScrapingBeeSpider(Spider):
         preferred = _preferred_extension_from_scrape_params(self.scrape_params)
         ext = extension_for_crawl(response.url, headers, response.body, preferred)
         subdir = _batch_subdir_for_extension(ext)
+        # Extract Spb-Cost header for credits_used.
+        credits_used: int | None = None
+        for k, v in headers.items():
+            if k.lower() == "spb-cost" and v:
+                try:
+                    credits_used = int(v)
+                except (ValueError, TypeError):
+                    pass
+                break
+        # Scrapy records download_latency in response.meta (seconds).
+        latency_ms: int | None = None
+        download_latency = response.meta.get("download_latency")
+        if download_latency is not None:
+            try:
+                latency_ms = int(float(download_latency) * 1000)
+            except (ValueError, TypeError):
+                pass
         with self._write_lock:
             n = self._write_counter
             self._write_counter += 1
+            filename = f"{n + 1}.{ext}"
+            rel = f"{subdir}/{filename}" if subdir else filename
+            self._url_file_map[response.url] = {
+                "file": rel,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "http_status": response.status,
+                "credits_used": credits_used,
+                "latency_ms": latency_ms,
+            }
         out_path = Path(self.output_dir).resolve()
         if subdir:
             out_path = out_path / subdir
         out_path.mkdir(parents=True, exist_ok=True)
         out_path = out_path / f"{n + 1}.{ext}"
         out_path.write_bytes(response.body)
+
+    def closed(self, reason: str) -> None:
+        """Write manifest.json (URL → relative filename) when the crawl ends."""
+        if not self.output_dir or not self._url_file_map:
+            return
+        manifest_path = Path(self.output_dir).resolve() / "manifest.json"
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(self._url_file_map, f, indent=2, ensure_ascii=False)
 
     def _iter_follow_requests(
         self,
@@ -293,33 +315,77 @@ class GenericScrapingBeeSpider(Spider):
             )
 
     def parse(self, response: Response, **kwargs: object) -> Any:
-        """Log the page, optionally save to output_dir, and yield
-        ScrapingBeeRequests for same-domain links."""
+        """Save response, then yield follow requests. If no links found in response,
+        yield a discovery request (same URL with HTML-only params) to extract links."""
         self.logger.info("Fetched %s (%d bytes)", response.url, len(response.body))
         self._save_response(response)
+        hrefs = _extract_hrefs_from_response(response)
+        if hrefs:
+            yield from self._iter_follow_requests(response, dict(self.scrape_params), self.parse)
+        else:
+            discovery_params = _params_for_discovery(self.scrape_params)
+            yield ScrapingBeeRequest(
+                response.url,
+                params=discovery_params,
+                headers=self.custom_headers,
+                meta=response.meta,
+                callback=self._parse_discovery_links_only,
+                dont_filter=True,
+            )
+
+    def _parse_discovery_links_only(self, response: Response, **kwargs: object) -> Any:
+        """Handle HTML response from discovery request: extract links and follow (no save)."""
+        self.logger.info("Fetched %s (%d bytes) [discovery]", response.url, len(response.body))
         yield from self._iter_follow_requests(response, dict(self.scrape_params), self.parse)
 
-    def parse_discovery(self, response: Response, **kwargs: object) -> Any:
-        """Called when we fetched HTML for link discovery. Yield save request
-        for this URL, then discovery for links."""
-        self.logger.info("Fetched %s (%d bytes) [discovery]", response.url, len(response.body))
-        # Schedule save request for this URL (screenshot/return_page_text).
-        # dont_filter=True: same URL already requested for discovery.
-        yield ScrapingBeeRequest(
-            response.url,
-            params=dict(self.scrape_params),
-            headers=self.custom_headers,
-            meta=response.meta,
-            callback=self.parse_save_only,
-            dont_filter=True,
-        )
-        discovery_params = self._discovery_params or _params_for_discovery(self.scrape_params)
-        yield from self._iter_follow_requests(response, discovery_params, self.parse_discovery)
 
-    def parse_save_only(self, response: Response, **kwargs: object) -> Any:
-        """Save response (screenshot/return_page_text) only; no link extraction."""
-        self.logger.info("Fetched %s (%d bytes) [save]", response.url, len(response.body))
-        self._save_response(response)
+def _fetch_sitemap_urls(url: str, *, depth: int = 0) -> list[str]:
+    """Fetch a sitemap URL and return all page URLs it contains.
+
+    Handles sitemap indexes recursively (up to depth 2). Uses stdlib only.
+    """
+    import urllib.request
+    from xml.etree import ElementTree as ET
+
+    if depth > 2:
+        return []
+    if not url.startswith(("http://", "https://")):
+        click.echo(f"Warning: skipping sitemap URL with unsupported scheme: {url}", err=True)
+        return []
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310
+            data = resp.read()
+    except Exception as e:
+        click.echo(f"Warning: could not fetch sitemap {url}: {e}", err=True)
+        return []
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as e:
+        click.echo(f"Warning: could not parse sitemap {url}: {e}", err=True)
+        return []
+    # Strip namespace for tag matching
+    tag = root.tag.split("}")[-1] if "}" in root.tag else root.tag
+    ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    if tag == "sitemapindex":
+        child_locs = [
+            loc.text.strip()
+            for loc in root.findall(".//sm:sitemap/sm:loc", ns)
+            if loc.text and loc.text.strip()
+        ] or [
+            loc.text.strip()
+            for loc in root.findall(".//sitemap/loc")
+            if loc.text and loc.text.strip()
+        ]
+        all_urls: list[str] = []
+        for child_url in child_locs:
+            all_urls.extend(_fetch_sitemap_urls(child_url, depth=depth + 1))
+        return all_urls
+    # Regular urlset
+    return [
+        loc.text.strip()
+        for loc in root.findall(".//sm:url/sm:loc", ns)
+        if loc.text and loc.text.strip()
+    ] or [loc.text.strip() for loc in root.findall(".//url/loc") if loc.text and loc.text.strip()]
 
 
 USER_AGENT_CLI = "ScrapingBee/CLI"
@@ -400,14 +466,34 @@ def run_urls_spider(
     allow_external_domains: bool = False,
     download_delay: float | None = None,
     autothrottle_enabled: bool | None = None,
+    resume: bool = False,
 ) -> None:
     """Run the built-in generic spider: start from URLs and follow links.
     By default only same-domain links are followed; use allowed_domains or
     allow_external_domains to change. If output_dir is set, each response
     is saved as a separate file.
+
+    When resume=True and output_dir has a manifest.json, pre-populate seen_urls
+    and write_counter from the previous run so already-crawled URLs are skipped.
     """
     if not urls:
         raise ValueError("At least one URL is required")
+    pre_seen_urls: set[str] | None = None
+    initial_write_counter = 0
+    if resume and output_dir:
+        manifest_path = Path(output_dir).resolve() / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                with open(manifest_path, encoding="utf-8") as f:
+                    existing_map: dict[str, Any] = json.load(f)
+                pre_seen_urls = set(existing_map.keys())
+                initial_write_counter = len(existing_map)
+                click.echo(
+                    f"Resume: skipping {len(pre_seen_urls)} already-crawled URLs.",
+                    err=True,
+                )
+            except Exception as e:
+                click.echo(f"Warning: could not load manifest for resume: {e}", err=True)
     settings = _settings_with_scrapingbee(
         api_key,
         concurrency=concurrency,
@@ -426,5 +512,7 @@ def run_urls_spider(
         output_dir=output_dir,
         allowed_domains=allowed_domains,
         allow_external_domains=allow_external_domains,
+        pre_seen_urls=pre_seen_urls,
+        initial_write_counter=initial_write_counter,
     )
     process.start()

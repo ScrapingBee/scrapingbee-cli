@@ -8,22 +8,29 @@ import click
 from click_option_group import optgroup
 
 from ..batch import (
+    _find_completed_n,
     get_batch_usage,
     read_input_file,
     resolve_batch_concurrency,
-    run_batch_async,
+    run_api_batch,
     validate_batch_run,
-    write_batch_output_to_dir,
+)
+from ..cli_utils import (
+    DEVICE_DESKTOP_MOBILE_TABLET,
+    _validate_page,
+    check_api_response,
+    norm_val,
+    parse_bool,
+    write_output,
 )
 from ..client import Client
 from ..config import BASE_URL, get_api_key
-from ..cli_utils import DEVICE_DESKTOP_MOBILE_TABLET, _validate_page, parse_bool, write_output
 
 AMAZON_SORT_BY = [
-    "most_recent",
-    "price_low_to_high",
-    "price_high_to_low",
-    "average_review",
+    "most-recent",
+    "price-low-to-high",
+    "price-high-to-low",
+    "average-review",
     "bestsellers",
     "featured",
 ]
@@ -75,46 +82,51 @@ def amazon_product_cmd(
         if asin:
             click.echo("cannot use both global --input-file and positional ASIN", err=True)
             raise SystemExit(1)
-        inputs = read_input_file(input_file)
+        try:
+            inputs = read_input_file(input_file)
+        except ValueError as e:
+            click.echo(str(e), err=True)
+            raise SystemExit(1)
         usage_info = get_batch_usage(None)
-        validate_batch_run(obj["concurrency"], len(inputs), usage_info)
+        try:
+            validate_batch_run(obj["concurrency"], len(inputs), usage_info)
+        except ValueError as e:
+            click.echo(str(e), err=True)
+            raise SystemExit(1)
         concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        async def _batch() -> None:
-            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
+        skip_n = (
+            _find_completed_n(obj.get("output_dir") or "") if obj.get("resume") else frozenset()
+        )
 
-                async def do_one(a: str):
-                    try:
-                        data, headers, status_code = await client.amazon_product(
-                            a,
-                            device=device,
-                            domain=domain,
-                            country=country,
-                            zip_code=zip_code,
-                            language=language,
-                            currency=currency,
-                            add_html=parse_bool(add_html),
-                            light_request=parse_bool(light_request),
-                            screenshot=parse_bool(screenshot),
-                            retries=obj.get("retries", 3) or 3,
-                            backoff=obj.get("backoff", 2.0) or 2.0,
-                        )
-                        if status_code >= 400:
-                            err = RuntimeError(f"HTTP {status_code}")
-                            return data, headers, status_code, err, "json"
-                        return data, headers, status_code, None, "json"
-                    except Exception as e:
-                        return b"", {}, 0, e, "json"
-
-                results = await run_batch_async(
-                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
-                )
-            out_dir = write_batch_output_to_dir(
-                results, obj.get("output_dir") or None, obj["verbose"]
+        async def api_call(client, a):
+            return await client.amazon_product(
+                a,
+                device=device,
+                domain=domain,
+                country=country,
+                zip_code=zip_code,
+                language=language,
+                currency=currency,
+                add_html=parse_bool(add_html),
+                light_request=parse_bool(light_request),
+                screenshot=parse_bool(screenshot),
+                retries=obj.get("retries", 3) or 3,
+                backoff=obj.get("backoff", 2.0) or 2.0,
             )
-            click.echo(f"Batch complete. Output written to {out_dir}")
 
-        asyncio.run(_batch())
+        run_api_batch(
+            key=key,
+            inputs=inputs,
+            concurrency=concurrency,
+            from_user=obj["concurrency"] > 0,
+            skip_n=skip_n,
+            output_dir=obj.get("output_dir") or None,
+            verbose=obj["verbose"],
+            show_progress=obj.get("progress", True),
+            api_call=api_call,
+            diff_dir=obj.get("diff_dir"),
+        )
         return
 
     if not asin:
@@ -137,7 +149,17 @@ def amazon_product_cmd(
                 retries=obj.get("retries", 3) or 3,
                 backoff=obj.get("backoff", 2.0) or 2.0,
             )
-        write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+        check_api_response(data, status_code)
+        write_output(
+            data,
+            headers,
+            status_code,
+            obj["output_file"],
+            obj["verbose"],
+            extract_field=obj.get("extract_field"),
+            fields=obj.get("fields"),
+            command="amazon-product",
+        )
 
     asyncio.run(_single())
 
@@ -211,65 +233,29 @@ def amazon_search_cmd(
         if query:
             click.echo("cannot use both global --input-file and positional query", err=True)
             raise SystemExit(1)
-        inputs = read_input_file(input_file)
+        try:
+            inputs = read_input_file(input_file)
+        except ValueError as e:
+            click.echo(str(e), err=True)
+            raise SystemExit(1)
         usage_info = get_batch_usage(None)
-        validate_batch_run(obj["concurrency"], len(inputs), usage_info)
+        try:
+            validate_batch_run(obj["concurrency"], len(inputs), usage_info)
+        except ValueError as e:
+            click.echo(str(e), err=True)
+            raise SystemExit(1)
         concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        async def _batch() -> None:
-            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
+        skip_n = (
+            _find_completed_n(obj.get("output_dir") or "") if obj.get("resume") else frozenset()
+        )
 
-                async def do_one(q: str):
-                    try:
-                        data, headers, status_code = await client.amazon_search(
-                            q,
-                            start_page=start_page,
-                            pages=pages,
-                            sort_by=sort_by,
-                            device=device,
-                            domain=domain,
-                            country=country,
-                            zip_code=zip_code,
-                            language=language,
-                            currency=currency,
-                            category_id=category_id,
-                            merchant_id=merchant_id,
-                            autoselect_variant=parse_bool(autoselect_variant),
-                            add_html=parse_bool(add_html),
-                            light_request=parse_bool(light_request),
-                            screenshot=parse_bool(screenshot),
-                            retries=obj.get("retries", 3) or 3,
-                            backoff=obj.get("backoff", 2.0) or 2.0,
-                        )
-                        if status_code >= 400:
-                            err = RuntimeError(f"HTTP {status_code}")
-                            return data, headers, status_code, err, "json"
-                        return data, headers, status_code, None, "json"
-                    except Exception as e:
-                        return b"", {}, 0, e, "json"
-
-                results = await run_batch_async(
-                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
-                )
-            out_dir = write_batch_output_to_dir(
-                results, obj.get("output_dir") or None, obj["verbose"]
-            )
-            click.echo(f"Batch complete. Output written to {out_dir}")
-
-        asyncio.run(_batch())
-        return
-
-    if not query:
-        click.echo("expected one search query, or use global --input-file for batch", err=True)
-        raise SystemExit(1)
-
-    async def _single() -> None:
-        async with Client(key, BASE_URL) as client:
-            data, headers, status_code = await client.amazon_search(
-                query,
+        async def api_call(client, q):
+            return await client.amazon_search(
+                q,
                 start_page=start_page,
                 pages=pages,
-                sort_by=sort_by,
+                sort_by=norm_val(sort_by),
                 device=device,
                 domain=domain,
                 country=country,
@@ -285,11 +271,62 @@ def amazon_search_cmd(
                 retries=obj.get("retries", 3) or 3,
                 backoff=obj.get("backoff", 2.0) or 2.0,
             )
-        write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+
+        run_api_batch(
+            key=key,
+            inputs=inputs,
+            concurrency=concurrency,
+            from_user=obj["concurrency"] > 0,
+            skip_n=skip_n,
+            output_dir=obj.get("output_dir") or None,
+            verbose=obj["verbose"],
+            show_progress=obj.get("progress", True),
+            api_call=api_call,
+            diff_dir=obj.get("diff_dir"),
+        )
+        return
+
+    if not query:
+        click.echo("expected one search query, or use global --input-file for batch", err=True)
+        raise SystemExit(1)
+
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.amazon_search(
+                query,
+                start_page=start_page,
+                pages=pages,
+                sort_by=norm_val(sort_by),
+                device=device,
+                domain=domain,
+                country=country,
+                zip_code=zip_code,
+                language=language,
+                currency=currency,
+                category_id=category_id,
+                merchant_id=merchant_id,
+                autoselect_variant=parse_bool(autoselect_variant),
+                add_html=parse_bool(add_html),
+                light_request=parse_bool(light_request),
+                screenshot=parse_bool(screenshot),
+                retries=obj.get("retries", 3) or 3,
+                backoff=obj.get("backoff", 2.0) or 2.0,
+            )
+        check_api_response(data, status_code)
+        write_output(
+            data,
+            headers,
+            status_code,
+            obj["output_file"],
+            obj["verbose"],
+            extract_field=obj.get("extract_field"),
+            fields=obj.get("fields"),
+            command="amazon-search",
+        )
 
     asyncio.run(_single())
 
 
-def register(cli):  # noqa: ANN001
+def register(cli: click.Group) -> None:
     cli.add_command(amazon_product_cmd, "amazon-product")
     cli.add_command(amazon_search_cmd, "amazon-search")
