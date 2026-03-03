@@ -29,7 +29,7 @@ For long JSON (`--js-scenario`, `--extract-rules`) use shell: `--js-scenario "$(
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `--render-js` | true/false | Headless JS. When omitted, not sent (API default may apply). |
+| `--render-js` | true/false | Headless JS. **Default (when omitted): ON — costs 5 credits.** Use `--render-js false` (or `--preset fetch`) to skip JS and pay only 1 credit. |
 | `--wait` | int | Wait ms (0–35000) after load. |
 | `--wait-for` | string | CSS or XPath selector; return after element appears. `/` prefix = XPath. |
 | `--wait-browser` | string | `domcontentloaded`, `load`, `networkidle0`, `networkidle2`. |
@@ -72,6 +72,15 @@ Blocked? See [reference/proxy/strategies.md](reference/proxy/strategies.md).
 | `--timeout` | int | Timeout ms (1000–140000). Scrape job timeout on ScrapingBee. The CLI sets the HTTP client (aiohttp) timeout to this value in seconds plus 30 s (for send/receive) so the client does not give up before the API responds. |
 | `--custom-google` / `--transparent-status-code` | — | Google (15 credits), target status. |
 | `-X` / `-d` | — | Method (GET, POST, or PUT), body for POST/PUT. The request **to ScrapingBee** is always `application/x-www-form-urlencoded`; use form body (e.g. `KEY_1=VALUE_1`). For POST/PUT use **`--render-js false`** so the request is forwarded without the browser tunnel. |
+
+## RAG / chunked output
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `--chunk-size` | int | Split text/markdown output into chunks of N chars (0 = disabled). |
+| `--chunk-overlap` | int | Overlap chars between consecutive chunks (default 0). |
+
+When `--chunk-size > 0`, output is NDJSON where each line is `{"url":…,"chunk_index":N,"total_chunks":N,"content":…,"fetched_at":…}`. Useful for vector DB / LLM context-window pipelines. Works in both single-URL and batch modes.
 
 ## Retries (global)
 

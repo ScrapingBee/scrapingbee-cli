@@ -28,13 +28,27 @@ Commands with **single input** (URL, query, ASIN, video ID, prompt) support batc
 
 Output layout: [reference/batch/output.md](reference/batch/output.md).
 
+## Change detection (--diff-dir)
+
+Re-run a batch against a previous run's output directory to detect changes. Files whose content is identical to the previous run are not re-written; the manifest marks them `unchanged: true`.
+
+```bash
+# First run
+scrapingbee scrape --output-dir run_2025_01_15 --input-file urls.txt
+
+# Second run — compare with previous
+scrapingbee --diff-dir run_2025_01_15 --output-dir run_2025_01_16 --input-file urls.txt scrape
+```
+
+The `--diff-dir` must point to a folder containing a `manifest.json` from a previous run. Content comparison uses MD5 hashing of the response body. For scheduled monitoring, use `schedule --auto-diff` to inject `--diff-dir` automatically between runs.
+
 ## Examples
 
 Global options (`--output-dir`, `--input-file`, `--concurrency`) go **before** the command:
 
 ```bash
-scrapingbee --output-dir out --input-file urls.txt scrape
-scrapingbee --output-dir out --input-file queries.txt google --country-code us
-scrapingbee --output-dir out --input-file asins.txt amazon-product --domain com
-scrapingbee --output-dir out --input-file urls.txt --concurrency 10 scrape
+scrapingbee scrape --output-dir out --input-file urls.txt
+scrapingbee google --output-dir out --input-file queries.txt --country-code us
+scrapingbee amazon-product --output-dir out --input-file asins.txt --domain com
+scrapingbee scrape --output-dir out --input-file urls.txt --concurrency 10
 ```

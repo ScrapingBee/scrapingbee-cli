@@ -6,6 +6,8 @@ Command-line client for the [ScrapingBee](https://www.scrapingbee.com/) API: scr
 
 - **Python 3.10+**
 
+**Setup:** Install (below), then authenticate (Configuration). You need a ScrapingBee API key before any command will work.
+
 ## Installation
 
 ```bash
@@ -34,7 +36,7 @@ scrapingbee [command] [arguments] [options]
 - **`scrapingbee --help`** – List all commands.
 - **`scrapingbee [command] --help`** – Options and parameters for that command.
 
-**Global flags** (must appear before the subcommand): `--output-file`, `--verbose`, `--output-dir`, `--input-file`, `--concurrency`, `--retries`, `--backoff`. For details, run `scrapingbee --help` or see the [documentation](https://www.scrapingbee.com/documentation/).
+**Global flags** (can appear before or after the subcommand): `--output-file`, `--verbose`, `--output-dir`, `--input-file`, `--concurrency`, `--retries`, `--backoff`, `--resume`, `--diff-dir`, `--no-progress`, `--extract-field`, `--fields`. For details, run `scrapingbee --help` or see the [documentation](https://www.scrapingbee.com/documentation/).
 
 ### Commands
 
@@ -44,25 +46,38 @@ scrapingbee [command] [arguments] [options]
 | `auth` / `logout` | Save or remove API key |
 | `docs` | Print docs URL; `--open` to open in browser |
 | `scrape [url]` | Scrape a URL (HTML, JS, screenshot, extract) |
-| `crawl` | Crawl with Scrapy or from URL(s) |
+| `crawl` | Crawl with Scrapy or from URL(s)/sitemap |
 | `google` / `fast-search` | Search SERP APIs |
 | `amazon-product` / `amazon-search` | Amazon product and search |
 | `walmart-search` / `walmart-product` | Walmart search and product |
 | `youtube-search` / `youtube-metadata` | YouTube search and video metadata |
 | `chatgpt` | ChatGPT API |
+| `export` | Merge batch/crawl output to ndjson, txt, or csv |
+| `schedule` | Run any command on a repeating interval |
 
-**Batch mode:** Commands that take a single input support `--input-file` (one line per input) and `--output-dir`. Run `scrapingbee usage` before large batches.
+**Batch mode:** Commands that take a single input support `--input-file` (one line per input) and `--output-dir`. Run `scrapingbee usage` before large batches. Use `--resume` to skip already-completed items after interruption.
 
 **Parameters and options:** Use space-separated values (e.g. `--render-js false`), not `--option=value`. For full parameter lists, response formats, and credit costs, see **`scrapingbee [command] --help`** and the [ScrapingBee API documentation](https://www.scrapingbee.com/documentation/).
+
+### Key features
+
+- **Pipelines:** Chain commands with `--extract-field` — e.g. `google QUERY --extract-field organic_results.url > urls.txt` then `scrape --input-file urls.txt`.
+- **Change detection:** `--diff-dir old_run/` skips files unchanged since the previous run (by MD5). Manifest marks unchanged items.
+- **Scheduling:** `scrapingbee schedule --every 1h google "python news"` runs hourly. Add `--auto-diff` for automatic change detection between runs.
+- **RAG chunking:** `scrape --chunk-size 500 --chunk-overlap 50 --return-page-markdown true` outputs NDJSON chunks ready for vector DB ingestion.
+- **Export:** `scrapingbee export --input-dir batch/ --format csv` merges batch output into a single CSV, ndjson, or txt file.
 
 ### Examples
 
 ```bash
 scrapingbee usage
 scrapingbee docs --open
-scrapingbee --output-file page.html scrape "https://example.com"
-scrapingbee --output-dir out --input-file urls.txt scrape
-scrapingbee --output-file serp.json google "pizza new york"
+scrapingbee scrape "https://example.com" --output-file page.html
+scrapingbee scrape --output-dir out --input-file urls.txt
+scrapingbee google "pizza new york" --output-file serp.json
+scrapingbee google "python tutorials" --extract-field organic_results.url > urls.txt
+scrapingbee export --input-dir batch_output/ --format csv > results.csv
+scrapingbee schedule --every 30m --auto-diff --output-dir runs/ google "breaking news"
 ```
 
 ## More information
@@ -84,9 +99,10 @@ pip install -e ".[dev]"
 
 | Command | What runs |
 |---------|------------|
-| `pytest` | Full suite (integration tests require `SCRAPINGBEE_API_KEY`) |
-| `pytest tests/unit` | Unit tests only (no API key needed) |
+| `pytest tests/unit` | Unit tests only (343 tests, no API key needed) |
 | `pytest -m "not integration"` | All except integration (no API key needed) |
-| `pytest -v` | Same as above with verbose output (default in config) |
+| `pytest` | Full suite (integration tests require `SCRAPINGBEE_API_KEY`) |
+| `python tests/run_e2e_tests.py` | E2E tests (182 tests, requires `SCRAPINGBEE_API_KEY`) |
+| `python tests/run_e2e_tests.py --filter GG` | E2E tests filtered by prefix |
 
 Integration tests call the live ScrapingBee API and are marked with `@pytest.mark.integration`.

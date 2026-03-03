@@ -7,16 +7,16 @@ import asyncio
 import click
 
 from ..batch import (
+    _find_completed_n,
     get_batch_usage,
     read_input_file,
     resolve_batch_concurrency,
-    run_batch_async,
+    run_api_batch,
     validate_batch_run,
-    write_batch_output_to_dir,
 )
+from ..cli_utils import _validate_page, check_api_response, write_output
 from ..client import Client
 from ..config import BASE_URL, get_api_key
-from ..cli_utils import _validate_page, write_output
 
 
 @click.command("fast-search")
@@ -50,40 +50,45 @@ def fast_search_cmd(
         if query:
             click.echo("cannot use both global --input-file and positional query", err=True)
             raise SystemExit(1)
-        inputs = read_input_file(input_file)
+        try:
+            inputs = read_input_file(input_file)
+        except ValueError as e:
+            click.echo(str(e), err=True)
+            raise SystemExit(1)
         usage_info = get_batch_usage(None)
-        validate_batch_run(obj["concurrency"], len(inputs), usage_info)
+        try:
+            validate_batch_run(obj["concurrency"], len(inputs), usage_info)
+        except ValueError as e:
+            click.echo(str(e), err=True)
+            raise SystemExit(1)
         concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
-        async def _batch() -> None:
-            async with Client(key, BASE_URL, connector_limit=concurrency) as client:
+        skip_n = (
+            _find_completed_n(obj.get("output_dir") or "") if obj.get("resume") else frozenset()
+        )
 
-                async def do_one(q: str):
-                    try:
-                        data, headers, status_code = await client.fast_search(
-                            q,
-                            page=page,
-                            country_code=country_code,
-                            language=language,
-                            retries=obj.get("retries", 3) or 3,
-                            backoff=obj.get("backoff", 2.0) or 2.0,
-                        )
-                        if status_code >= 400:
-                            err = RuntimeError(f"HTTP {status_code}")
-                            return data, headers, status_code, err, "json"
-                        return data, headers, status_code, None, "json"
-                    except Exception as e:
-                        return b"", {}, 0, e, "json"
-
-                results = await run_batch_async(
-                    inputs, concurrency, do_one, from_user=obj["concurrency"] > 0
-                )
-            out_dir = write_batch_output_to_dir(
-                results, obj.get("output_dir") or None, obj["verbose"]
+        async def api_call(client, q):
+            return await client.fast_search(
+                q,
+                page=page,
+                country_code=country_code,
+                language=language,
+                retries=obj.get("retries", 3) or 3,
+                backoff=obj.get("backoff", 2.0) or 2.0,
             )
-            click.echo(f"Batch complete. Output written to {out_dir}")
 
-        asyncio.run(_batch())
+        run_api_batch(
+            key=key,
+            inputs=inputs,
+            concurrency=concurrency,
+            from_user=obj["concurrency"] > 0,
+            skip_n=skip_n,
+            output_dir=obj.get("output_dir") or None,
+            verbose=obj["verbose"],
+            show_progress=obj.get("progress", True),
+            api_call=api_call,
+            diff_dir=obj.get("diff_dir"),
+        )
         return
 
     if not query:
@@ -100,10 +105,20 @@ def fast_search_cmd(
                 retries=obj.get("retries", 3) or 3,
                 backoff=obj.get("backoff", 2.0) or 2.0,
             )
-        write_output(data, headers, status_code, obj["output_file"], obj["verbose"])
+        check_api_response(data, status_code)
+        write_output(
+            data,
+            headers,
+            status_code,
+            obj["output_file"],
+            obj["verbose"],
+            extract_field=obj.get("extract_field"),
+            fields=obj.get("fields"),
+            command="fast-search",
+        )
 
     asyncio.run(_single())
 
 
-def register(cli):  # noqa: ANN001
+def register(cli: click.Group) -> None:
     cli.add_command(fast_search_cmd, "fast-search")

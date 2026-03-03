@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import click
 
-def register_commands(cli):  # noqa: ANN001
+
+def register_commands(cli: click.Group) -> None:
     """Register all subcommands with the main cli group."""
-    from . import amazon
-    from . import auth
-    from . import chatgpt
-    from . import crawl
-    from . import fast_search
-    from . import google
-    from . import usage
-    from . import walmart
-    from . import youtube
+    from . import (
+        amazon,
+        auth,
+        chatgpt,
+        crawl,
+        export,
+        fast_search,
+        google,
+        schedule,
+        usage,
+        walmart,
+        youtube,
+    )
 
     usage.register(cli)
     auth.register(cli)
@@ -27,3 +33,5 @@ def register_commands(cli):  # noqa: ANN001
     walmart.register(cli)
     youtube.register(cli)
     chatgpt.register(cli)
+    export.register(cli)
+    schedule.register(cli)

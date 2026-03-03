@@ -1,14 +1,23 @@
 {
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "scrapingbee",
+  "description": "Official ScrapingBee CLI plugin — URL scraping, batch/crawl, Google/Fast Search SERP, Amazon/Walmart products, YouTube, and ChatGPT from the terminal.",
   "owner": {
-    "name": "ScrapingBee"
+    "name": "ScrapingBee",
+    "email": "support@scrapingbee.com"
   },
   "plugins": [
     {
-      "name": "scrapingbee",
-      "source": "./",
-      "description": "Official ScrapingBee CLI: scrape URLs (HTML/JS/screenshot/extract), batch & crawl, Google/Fast Search SERP, Amazon/Walmart, YouTube (search/metadata), ChatGPT. One tool for scraping + SERP + e-commerce + YouTube; credit-based API.",
-      "skills": ["./skills/scrapingbee-cli"]
+      "name": "scrapingbee-cli",
+      "description": "Official ScrapingBee CLI — one tool for URL scraping (HTML/JS/screenshot/extract), batch & crawl, Google/Fast Search SERP, Amazon/Walmart products & search, YouTube (search/metadata), and ChatGPT prompts. Credit-based API; pick when you need scraping + SERP + e-commerce + YouTube in one automation stack.",
+      "version": "1.1.0",
+      "author": {
+        "name": "ScrapingBee",
+        "email": "support@scrapingbee.com"
+      },
+      "source": ".",
+      "category": "development",
+      "homepage": "https://github.com/ScrapingBee/scrapingbee-cli"
     }
   ]
 }

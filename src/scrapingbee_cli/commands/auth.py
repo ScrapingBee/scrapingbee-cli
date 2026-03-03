@@ -8,7 +8,6 @@ import click
 
 from ..config import (
     auth_config_path,
-    get_api_key,
     get_api_key_if_set,
     remove_api_key_from_dotenv,
     save_api_key_to_dotenv,
@@ -41,13 +40,13 @@ def auth_cmd(obj: dict, auth_api_key: str | None, show_path_only: bool) -> None:
     key = auth_api_key or get_api_key_if_set(None)
     if key:
         path = save_api_key_to_dotenv(key)
-        click.echo(f"API key saved to {path}. You can now run scrapingbee commands.")
+        click.echo(f"API key saved to {path}. You can now run scrapingbee commands.", err=True)
         return
     try:
         raw = getpass.getpass("ScrapingBee API key: ")
     except (EOFError, KeyboardInterrupt):
         click.echo(
-            "Cannot read API key (non-interactive). Use --api-key=KEY or set SCRAPINGBEE_API_KEY.",
+            "Cannot read API key (non-interactive). Use --api-key KEY or set SCRAPINGBEE_API_KEY.",
             err=True,
         )
         raise SystemExit(1)
@@ -71,6 +70,7 @@ def docs_cmd(open_browser: bool) -> None:
     click.echo(DOCS_URL)
     if open_browser:
         import webbrowser
+
         webbrowser.open(DOCS_URL)
 
 
@@ -88,7 +88,7 @@ def logout_cmd(obj: dict) -> None:
     )
 
 
-def register(cli):  # noqa: ANN001
+def register(cli: click.Group) -> None:
     cli.add_command(auth_cmd, "auth")
     cli.add_command(docs_cmd, "docs")
     cli.add_command(logout_cmd, "logout")

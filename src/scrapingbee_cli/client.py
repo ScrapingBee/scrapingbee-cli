@@ -228,9 +228,7 @@ class Client:
         for attempt in range(max(0, retries) + 1):
             try:
                 if method_upper == "GET":
-                    body_out, out_headers, status = await self._get(
-                        "", params, headers=req_headers
-                    )
+                    body_out, out_headers, status = await self._get("", params, headers=req_headers)
                 else:
                     params_clean = _clean_params(params)
                     params_clean["api_key"] = self.api_key
@@ -575,7 +573,9 @@ def parse_usage(body: bytes) -> dict:
         if 0 < v <= 10000:
             out["max_concurrency"] = v
 
-    # Fallbacks only when exact API keys were not present
+    # Fallbacks for alternative key names seen in older or variant API responses.
+    # These exist because the API contract has drifted over time; the canonical
+    # keys (max_api_credit / used_api_credit / max_concurrency) are tried first.
     if out["max_concurrency"] == 5:
         for key in (
             "max_concurrent_requests",

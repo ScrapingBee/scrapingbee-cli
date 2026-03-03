@@ -67,12 +67,11 @@ def test_get_api_key_if_set_returns_env(monkeypatch):
 
 
 def test_load_dotenv_sets_from_file(monkeypatch, tmp_path):
-    dotenv = tmp_path / ".env"
-    dotenv.write_text("SCRAPINGBEE_API_KEY=from-dotenv\n")
+    (tmp_path / ".env").write_text("SCRAPINGBEE_API_KEY=from-dotenv\n")
     monkeypatch.delenv(ENV_API_KEY, raising=False)
+    monkeypatch.chdir(tmp_path)  # load_dotenv evaluates Path.cwd() at call time
     from scrapingbee_cli import config
 
-    monkeypatch.setattr(config, "DOTENV_CWD", dotenv)
     monkeypatch.setattr(config, "DOTENV_HOME", tmp_path / "nonexistent.env")
     load_dotenv()
     assert os.environ.get(ENV_API_KEY) == "from-dotenv"
@@ -81,9 +80,9 @@ def test_load_dotenv_sets_from_file(monkeypatch, tmp_path):
 def test_load_dotenv_does_not_override_existing_env(monkeypatch, tmp_path):
     (tmp_path / ".env").write_text("SCRAPINGBEE_API_KEY=from-dotenv\n")
     monkeypatch.setenv(ENV_API_KEY, "already-set")
+    monkeypatch.chdir(tmp_path)  # load_dotenv evaluates Path.cwd() at call time
     from scrapingbee_cli import config
 
-    monkeypatch.setattr(config, "DOTENV_CWD", tmp_path / ".env")
     monkeypatch.setattr(config, "DOTENV_HOME", tmp_path / "nonexistent.env")
     load_dotenv()
     assert os.environ.get(ENV_API_KEY) == "already-set"

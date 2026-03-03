@@ -36,9 +36,11 @@ def test_root_help():
 
 
 def test_root_version():
+    from scrapingbee_cli import __version__
+
     code, out, _ = cli_run(["--version"])
     assert code == 0
-    assert "1.0" in out and "scrapingbee" in out.lower()
+    assert __version__ in out and "scrapingbee" in out.lower()
 
 
 @pytest.mark.parametrize("cmd,args", CLI_COMMANDS_REQUIRE_API_KEY)
@@ -187,9 +189,7 @@ def test_scrape_post_body_echoed(api_key):
     data = json.loads(out)
     assert "form" in data, f"no 'form' in response: {list(data)}"
     form = data["form"]
-    assert form.get("KEY_1") == "VALUE_1", (
-        f"expected form KEY_1=VALUE_1, got form={form!r}"
-    )
+    assert form.get("KEY_1") == "VALUE_1", f"expected form KEY_1=VALUE_1, got form={form!r}"
 
 
 @pytest.mark.integration
@@ -224,9 +224,7 @@ def test_batch_uses_usage_concurrency(api_key):
     import tempfile
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-        f.write(
-            "https://httpbin.org/get\nhttps://httpbin.org/headers\nhttps://httpbin.org/get\n"
-        )
+        f.write("https://httpbin.org/get\nhttps://httpbin.org/headers\nhttps://httpbin.org/get\n")
         tmp = f.name
     out_dir = _test_results_dir() / "batch_usage_concurrency"
     out_dir.mkdir(exist_ok=True)
@@ -292,9 +290,7 @@ def test_batch_output_dir_has_files(api_key):
     import tempfile
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as input_f:
-        input_f.write(
-            "https://httpbin.org/get\nhttps://httpbin.org/headers\n"
-        )
+        input_f.write("https://httpbin.org/get\nhttps://httpbin.org/headers\n")
         input_path = input_f.name
     out_dir = _test_results_dir() / "batch_out_test"
     out_dir.mkdir(exist_ok=True)

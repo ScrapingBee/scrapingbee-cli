@@ -26,12 +26,15 @@ def usage_cmd(obj: dict) -> None:
         async with Client(key, BASE_URL) as client:
             data, _, status_code = await client.usage(retries=retries, backoff=backoff)
             if status_code != 200:
-                click.echo(f"API returned status {status_code}: {data.decode()}", err=True)
+                click.echo(
+                    f"API returned status {status_code}: {data.decode('utf-8', errors='replace')}",
+                    err=True,
+                )
                 raise SystemExit(1)
             click.echo(pretty_json(data))
 
     asyncio.run(_run())
 
 
-def register(cli):  # noqa: ANN001
+def register(cli: click.Group) -> None:
     cli.add_command(usage_cmd, "usage")

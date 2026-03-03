@@ -219,4 +219,6 @@ CLI_COMMANDS = [
 ]
 
 # Commands that require an API key (for no-api-key test; auth, logout, docs are excluded)
-CLI_COMMANDS_REQUIRE_API_KEY = [(c, a) for c, a in CLI_COMMANDS if c not in ("auth", "logout", "docs")]
+CLI_COMMANDS_REQUIRE_API_KEY = [
+    (c, a) for c, a in CLI_COMMANDS if c not in ("auth", "logout", "docs")
+]

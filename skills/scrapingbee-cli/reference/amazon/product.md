@@ -1,11 +1,11 @@
 # Amazon Product API
 
-Fetch a single product by **ASIN**. JSON output. **Credit:** 5–15 per request. Use **`--output-file file.json`** (before command).
+Fetch a single product by **ASIN**. JSON output. **Credit:** 5–15 per request. Use **`--output-file file.json`** (before or after command).
 
 ## Command
 
 ```bash
-scrapingbee --output-file product.json amazon-product B0DPDRNSXV --domain com
+scrapingbee amazon-product --output-file product.json B0DPDRNSXV --domain com
 ```
 
 ## Parameters
@@ -28,4 +28,22 @@ scrapingbee --output-file product.json amazon-product B0DPDRNSXV --domain com
 
 ## Output
 
-JSON: asin, brand, title, description, bullet_points, price, currency, rating, review_count, availability, category, delivery, images, url, etc. With `--parse false`: raw HTML. See [reference/amazon/product-output.md](reference/amazon/product-output.md).
+JSON: asin, brand, title, description, bullet_points, price, currency, rating, review_count, availability, category, delivery, images, url, etc. See [reference/amazon/product-output.md](reference/amazon/product-output.md).
+
+```json
+{
+  "asin": "B0DPDRNSXV",
+  "title": "Product Name",
+  "brand": "Brand Name",
+  "description": "Full description...",
+  "bullet_points": ["Feature 1", "Feature 2"],
+  "price": 29.99,
+  "currency": "USD",
+  "rating": 4.5,
+  "review_count": 1234,
+  "availability": "In Stock",
+  "category": "Electronics",
+  "images": ["https://m.media-amazon.com/images/..."],
+  "url": "https://www.amazon.com/dp/B0DPDRNSXV"
+}
+```
