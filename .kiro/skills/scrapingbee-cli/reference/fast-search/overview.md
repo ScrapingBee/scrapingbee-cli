@@ -1,6 +1,8 @@
 # Fast Search API
 
-Sub-second SERP results. Simpler than Google. **Credit:** per request. JSON output; use **`--output-file file.json`** (before or after command).
+> **Syntax:** use space-separated values — `--option value`, not `--option=value`.
+
+Sub-second SERP results. Simpler than Google. **Credit:** 5 per request. JSON output; use **`--output-file file.json`** (before or after command).
 
 ## Command
 
@@ -30,7 +32,7 @@ scrapingbee scrape --output-dir pages --input-file urls.txt --return-page-markdo
 
 ## Output
 
-JSON: `organic` array; each item: `title`, `link`, `description`, `rank`, `extensions`.
+JSON: `organic` array, `status`, `top_stories`, `url`. Each organic item: `title`, `link`, `description`, `rank`, `extensions`.
 
 ```json
 {
@@ -42,6 +44,9 @@ JSON: `organic` array; each item: `title`, `link`, `description`, `rank`, `exten
       "description": "Page description...",
       "extensions": {}
     }
-  ]
+  ],
+  "status": "ok",
+  "top_stories": [],
+  "url": "https://..."
 }
 ```

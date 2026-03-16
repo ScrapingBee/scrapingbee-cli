@@ -6,14 +6,17 @@ import asyncio
 
 import click
 
+from ..cli_utils import _output_options, store_common_options
 from ..client import Client, pretty_json
 from ..config import BASE_URL, get_api_key
 
 
 @click.command()
+@_output_options
 @click.pass_obj
-def usage_cmd(obj: dict) -> None:
+def usage_cmd(obj: dict, **kwargs) -> None:
     """Check API credit usage and concurrency."""
+    store_common_options(obj, **kwargs)
     try:
         key = get_api_key(None)
     except ValueError as e:
@@ -31,7 +34,12 @@ def usage_cmd(obj: dict) -> None:
                     err=True,
                 )
                 raise SystemExit(1)
-            click.echo(pretty_json(data))
+            output_file = obj.get("output_file")
+            if output_file:
+                with open(output_file, "w", encoding="utf-8") as f:
+                    f.write(pretty_json(data) + "\n")
+            else:
+                click.echo(pretty_json(data))
 
     asyncio.run(_run())
 

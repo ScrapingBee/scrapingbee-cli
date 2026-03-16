@@ -9,13 +9,199 @@ from typing import Any
 import click
 
 
-def _extract_field_values(data: bytes, path: str) -> bytes:
-    """Extract values from JSON data using a simple path expression.
+def _output_options(f: Any) -> Any:
+    """Output + Retry options (for commands without batch support)."""
+    f = click.option(
+        "--output-file",
+        "output_file",
+        type=click.Path(),
+        default=None,
+        help="Write output to file instead of stdout.",
+    )(f)
+    f = click.option(
+        "--verbose", is_flag=True, default=False, help="Show response headers and status code."
+    )(f)
+    f = click.option(
+        "--extract-field",
+        "extract_field",
+        type=str,
+        default=None,
+        help="Extract values from JSON using dot-path (e.g. organic_results.url).",
+    )(f)
+    f = click.option(
+        "--fields", type=str, default=None, help="Comma-separated top-level JSON keys to include."
+    )(f)
+    f = click.option("--retries", type=int, default=3, help="Retry on errors (default: 3).")(f)
+    f = click.option(
+        "--backoff", type=float, default=2.0, help="Retry backoff multiplier (default: 2.0)."
+    )(f)
+    return f
 
-    Supports:
-    - ``key.subkey``  — iterate the top-level list at *key*, extract *subkey*
-      from each dict item (one value per line).
-    - ``key``         — extract the top-level scalar (or list of scalars).
+
+def _batch_options(f: Any) -> Any:
+    """Output + Batch + Retry options (for commands with batch support)."""
+    f = click.option(
+        "--output-file",
+        "output_file",
+        type=click.Path(),
+        default=None,
+        help="Write output to file instead of stdout.",
+    )(f)
+    f = click.option(
+        "--verbose", is_flag=True, default=False, help="Show response headers and status code."
+    )(f)
+    f = click.option(
+        "--extract-field",
+        "extract_field",
+        type=str,
+        default=None,
+        help="Extract values from JSON using dot-path.",
+    )(f)
+    f = click.option(
+        "--fields", type=str, default=None, help="Comma-separated top-level JSON keys to include."
+    )(f)
+    f = click.option(
+        "--input-file",
+        "input_file",
+        type=str,
+        default=None,
+        help="Batch: one item per line. Use - for stdin.",
+    )(f)
+    f = click.option(
+        "--input-column",
+        "input_column",
+        type=str,
+        default=None,
+        help="CSV input: column name or 0-based index.",
+    )(f)
+    f = click.option("--output-dir", "output_dir", default=None, help="Batch output folder.")(f)
+    f = click.option(
+        "--output-format",
+        "output_format",
+        type=click.Choice(["files", "csv", "ndjson"], case_sensitive=False),
+        default="files",
+        help="Batch: output format (files, csv, or ndjson).",
+    )(f)
+    f = click.option(
+        "--concurrency",
+        type=int,
+        default=0,
+        help="Batch: max concurrent requests (0 = auto from plan).",
+    )(f)
+    f = click.option(
+        "--deduplicate",
+        is_flag=True,
+        default=False,
+        help="Batch: normalize URLs and remove duplicates from input.",
+    )(f)
+    f = click.option(
+        "--sample",
+        type=int,
+        default=0,
+        help="Batch: process only N random items from input (0 = all).",
+    )(f)
+    f = click.option(
+        "--post-process",
+        "post_process",
+        type=str,
+        default=None,
+        help="Batch: pipe each result through a shell command (e.g. 'jq .title').",
+    )(f)
+    f = click.option(
+        "--update-csv",
+        "update_csv",
+        is_flag=True,
+        default=False,
+        help="Batch: fetch fresh data and update the input CSV in-place.",
+    )(f)
+    f = click.option(
+        "--resume",
+        is_flag=True,
+        default=False,
+        help="Batch: skip items already saved in --output-dir.",
+    )(f)
+    f = click.option(
+        "--no-progress",
+        "no_progress",
+        is_flag=True,
+        default=False,
+        help="Batch: suppress progress display.",
+    )(f)
+    f = click.option(
+        "--on-complete",
+        "on_complete",
+        type=str,
+        default=None,
+        help="Batch: shell command to run after completion.",
+    )(f)
+    f = click.option("--retries", type=int, default=3, help="Retry on errors (default: 3).")(f)
+    f = click.option(
+        "--backoff", type=float, default=2.0, help="Retry backoff multiplier (default: 2.0)."
+    )(f)
+    return f
+
+
+def store_common_options(obj: dict, **kwargs: Any) -> None:
+    """Store decorator option values into the obj dict."""
+    obj["output_file"] = kwargs.get("output_file")
+    obj["verbose"] = kwargs.get("verbose", False)
+    obj["extract_field"] = kwargs.get("extract_field")
+    obj["fields"] = kwargs.get("fields")
+    obj["input_file"] = kwargs.get("input_file")
+    obj["input_column"] = kwargs.get("input_column")
+    obj["output_dir"] = kwargs.get("output_dir") or ""
+    obj["output_format"] = kwargs.get("output_format", "files")
+    obj["concurrency"] = kwargs.get("concurrency") or 0
+    obj["deduplicate"] = kwargs.get("deduplicate", False)
+    obj["sample"] = kwargs.get("sample", 0)
+    obj["post_process"] = kwargs.get("post_process")
+    obj["update_csv"] = kwargs.get("update_csv", False)
+    obj["resume"] = kwargs.get("resume", False)
+    obj["progress"] = not kwargs.get("no_progress", False)
+    obj["on_complete"] = kwargs.get("on_complete")
+    obj["retries"] = kwargs.get("retries") if kwargs.get("retries") is not None else 3
+    obj["backoff"] = kwargs.get("backoff") if kwargs.get("backoff") is not None else 2.0
+
+
+def _resolve_dotpath(obj: Any, keys: list[str]) -> Any:
+    """Walk *obj* using *keys* (dot-path segments).
+
+    - When a segment hits a **list**, the remaining path is applied to every
+      dict item in that list and the results are collected into a flat list.
+    - When a segment hits a **dict**, traversal continues into the nested dict.
+    - Returns ``None`` if the path cannot be resolved.
+    """
+    cur: Any = obj
+    for i, key in enumerate(keys):
+        if isinstance(cur, dict):
+            cur = cur.get(key)
+            if cur is None:
+                return None
+        elif isinstance(cur, list):
+            # Remaining keys need to be applied to each item in the list.
+            rest = keys[i:]
+            collected: list[Any] = []
+            for item in cur:
+                v = _resolve_dotpath(item, rest)
+                if v is None:
+                    continue
+                if isinstance(v, list):
+                    collected.extend(v)
+                else:
+                    collected.append(v)
+            return collected if collected else None
+        else:
+            return None
+    return cur
+
+
+def _extract_field_values(data: bytes, path: str) -> bytes:
+    """Extract values from JSON data using a dot-path expression.
+
+    Supports arbitrary nesting depth: ``key``, ``key.subkey``,
+    ``key.subkey.deeper``, etc.  When a segment resolves to a list, the
+    remaining path is applied to every dict item in that list (one output
+    value per item).
 
     Returns newline-separated UTF-8 bytes, suitable for use as ``--input-file``.
     Returns *data* unchanged if parsing fails or the path is not found.
@@ -25,24 +211,15 @@ def _extract_field_values(data: bytes, path: str) -> bytes:
     except (json.JSONDecodeError, UnicodeDecodeError):
         return data
 
-    if "." in path:
-        array_key, _, subkey = path.partition(".")
-        arr = obj.get(array_key) if isinstance(obj, dict) else None
-        if not isinstance(arr, list):
-            return b""
-        values = [
-            str(item[subkey])
-            for item in arr
-            if isinstance(item, dict) and item.get(subkey) is not None
-        ]
+    keys = path.split(".")
+    result = _resolve_dotpath(obj, keys)
+
+    if result is None:
+        return b""
+    if isinstance(result, list):
+        values = [str(v) for v in result if v is not None]
     else:
-        val = obj.get(path) if isinstance(obj, dict) else None
-        if val is None:
-            return b""
-        if isinstance(val, list):
-            values = [str(v) for v in val if v is not None]
-        else:
-            values = [str(val)]
+        values = [str(result)]
 
     return ("\n".join(values) + "\n").encode("utf-8") if values else b""
 
@@ -280,6 +457,115 @@ def chunk_text(text: str, size: int, overlap: int = 0) -> list[str]:
     step = size - overlap
     chunks = [text[i : i + size] for i in range(0, max(1, len(text)), step)]
     return [c for c in chunks if c]
+
+
+def _is_blocked(status_code: int, headers: dict) -> bool:
+    """Check if the **target site** blocked the request (403/429).
+
+    The ScrapingBee API uses its own status codes (e.g. API 429 = plan
+    concurrency limit, not target blocking).  The target's real status is
+    always in the ``spb-initial-status-code`` response header, regardless
+    of ``--transparent-status-code``.
+    """
+    for k, v in headers.items():
+        if k.lower() == "spb-initial-status-code":
+            try:
+                return int(v) in (403, 429)
+            except (ValueError, TypeError):
+                pass
+    return False
+
+
+_PROXY_TIERS: list[tuple[str, dict[str, bool]]] = [
+    ("premium", {"premium_proxy": True}),
+    ("stealth", {"stealth_proxy": True}),
+]
+
+
+async def scrape_with_escalation(
+    client: Any,
+    url: str,
+    scrape_kwargs: dict[str, Any],
+    *,
+    verbose: bool = False,
+) -> tuple[bytes, dict, int]:
+    """Call ``client.scrape`` with automatic proxy tier escalation on 403/429.
+
+    Tries the request as-is first.  If the response indicates blocking, retries
+    with ``premium_proxy``, then ``stealth_proxy``.  Already-set proxy flags
+    are respected: if the user passed ``--premium-proxy``, escalation starts
+    from stealth.
+
+    Returns the final ``(data, headers, status_code)`` tuple.
+    """
+    data, headers, status_code = await client.scrape(url, **scrape_kwargs)
+    if not _is_blocked(status_code, headers):
+        return data, headers, status_code
+
+    for tier_name, tier_overrides in _PROXY_TIERS:
+        # Skip tiers the user already set.
+        already = any(scrape_kwargs.get(k) for k in tier_overrides)
+        if already:
+            continue
+        click.echo(f"[escalate-proxy] {url}: blocked, retrying with {tier_name} proxy", err=True)
+        escalated = {**scrape_kwargs, **tier_overrides}
+        data, headers, status_code = await client.scrape(url, **escalated)
+        if verbose:
+            cost = None
+            for k, v in headers.items():
+                if k.lower() == "spb-cost":
+                    cost = v
+                    break
+            cost_str = f" ({cost} credits)" if cost else ""
+            click.echo(f"[escalate-proxy] {tier_name} → HTTP {status_code}{cost_str}", err=True)
+        if not _is_blocked(status_code, headers):
+            return data, headers, status_code
+
+    return data, headers, status_code
+
+
+def prepare_batch_inputs(inputs: list[str], obj: dict) -> list[str]:
+    """Apply --deduplicate and --sample to batch inputs."""
+    from .batch import deduplicate_inputs, sample_inputs
+
+    if obj.get("deduplicate"):
+        inputs, removed = deduplicate_inputs(inputs)
+        if removed:
+            click.echo(
+                f"Deduplicated: removed {removed} duplicate(s), {len(inputs)} unique", err=True
+            )
+    sample_n = obj.get("sample", 0)
+    if sample_n > 0:
+        inputs = sample_inputs(inputs, sample_n)
+        click.echo(f"Sampled {len(inputs)} items from input", err=True)
+    return inputs
+
+
+def run_on_complete(
+    cmd: str | None,
+    *,
+    output_dir: str = "",
+    succeeded: int = 0,
+    failed: int = 0,
+) -> None:
+    """Run the ``--on-complete`` shell command if set.
+
+    Injects ``SCRAPINGBEE_OUTPUT_DIR``, ``SCRAPINGBEE_SUCCEEDED``, and
+    ``SCRAPINGBEE_FAILED`` environment variables.
+    """
+    if not cmd:
+        return
+    import os
+    import subprocess
+
+    env = os.environ.copy()
+    env["SCRAPINGBEE_OUTPUT_DIR"] = output_dir
+    env["SCRAPINGBEE_SUCCEEDED"] = str(succeeded)
+    env["SCRAPINGBEE_FAILED"] = str(failed)
+    click.echo(f"[on-complete] Running: {cmd}", err=True)
+    result = subprocess.run(cmd, shell=True, env=env)  # noqa: S602
+    if result.returncode != 0:
+        click.echo(f"[on-complete] Exit code: {result.returncode}", err=True)
 
 
 def write_output(

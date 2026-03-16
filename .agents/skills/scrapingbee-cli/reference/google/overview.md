@@ -1,5 +1,7 @@
 # Google Search API
 
+> **Syntax:** use space-separated values — `--option value`, not `--option=value`.
+
 Structured Google SERP (classic, news, maps, images, etc.). **Credit:** 10–15 per request. JSON output; use **`--output-file file.json`** (before or after command).
 
 ## Command
@@ -12,7 +14,7 @@ scrapingbee google --output-file serp.json "pizza new york" --country-code us
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `--search-type` | string | `classic`, `news`, `maps`, `lens`, `shopping`, `images`, `ai_mode`. |
+| `--search-type` | string | `classic`, `news`, `maps`, `lens`, `shopping`, `images`, `ai-mode`. |
 | `--country-code` | string | ISO 3166-1 (e.g. us, gb, de). |
 | `--device` | string | `desktop` or `mobile`. |
 | `--page` | int | Page number (default 1). |
@@ -31,13 +33,14 @@ scrapingbee google --extract-field organic_results.url "python web scraping" > u
 scrapingbee scrape --output-dir pages --input-file urls.txt --return-page-markdown true
 ```
 
-`ai_mode` returns an AI-generated answer instead of the usual organic listing:
+`ai-mode` returns an AI-generated answer instead of the usual organic listing:
 
 ```json
 {
-  "ai_result": {
-    "answer": "Python is a high-level, interpreted programming language...",
-    "sources": [{"title": "Python.org", "url": "https://www.python.org/"}]
+  "ai_mode_answer": {
+    "response_text": "Python is a high-level, interpreted programming language...",
+    "links": [{"title": "Python.org", "url": "https://www.python.org/"}],
+    "prompt": "what is python"
   },
   "meta_data": {"url": "https://www.google.com/search?q=..."}
 }
@@ -57,10 +60,10 @@ scrapingbee scrape --output-dir pages --input-file urls.txt --return-page-markdo
 |-----------------|-------------------|
 | `news` | `news_results` (title, link, source, date) |
 | `images` | `images_results` (title, link, thumbnail) |
-| `shopping` | `shopping_results` (title, link, price, source) |
-| `maps` | `local_results` (title, address, rating, phone) |
+| `shopping` | `organic_results` (title, url, price, price_str, currency, merchant, delivery, thumbnail) |
+| `maps` | `maps_results` (title, address, rating, phone) |
 | `lens` | `lens_results` (image_url, title, link) |
-| `ai_mode` | `ai_result.answer` + `ai_result.sources` |
+| `ai-mode` | `ai_mode_answer.response_text` + `ai_mode_answer.links` |
 
 ```json
 {

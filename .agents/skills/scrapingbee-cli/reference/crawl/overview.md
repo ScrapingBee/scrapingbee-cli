@@ -1,6 +1,10 @@
 # Crawl
 
-> **Requires Scrapy extra:** `pip install "scrapingbee-cli[crawl]"`. Without it, the `crawl` command prints an install hint and exits. All other commands work without it.
+> **Syntax:** use space-separated values — `--option value`, not `--option=value`.
+
+**Credit:** Same as scrape per page (5 default, 1 with `--render-js false`, etc.). Pages using AI/non-HTML output cost 2 requests each (one for your output, one for link discovery).
+
+> Scrapy is included as a core dependency — the `crawl` command is available immediately after installing `scrapingbee-cli`. No extra is needed.
 
 Three modes: **Scrapy project** (named spider), **URL-based** (start URL(s), follow links), or **sitemap** (`--from-sitemap`). URL-based uses same options as scrape; see [reference/scrape/overview.md](reference/scrape/overview.md) for params (render-js, return-page-markdown, premium-proxy, etc.).
 
@@ -50,10 +54,12 @@ With `--resume`, already-crawled URLs (from `manifest.json` in the output dir) a
 | `--from-sitemap` | URL of a sitemap.xml to fetch URLs from (handles sitemap indexes). |
 | `--allowed-domains` | Comma-separated domains. Default: same as start URL(s). |
 | `--allow-external-domains` | Follow any domain. Default: same domain only. |
+| `--include-pattern` | Regex: only follow URLs matching this pattern. |
+| `--exclude-pattern` | Regex: skip URLs matching this pattern. |
 | `--download-delay` | Seconds between requests (Scrapy DOWNLOAD_DELAY). |
 | `--autothrottle` | Enable Scrapy AutoThrottle to adapt request rate. |
 
-Scrape options (render-js, return-page-markdown, screenshot, premium-proxy, wait, headers, cookies) apply per request. Concurrency: **`--concurrency`** or usage API; same cap as batch.
+Scrape options (render-js, return-page-markdown, screenshot, premium-proxy, wait, headers, cookies) apply per request. Concurrency: **`--concurrency`** or usage API; same cap as batch. **`--on-complete`** works after a crawl finishes — see [reference/batch/overview.md](reference/batch/overview.md) for env vars.
 
 **Output:** One file per page; extension from scrape params or URL/Content-Type.
 

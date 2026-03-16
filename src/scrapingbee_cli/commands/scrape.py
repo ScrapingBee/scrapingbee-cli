@@ -24,11 +24,15 @@ from ..cli_utils import (
     DEFAULT_CLIENT_TIMEOUT_SECONDS,
     DEVICE_DESKTOP_MOBILE,
     WAIT_BROWSER_HELP,
+    _batch_options,
     _validate_json_option,
     _validate_range,
     build_scrape_kwargs,
     chunk_text,
     parse_bool,
+    prepare_batch_inputs,
+    scrape_with_escalation,
+    store_common_options,
     write_output,
 )
 from ..client import Client, pretty_json
@@ -291,6 +295,14 @@ SCRAPE_PRESETS = (
     help="HTTP method: GET, POST, or PUT.",
 )
 @optgroup.option("-d", "--data", "body", type=str, default=None, help="Request body for POST/PUT.")
+@click.option(
+    "--escalate-proxy",
+    "escalate_proxy",
+    is_flag=True,
+    default=False,
+    help="On 403/429, auto-retry with premium then stealth proxy. Off by default.",
+)
+@_batch_options
 @click.pass_obj
 def scrape_cmd(
     obj: dict,
@@ -334,6 +346,8 @@ def scrape_cmd(
     transparent_status_code: str | None,
     method: str,
     body: str | None,
+    escalate_proxy: bool,
+    **kwargs,
 ) -> None:
     """Scrape a web page using the HTML API.
 
@@ -344,6 +358,7 @@ def scrape_cmd(
     Use --json-response true to wrap body, headers, and cost in JSON (required when
     combining --screenshot with extraction). See documentation for full parameter list.
     """
+    store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
     if not input_file and not url:
         click.echo("expected one URL argument, or use global --input-file for batch", err=True)
@@ -477,10 +492,11 @@ def scrape_cmd(
             click.echo("cannot use both global --input-file and positional URL", err=True)
             raise SystemExit(1)
         try:
-            inputs = read_input_file(input_file)
+            inputs = read_input_file(input_file, input_column=obj.get("input_column"))
         except ValueError as e:
             click.echo(str(e), err=True)
             raise SystemExit(1)
+        inputs = prepare_batch_inputs(inputs, obj)
         usage_info = get_batch_usage(None)
         try:
             validate_batch_run(obj["concurrency"], len(inputs), usage_info)
@@ -500,7 +516,17 @@ def scrape_cmd(
 
                 async def do_one(u: str):
                     try:
-                        data, resp_headers, status_code = await client.scrape(u, **scrape_kwargs)
+                        if escalate_proxy:
+                            data, resp_headers, status_code = await scrape_with_escalation(
+                                client,
+                                u,
+                                scrape_kwargs,
+                                verbose=obj["verbose"],
+                            )
+                        else:
+                            data, resp_headers, status_code = await client.scrape(
+                                u, **scrape_kwargs
+                            )
                         if not scrape_kwargs.get("transparent_status_code") and status_code >= 400:
                             return (
                                 data,
@@ -516,6 +542,33 @@ def scrape_cmd(
                     except Exception as e:
                         return b"", {}, 0, e, None
 
+                output_format = obj.get("output_format", "files")
+                post_process = obj.get("post_process")
+
+                ndjson_pp = post_process if output_format == "ndjson" else None
+
+                def _ndjson_cb(result):
+                    from ..batch import apply_post_process, write_ndjson_line
+
+                    if ndjson_pp and result.body and not result.error:
+                        from ..batch import BatchResult
+
+                        body = apply_post_process(result.body, ndjson_pp)
+                        result = BatchResult(
+                            index=result.index,
+                            input=result.input,
+                            body=body,
+                            headers=result.headers,
+                            status_code=result.status_code,
+                            error=result.error,
+                            expected_extension=result.expected_extension,
+                            skipped=result.skipped,
+                            fetched_at=result.fetched_at,
+                            latency_ms=result.latency_ms,
+                        )
+                    write_ndjson_line(result)
+
+                on_result_cb = _ndjson_cb if output_format == "ndjson" else None
                 results = await run_batch_async(
                     inputs,
                     concurrency,
@@ -523,14 +576,58 @@ def scrape_cmd(
                     from_user=obj["concurrency"] > 0,
                     skip_n=skip_n,
                     show_progress=obj.get("progress", True),
+                    on_result=on_result_cb,
                 )
-            out_dir = write_batch_output_to_dir(
-                results,
-                obj.get("output_dir") or None,
-                obj["verbose"],
-                diff_dir=obj.get("diff_dir"),
-            )
-            click.echo(f"Batch complete. Output written to {out_dir}", err=True)
+
+            if output_format == "ndjson":
+                succeeded = sum(1 for r in results if not r.error and not r.skipped)
+                failed = sum(1 for r in results if r.error and not r.skipped)
+                click.echo(f"Batch complete: {succeeded} succeeded, {failed} failed.", err=True)
+            elif output_format == "csv":
+                from ..batch import apply_post_process, write_batch_output_csv
+
+                if post_process:
+                    for r in results:
+                        if r.body and not r.error and not r.skipped:
+                            r.body = apply_post_process(r.body, post_process)
+                out_path, succeeded, failed = write_batch_output_csv(
+                    results,
+                    obj.get("output_dir") or None,
+                )
+                click.echo(
+                    f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_path}",
+                )
+            elif obj.get("update_csv") and input_file:
+                from ..batch import update_csv_with_results
+
+                out_path, succeeded, failed = update_csv_with_results(
+                    input_file,
+                    obj.get("input_column"),
+                    results,
+                    obj.get("output_dir") or None,
+                )
+                click.echo(
+                    f"CSV updated: {succeeded} succeeded, {failed} failed. Output: {out_path}",
+                )
+            else:
+                out_dir, succeeded, failed = write_batch_output_to_dir(
+                    results,
+                    obj.get("output_dir") or None,
+                    obj["verbose"],
+                    post_process=post_process,
+                )
+                click.echo(
+                    f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_dir}",
+                )
+                on_complete = obj.get("on_complete")
+                if on_complete:
+                    from ..cli_utils import run_on_complete
+
+                    run_on_complete(
+                        on_complete, output_dir=out_dir, succeeded=succeeded, failed=failed
+                    )
+            if failed:
+                raise SystemExit(1)
 
         asyncio.run(_batch())
         return
@@ -541,7 +638,15 @@ def scrape_cmd(
 
     async def _single() -> None:
         async with Client(key, BASE_URL, timeout=client_timeout) as client:
-            data, resp_headers, status_code = await client.scrape(url, **scrape_kwargs)
+            if escalate_proxy:
+                data, resp_headers, status_code = await scrape_with_escalation(
+                    client,
+                    url,
+                    scrape_kwargs,
+                    verbose=obj["verbose"],
+                )
+            else:
+                data, resp_headers, status_code = await client.scrape(url, **scrape_kwargs)
         if not scrape_kwargs.get("transparent_status_code") and status_code >= 400:
             click.echo(f"Error: HTTP {status_code}", err=True)
             try:

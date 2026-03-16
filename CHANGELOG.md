@@ -5,7 +5,44 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-03-16
+
+### Added
+
+- **`--update-csv`:** Fetch fresh data and update the input CSV file in-place with the latest results. Replaces the old `--diff-dir` workflow.
+- **Cron-based `schedule`:** `schedule --every INTERVAL --name NAME CMD` registers a cron job. Multiple named schedules supported. Use `--list` to view active schedules with running time, `--stop NAME` or `--stop all` to remove them. Replacing a schedule prompts for confirmation.
+- **Per-command options:** Options are now per-command (shown via `scrapingbee [command] --help`) instead of global. API-specific options are grouped (Search, Filters, Locale, etc.).
+- **`--output-format [files|csv|ndjson]`:** Choose batch output format — `files` (default, individual files), `csv` (single CSV), or `ndjson` (streaming JSON lines to stdout).
+- **`--deduplicate`:** Normalize URLs and remove duplicates before batch processing. Also available on `export` for removing duplicate CSV rows.
+- **`--sample N`:** Process only N random items from input file — useful for testing configurations cheaply.
+- **`--input-column`:** CSV input support — `--input-file data.csv --input-column url` reads from a named or indexed column.
+- **`--post-process`:** Pipe each batch result through a shell command (e.g. `--post-process 'jq .title'`) before saving.
+- **Crawl `--include-pattern` / `--exclude-pattern`:** Regex filters for which links the crawler follows.
+- **Crawl `--save-pattern`:** Only save pages matching this regex. Other pages are visited for link discovery but not saved. Useful for crawling through category pages to reach detail pages.
+- **Rich batch progress:** Progress display now shows `[N/total] 50 req/s | ETA 2m 30s | Failures: 3%`.
+- **Export `--flatten`:** Recursively flatten nested JSON dicts to dot-notation CSV columns. Lists of dicts are index-expanded (e.g. `buybox.0.price`).
+- **Export `--columns`:** Cherry-pick CSV columns by name. Rows missing all selected columns are dropped.
+- **Auth validates API key:** `scrapingbee auth` now calls the usage endpoint to verify the key before saving.
+- **Logout checks schedules:** `scrapingbee logout` warns about active schedules and offers to stop them.
+- **Active schedule hint:** Every command shows a one-line reminder when schedules are running.
+- **Crawl resilience:** `parse()` catches errors from non-HTML responses (JSON, plain text) instead of crashing.
+
+### Removed
+
+- **`--diff-dir`:** Removed from batch and export. Use `--update-csv` for refreshing data instead.
+- **`--auto-diff`:** Removed completely.
+- **`--daemon`:** Removed from schedule. Schedule now uses cron jobs that persist across sessions.
+- **Global flags:** Options are now per-command. Removed option reorder logic and `--option=value` rejection.
+
+### Fixed
+
+- **Crawl broken on Scrapy 2.14:** Fixed `start` → `start_requests` rename that broke the spider.
+- **Crawl `--max-pages`:** Now enforced at both spider and Scrapy downloader level (`CLOSESPIDER_PAGECOUNT`). Counts actual fetched pages, not discovered URLs.
+- **Crawl JSON response crash:** `_extract_hrefs_from_response` now catches `ValueError` when response is JSON instead of HTML.
+- **`--robots.txt`:** Disabled `ROBOTSTXT_OBEY` since ScrapingBee handles robots.txt compliance.
+- **"Batch complete" sent to stderr:** Moved back to stdout.
+- **CSV export for product pages:** `_find_main_list` heuristic improved to not expand reviews/variants from single-item detail pages.
+- **Integration test fixes:** Fixed hyphenated choice values (`best-match`, `this-week`), changed Amazon `--country us` to `gb`.
 
 ## [1.1.0] - 2025-03-02
 

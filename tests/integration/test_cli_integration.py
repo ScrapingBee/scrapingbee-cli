@@ -231,7 +231,7 @@ def test_batch_uses_usage_concurrency(api_key):
     try:
         env = {**os.environ, "SCRAPINGBEE_API_KEY": api_key}
         code, out, err = cli_run(
-            ["--output-dir", str(out_dir), "--input-file", tmp, "scrape"],
+            ["scrape", "--output-dir", str(out_dir), "--input-file", tmp],
             timeout=120,
             env=env,
         )
@@ -261,7 +261,7 @@ def test_batch_explicit_concurrency(api_key):
     try:
         env = {**os.environ, "SCRAPINGBEE_API_KEY": api_key}
         code, out, err = cli_run(
-            ["--output-dir", str(out_dir), "--concurrency", "2", "--input-file", tmp, "scrape"],
+            ["scrape", "--output-dir", str(out_dir), "--concurrency", "2", "--input-file", tmp],
             timeout=120,
             env=env,
         )
@@ -298,13 +298,13 @@ def test_batch_output_dir_has_files(api_key):
         env = {**os.environ, "SCRAPINGBEE_API_KEY": api_key}
         code, out, err = cli_run(
             [
+                "scrape",
                 "--output-dir",
                 str(out_dir),
                 "--concurrency",
                 "2",
                 "--input-file",
                 input_path,
-                "scrape",
             ],
             timeout=120,
             env=env,
@@ -338,10 +338,10 @@ def test_crawl_output_dir_writes_files(api_key):
         env = {**os.environ, "SCRAPINGBEE_API_KEY": api_key}
         code, out, err = cli_run(
             [
-                "--output-dir",
-                str(out_dir),
                 "crawl",
                 "https://crawler-test.com/",
+                "--output-dir",
+                str(out_dir),
                 "--max-pages",
                 "2",
                 "--max-depth",
@@ -381,13 +381,13 @@ def test_batch_chatgpt(api_key):
         env = {**os.environ, "SCRAPINGBEE_API_KEY": api_key}
         code, out, err = cli_run(
             [
+                "chatgpt",
                 "--output-dir",
                 str(out_dir),
                 "--concurrency",
                 "2",
                 "--input-file",
                 input_path,
-                "chatgpt",
             ],
             timeout=180,
             env=env,

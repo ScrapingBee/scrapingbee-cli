@@ -17,10 +17,13 @@ from ..batch import (
 )
 from ..cli_utils import (
     DEVICE_DESKTOP_MOBILE_TABLET,
+    _batch_options,
     _validate_page,
     check_api_response,
     norm_val,
     parse_bool,
+    prepare_batch_inputs,
+    store_common_options,
     write_output,
 )
 from ..client import Client
@@ -38,24 +41,31 @@ AMAZON_SORT_BY = [
 
 @click.command("amazon-product")
 @click.argument("asin", required=False)
-@click.option(
+@optgroup.group("Locale", help="Device, domain, country, language, and currency")
+@optgroup.option(
     "--device",
     type=click.Choice(DEVICE_DESKTOP_MOBILE_TABLET, case_sensitive=False),
     default=None,
     help="Device: desktop, mobile, or tablet.",
 )
-@click.option("--domain", type=str, default=None, help="Amazon domain (e.g. com, co.uk, de, fr).")
-@click.option("--country", type=str, default=None, help="Country code (e.g. us, gb, de).")
-@click.option("--zip-code", type=str, default=None, help="ZIP code for local availability/pricing.")
-@click.option(
+@optgroup.option(
+    "--domain", type=str, default=None, help="Amazon domain (e.g. com, co.uk, de, fr)."
+)
+@optgroup.option("--country", type=str, default=None, help="Country code (e.g. us, gb, de).")
+@optgroup.option(
+    "--zip-code", type=str, default=None, help="ZIP code for local availability/pricing."
+)
+@optgroup.option(
     "--language", type=str, default=None, help="Language code (e.g. en_US, es_US, fr_FR)."
 )
-@click.option("--currency", type=str, default=None, help="Currency code (e.g. USD, EUR, GBP).")
-@click.option(
+@optgroup.option("--currency", type=str, default=None, help="Currency code (e.g. USD, EUR, GBP).")
+@optgroup.group("Output", help="Response format options")
+@optgroup.option(
     "--add-html", type=str, default=None, help="Include full HTML in response (true/false)."
 )
-@click.option("--light-request", type=str, default=None, help="Light request mode (true/false).")
-@click.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@optgroup.option("--light-request", type=str, default=None, help="Light request mode (true/false).")
+@optgroup.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@_batch_options
 @click.pass_obj
 def amazon_product_cmd(
     obj: dict,
@@ -69,8 +79,10 @@ def amazon_product_cmd(
     add_html: str | None,
     light_request: str | None,
     screenshot: str | None,
+    **kwargs,
 ) -> None:
     """Fetch Amazon product details by ASIN."""
+    store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
     try:
         key = get_api_key(None)
@@ -83,10 +95,11 @@ def amazon_product_cmd(
             click.echo("cannot use both global --input-file and positional ASIN", err=True)
             raise SystemExit(1)
         try:
-            inputs = read_input_file(input_file)
+            inputs = read_input_file(input_file, input_column=obj.get("input_column"))
         except ValueError as e:
             click.echo(str(e), err=True)
             raise SystemExit(1)
+        inputs = prepare_batch_inputs(inputs, obj)
         usage_info = get_batch_usage(None)
         try:
             validate_batch_run(obj["concurrency"], len(inputs), usage_info)
@@ -125,7 +138,11 @@ def amazon_product_cmd(
             verbose=obj["verbose"],
             show_progress=obj.get("progress", True),
             api_call=api_call,
-            diff_dir=obj.get("diff_dir"),
+            on_complete=obj.get("on_complete"),
+            output_format=obj.get("output_format", "files"),
+            post_process=obj.get("post_process"),
+            update_csv_path=input_file if obj.get("update_csv") else None,
+            input_column=obj.get("input_column"),
         )
         return
 
@@ -199,6 +216,7 @@ def amazon_product_cmd(
 @optgroup.option("--add-html", type=str, default=None, help="Include full HTML (true/false).")
 @optgroup.option("--light-request", type=str, default=None, help="Light request (true/false).")
 @optgroup.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@_batch_options
 @click.pass_obj
 def amazon_search_cmd(
     obj: dict,
@@ -218,8 +236,10 @@ def amazon_search_cmd(
     add_html: str | None,
     light_request: str | None,
     screenshot: str | None,
+    **kwargs,
 ) -> None:
     """Search Amazon products."""
+    store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
     try:
         key = get_api_key(None)
@@ -234,10 +254,11 @@ def amazon_search_cmd(
             click.echo("cannot use both global --input-file and positional query", err=True)
             raise SystemExit(1)
         try:
-            inputs = read_input_file(input_file)
+            inputs = read_input_file(input_file, input_column=obj.get("input_column"))
         except ValueError as e:
             click.echo(str(e), err=True)
             raise SystemExit(1)
+        inputs = prepare_batch_inputs(inputs, obj)
         usage_info = get_batch_usage(None)
         try:
             validate_batch_run(obj["concurrency"], len(inputs), usage_info)
@@ -282,7 +303,11 @@ def amazon_search_cmd(
             verbose=obj["verbose"],
             show_progress=obj.get("progress", True),
             api_call=api_call,
-            diff_dir=obj.get("diff_dir"),
+            on_complete=obj.get("on_complete"),
+            output_format=obj.get("output_format", "files"),
+            post_process=obj.get("post_process"),
+            update_csv_path=input_file if obj.get("update_csv") else None,
+            input_column=obj.get("input_column"),
         )
         return
 

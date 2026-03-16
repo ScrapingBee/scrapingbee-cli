@@ -14,19 +14,24 @@ from ..batch import (
     run_api_batch,
     validate_batch_run,
 )
-from ..cli_utils import check_api_response, write_output
+from ..cli_utils import (
+    _batch_options,
+    check_api_response,
+    prepare_batch_inputs,
+    store_common_options,
+    write_output,
+)
 from ..client import Client
 from ..config import BASE_URL, get_api_key
 
 
 @click.command()
 @click.argument("prompt", nargs=-1, required=False)
+@_batch_options
 @click.pass_obj
-def chatgpt_cmd(
-    obj: dict,
-    prompt: tuple[str, ...],
-) -> None:
+def chatgpt_cmd(obj: dict, prompt: tuple[str, ...], **kwargs) -> None:
     """Send a prompt to the ChatGPT API."""
+    store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
     try:
         key = get_api_key(None)
@@ -36,13 +41,14 @@ def chatgpt_cmd(
 
     if input_file:
         if prompt:
-            click.echo("cannot use both global --input-file and positional prompt", err=True)
+            click.echo("cannot use both --input-file and positional prompt", err=True)
             raise SystemExit(1)
         try:
-            inputs = read_input_file(input_file)
+            inputs = read_input_file(input_file, input_column=obj.get("input_column"))
         except ValueError as e:
             click.echo(str(e), err=True)
             raise SystemExit(1)
+        inputs = prepare_batch_inputs(inputs, obj)
         usage_info = get_batch_usage(None)
         try:
             validate_batch_run(obj["concurrency"], len(inputs), usage_info)
@@ -72,14 +78,16 @@ def chatgpt_cmd(
             verbose=obj["verbose"],
             show_progress=obj.get("progress", True),
             api_call=api_call,
-            diff_dir=obj.get("diff_dir"),
+            on_complete=obj.get("on_complete"),
+            output_format=obj.get("output_format", "files"),
+            post_process=obj.get("post_process"),
+            update_csv_path=input_file if obj.get("update_csv") else None,
+            input_column=obj.get("input_column"),
         )
         return
 
     if not prompt:
-        click.echo(
-            "expected at least one prompt argument, or use global --input-file for batch", err=True
-        )
+        click.echo("expected at least one prompt argument, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
     prompt_str = " ".join(prompt)

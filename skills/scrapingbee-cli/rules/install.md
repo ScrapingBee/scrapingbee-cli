@@ -10,14 +10,12 @@
 - **pipx** – Use when the CLI should be available globally without a project venv.
 
 ```bash
-pip install scrapingbee-cli          # scrape, batch, search, Amazon, Walmart, YouTube, ChatGPT
-pip install "scrapingbee-cli[crawl]" # adds the crawl command (requires Scrapy)
+pip install scrapingbee-cli          # scrape, batch, search, Amazon, Walmart, YouTube, ChatGPT, crawl
 # or globally:
 pipx install scrapingbee-cli
-pipx install "scrapingbee-cli[crawl]"
 ```
 
-> **`crawl` command:** The `scrapingbee crawl` command requires the `[crawl]` extra (Scrapy). If Scrapy is not installed the command prints an error and exits. Install with `pip install "scrapingbee-cli[crawl]"` before using `crawl`.
+> **`crawl` command:** Scrapy is included as a core dependency — the `crawl` command is available immediately after install. No extra is needed.
 
 In a virtual environment: create/activate the venv, then `pip install scrapingbee-cli`.
 
@@ -46,6 +44,8 @@ scrapingbee auth --api-key <key>
 scrapingbee auth --show
 ```
 
+`scrapingbee auth` validates the key by calling the usage API before saving. Invalid keys are rejected.
+
 The user must provide the API key. Use the key the user supplies with `scrapingbee auth --api-key <key>`.
 
 **Documentation URL:** `scrapingbee docs` prints the ScrapingBee API docs URL; `scrapingbee docs --open` opens it in the default browser.
@@ -56,7 +56,7 @@ The user must provide the API key. Use the key the user supplies with `scrapingb
 export SCRAPINGBEE_API_KEY=your_api_key_here
 ```
 
-**Remove stored key:** Only run `scrapingbee logout` if the user explicitly asks to remove or clear the stored API key.
+**Remove stored key:** Only run `scrapingbee logout` if the user explicitly asks to remove or clear the stored API key. If active schedules exist, logout will warn and offer to stop them first.
 
 ```bash
 scrapingbee logout

@@ -4,10 +4,10 @@ build_scrape_kwargs, scrape_kwargs_to_api_params, write_output."""
 from __future__ import annotations
 
 import json
-import os
 import sys
 from io import BytesIO
 
+import click
 import pytest
 
 from scrapingbee_cli.cli_utils import (
@@ -17,7 +17,7 @@ from scrapingbee_cli.cli_utils import (
     scrape_kwargs_to_api_params,
     write_output,
 )
-from scrapingbee_cli.commands.schedule import _extract_output_dir, _make_run_subdir, _parse_duration
+from scrapingbee_cli.commands.schedule import _duration_to_cron
 from scrapingbee_cli.commands.scrape import _apply_chunking
 
 
@@ -124,47 +124,33 @@ class TestParseBool:
         assert parse_bool("  false  ") is False
 
 
-class TestParseDuration:
-    """Tests for schedule._parse_duration()."""
-
-    def test_seconds(self) -> None:
-        assert _parse_duration("30s") == 30
+class TestDurationToCron:
+    """Tests for schedule._duration_to_cron()."""
 
     def test_minutes(self) -> None:
-        assert _parse_duration("5m") == 300
+        assert _duration_to_cron("5m") == "*/5 * * * *"
 
     def test_hours(self) -> None:
-        assert _parse_duration("1h") == 3600
+        assert _duration_to_cron("1h") == "0 */1 * * *"
 
     def test_days(self) -> None:
-        assert _parse_duration("2d") == 172800
+        assert _duration_to_cron("2d") == "0 0 */2 * *"
 
-    def test_large_value(self) -> None:
-        assert _parse_duration("100s") == 100
-
-    def test_whitespace_stripped(self) -> None:
-        assert _parse_duration("  10m  ") == 600
+    def test_seconds_rejected(self) -> None:
+        with pytest.raises(click.BadParameter, match="shorter than 1 minute"):
+            _duration_to_cron("30s")
 
     def test_invalid_format_raises(self) -> None:
-        import click
-
         with pytest.raises(click.BadParameter):
-            _parse_duration("1hour")
+            _duration_to_cron("1hour")
 
     def test_missing_unit_raises(self) -> None:
-        import click
-
         with pytest.raises(click.BadParameter):
-            _parse_duration("60")
+            _duration_to_cron("60")
 
     def test_empty_string_raises(self) -> None:
-        import click
-
         with pytest.raises(click.BadParameter):
-            _parse_duration("")
-
-    def test_zero_value(self) -> None:
-        assert _parse_duration("0s") == 0
+            _duration_to_cron("")
 
 
 class TestApplyChunking:
@@ -444,34 +430,19 @@ class TestEstimatedCredits:
 
 
 class TestScheduleHelpers:
-    """Tests for schedule._make_run_subdir and _extract_output_dir."""
+    """Tests for schedule._duration_to_cron."""
 
-    def test_make_run_subdir_is_under_parent(self) -> None:
-        result = _make_run_subdir("price-runs")
-        assert result.startswith("price-runs" + os.sep) or result.startswith("price-runs/")
+    def test_minutes_cron(self) -> None:
+        assert _duration_to_cron("5m") == "*/5 * * * *"
 
-    def test_make_run_subdir_contains_run_prefix(self) -> None:
-        result = _make_run_subdir("price-runs")
-        assert "run_" in result
+    def test_hours_cron(self) -> None:
+        assert _duration_to_cron("1h") == "0 */1 * * *"
 
-    def test_make_run_subdir_unique_per_call(self) -> None:
-        # Two calls should return different values (unless called in the same second,
-        # which is fine — the test just documents the pattern).
-        r1 = _make_run_subdir("out")
-        r2 = _make_run_subdir("out")
-        # Both should be under "out/"
-        assert r1.startswith("out")
-        assert r2.startswith("out")
+    def test_days_cron(self) -> None:
+        assert _duration_to_cron("2d") == "0 0 */2 * *"
 
-    def test_extract_output_dir_finds_value(self) -> None:
-        cmd_args = ("--output-dir", "mydir", "google", "query")
-        assert _extract_output_dir(cmd_args) == "mydir"
+    def test_seconds_rejected(self) -> None:
+        import pytest
 
-    def test_extract_output_dir_returns_none_when_absent(self) -> None:
-        cmd_args = ("google", "query")
-        assert _extract_output_dir(cmd_args) is None
-
-    def test_extract_output_dir_returns_none_when_no_value(self) -> None:
-        # --output-dir at end of args with no value
-        cmd_args = ("google", "--output-dir")
-        assert _extract_output_dir(cmd_args) is None
+        with pytest.raises(click.BadParameter, match="shorter than 1 minute"):
+            _duration_to_cron("30s")

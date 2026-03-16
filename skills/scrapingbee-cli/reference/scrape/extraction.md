@@ -23,15 +23,15 @@ scrapingbee scrape --output-file out.json "https://example.com" --ai-query "pric
 **Response format** (raw body — no `--json-response`):
 
 ```json
-{"ai_query": "29.99"}
+{"ai_response": "29.99"}
 ```
 
-With `--json-response true`, the `ai_query` key appears inside the wrapper alongside headers, cost, and body:
+With `--json-response true`, the `ai_response` key appears inside the wrapper alongside headers, cost, and body:
 
 ```json
 {
   "body": "<html>...</html>",
-  "ai_query": "29.99",
+  "ai_response": "29.99",
   "cost": 6,
   "initial-status-code": 200,
   "resolved-url": "https://example.com/product"

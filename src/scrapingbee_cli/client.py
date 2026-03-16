@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 from typing import Any
 
 import aiohttp
+import certifi
 
 from .config import BASE_URL
 
@@ -33,10 +35,11 @@ class Client:
         self._session: aiohttp.ClientSession | None = None
 
     async def __aenter__(self) -> Client:
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
         connector = (
-            aiohttp.TCPConnector(limit=self._connector_limit)
+            aiohttp.TCPConnector(limit=self._connector_limit, ssl=ssl_context)
             if self._connector_limit is not None
-            else None
+            else aiohttp.TCPConnector(ssl=ssl_context)
         )
         timeout = aiohttp.ClientTimeout(total=self.timeout)
         self._session = aiohttp.ClientSession(

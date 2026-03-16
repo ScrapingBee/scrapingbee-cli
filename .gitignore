@@ -1,4 +1,4 @@
-# Environment (never commit secrets)
+# Secrets
 .env
 .env.local
 
@@ -9,7 +9,6 @@
 .venv/
 venv/
 __pycache__/
-.ruff_cache/
 *.py[cod]
 *.egg-info/
 .eggs/
@@ -17,16 +16,16 @@ dist/
 build/
 *.egg
 
+# Lint / type-check
+.ruff_cache/
+.mypy_cache/
+
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
-failed_requests.txt
-test_failures/
-test_results/
-TEST_RESULTS.md
 
-# CLI output (default dirs when --output-dir not set)
+# CLI output (regenerated on every run)
 batch_*/
 crawl_*/
 
