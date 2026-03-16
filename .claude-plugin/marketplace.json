@@ -15,7 +15,7 @@
         "name": "ScrapingBee",
         "email": "support@scrapingbee.com"
       },
-      "source": "./",
+      "source": ".",
       "category": "development",
       "homepage": "https://github.com/ScrapingBee/scrapingbee-cli"
     }
