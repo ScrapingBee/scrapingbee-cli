@@ -10,7 +10,7 @@
 
 **Output and context**
 
-- Scrape and API responses can be large. For **single calls** (one URL, one query, etc.) prefer **`--output-file path`** (before or after command) so output goes to files instead of being streamed into the agent context. Batch and crawl write to a folder by default (`--output-dir`).
+- Scrape and API responses can be large. For **single calls** (one URL, one query, etc.) prefer **`--output-file path`** so output goes to a file instead of being streamed into the agent context. Batch and crawl write to a folder by default (`--output-dir`).
 
 **Shell safety**
 

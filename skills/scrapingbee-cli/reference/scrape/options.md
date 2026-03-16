@@ -44,6 +44,7 @@ For long JSON (`--js-scenario`, `--extract-rules`) use shell: `--js-scenario "$(
 | `--premium-proxy` / `--stealth-proxy` | true/false | Premium or stealth (75 credits; JS required). |
 | `--country-code` | string | ISO 3166-1 (e.g. us, de). Use with premium/stealth. |
 | `--own-proxy` | string | `user:pass@host:port`. |
+| `--escalate-proxy` | true/false | Auto-escalate proxy on failure: tries default, then premium, then stealth. Overrides `--premium-proxy` / `--stealth-proxy`. |
 | `--session-id` | int | Sticky IP ~5 min (0–10000000). |
 
 Blocked? See [reference/proxy/strategies.md](reference/proxy/strategies.md).

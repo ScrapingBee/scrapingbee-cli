@@ -1,5 +1,7 @@
 # Amazon Search API
 
+> **Syntax:** use space-separated values — `--option value`, not `--option=value`.
+
 Search Amazon products. JSON output. **Credit:** 5–15 per request. Use **`--output-file file.json`** (before or after command).
 
 ## Command
@@ -14,10 +16,11 @@ scrapingbee amazon-search --output-file search.json "laptop" --domain com --sort
 |-----------|------|-------------|
 | `--start-page` | int | Starting page. |
 | `--pages` | int | Number of pages. |
-| `--sort-by` | string | `most_recent`, `price_low_to_high`, `price_high_to_low`, `average_review`, `bestsellers`, `featured`. |
+| `--sort-by` | string | `most-recent`, `price-low-to-high`, `price-high-to-low`, `average-review`, `bestsellers`, `featured`. |
 | `--device` | string | `desktop`, `mobile`, or `tablet`. |
 | `--domain` | string | com, co.uk, de, etc. |
-| `--country` / `--zip-code` / `--language` / `--currency` | — | Locale. |
+| `--country` | string | Country code. **Must not match domain** (e.g. don't use `--country de` with `--domain de`). Use `--zip-code` instead when country matches domain. |
+| `--zip-code` / `--language` / `--currency` | — | Locale options. |
 | `--category-id` / `--merchant-id` | string | Category or seller. |
 | `--autoselect-variant` | true/false | Auto-select variants. |
 | `--add-html` / `--light-request` / `--screenshot` | true/false | Optional. |
@@ -39,7 +42,7 @@ Use `--extract-field products.url` to pipe product page URLs into `scrape` for d
 
 ## Output
 
-Structured products array. See [reference/amazon/search-output.md](reference/amazon/search-output.md).
+Structured products array. Batch: output is `N.json` in batch folder.
 
 ```json
 {

@@ -1638,10 +1638,11 @@ wheels = [
 
 [[package]]
 name = "scrapingbee-cli"
-version = "1.1.0"
+version = "1.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
+    { name = "certifi" },
     { name = "click" },
     { name = "click-option-group" },
     { name = "scrapy" },
@@ -1662,6 +1663,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9" },
     { name = "build", marker = "extra == 'dev'" },
+    { name = "certifi" },
     { name = "click", specifier = ">=8.0" },
     { name = "click-option-group", specifier = ">=0.5.6" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },

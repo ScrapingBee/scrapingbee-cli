@@ -17,10 +17,13 @@ from ..batch import (
 )
 from ..cli_utils import (
     DEVICE_DESKTOP_MOBILE_TABLET,
+    _batch_options,
     _validate_price_range,
     check_api_response,
     norm_val,
     parse_bool,
+    prepare_batch_inputs,
+    store_common_options,
     write_output,
 )
 from ..client import Client
@@ -66,6 +69,7 @@ WALMART_SORT_BY = ["best-match", "price-low", "price-high", "best-seller"]
 @optgroup.option("--add-html", type=str, default=None, help="Include full HTML (true/false).")
 @optgroup.option("--light-request", type=str, default=None, help="Light request (true/false).")
 @optgroup.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@_batch_options
 @click.pass_obj
 def walmart_search_cmd(
     obj: dict,
@@ -82,8 +86,10 @@ def walmart_search_cmd(
     add_html: str | None,
     light_request: str | None,
     screenshot: str | None,
+    **kwargs,
 ) -> None:
     """Search Walmart products."""
+    store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
     try:
         key = get_api_key(None)
@@ -97,10 +103,11 @@ def walmart_search_cmd(
             click.echo("cannot use both global --input-file and positional query", err=True)
             raise SystemExit(1)
         try:
-            inputs = read_input_file(input_file)
+            inputs = read_input_file(input_file, input_column=obj.get("input_column"))
         except ValueError as e:
             click.echo(str(e), err=True)
             raise SystemExit(1)
+        inputs = prepare_batch_inputs(inputs, obj)
         usage_info = get_batch_usage(None)
         try:
             validate_batch_run(obj["concurrency"], len(inputs), usage_info)
@@ -142,7 +149,11 @@ def walmart_search_cmd(
             verbose=obj["verbose"],
             show_progress=obj.get("progress", True),
             api_call=api_call,
-            diff_dir=obj.get("diff_dir"),
+            on_complete=obj.get("on_complete"),
+            output_format=obj.get("output_format", "files"),
+            post_process=obj.get("post_process"),
+            update_csv_path=input_file if obj.get("update_csv") else None,
+            input_column=obj.get("input_column"),
         )
         return
 
@@ -186,12 +197,15 @@ def walmart_search_cmd(
 
 @click.command("walmart-product")
 @click.argument("product_id", required=False)
-@click.option("--domain", type=str, default=None, help="Walmart domain.")
-@click.option("--delivery-zip", type=str, default=None, help="Delivery ZIP code.")
-@click.option("--store-id", type=str, default=None, help="Walmart store ID.")
-@click.option("--add-html", type=str, default=None, help="Include full HTML (true/false).")
-@click.option("--light-request", type=str, default=None, help="Light request (true/false).")
-@click.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@optgroup.group("Locale", help="Domain and delivery location")
+@optgroup.option("--domain", type=str, default=None, help="Walmart domain.")
+@optgroup.option("--delivery-zip", type=str, default=None, help="Delivery ZIP code.")
+@optgroup.option("--store-id", type=str, default=None, help="Walmart store ID.")
+@optgroup.group("Output", help="Response format options")
+@optgroup.option("--add-html", type=str, default=None, help="Include full HTML (true/false).")
+@optgroup.option("--light-request", type=str, default=None, help="Light request (true/false).")
+@optgroup.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@_batch_options
 @click.pass_obj
 def walmart_product_cmd(
     obj: dict,
@@ -202,8 +216,10 @@ def walmart_product_cmd(
     add_html: str | None,
     light_request: str | None,
     screenshot: str | None,
+    **kwargs,
 ) -> None:
     """Fetch Walmart product details by product ID."""
+    store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
     try:
         key = get_api_key(None)
@@ -216,10 +232,11 @@ def walmart_product_cmd(
             click.echo("cannot use both global --input-file and positional product-id", err=True)
             raise SystemExit(1)
         try:
-            inputs = read_input_file(input_file)
+            inputs = read_input_file(input_file, input_column=obj.get("input_column"))
         except ValueError as e:
             click.echo(str(e), err=True)
             raise SystemExit(1)
+        inputs = prepare_batch_inputs(inputs, obj)
         usage_info = get_batch_usage(None)
         try:
             validate_batch_run(obj["concurrency"], len(inputs), usage_info)
@@ -255,7 +272,11 @@ def walmart_product_cmd(
             verbose=obj["verbose"],
             show_progress=obj.get("progress", True),
             api_call=api_call,
-            diff_dir=obj.get("diff_dir"),
+            on_complete=obj.get("on_complete"),
+            output_format=obj.get("output_format", "files"),
+            post_process=obj.get("post_process"),
+            update_csv_path=input_file if obj.get("update_csv") else None,
+            input_column=obj.get("input_column"),
         )
         return
 

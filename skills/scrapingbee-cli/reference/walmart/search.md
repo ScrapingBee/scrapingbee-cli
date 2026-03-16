@@ -1,5 +1,7 @@
 # Walmart Search API
 
+> **Syntax:** use space-separated values — `--option value`, not `--option=value`.
+
 Search Walmart products. JSON output. **Credit:** 10–15 per request. Use **`--output-file file.json`** (before or after command).
 
 ## Command
@@ -13,10 +15,10 @@ scrapingbee walmart-search --output-file search.json "headphones" --min-price 20
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `--min-price` / `--max-price` | int | Price filter. |
-| `--sort-by` | string | `best_match`, `price_low`, `price_high`, `best_seller`. |
+| `--sort-by` | string | `best-match`, `price-low`, `price-high`, `best-seller`. |
 | `--device` | string | `desktop`, `mobile`, or `tablet`. |
 | `--domain` | string | Walmart domain. |
-| `--fulfillment-speed` | string | `today`, `tomorrow`, `2_days`, `anytime`. |
+| `--fulfillment-speed` | string | `today`, `tomorrow`, `2-days`, `anytime`. |
 | `--fulfillment-type` | string | e.g. `in_store`. |
 | `--delivery-zip` / `--store-id` | string | Delivery or store. |
 | `--add-html` / `--light-request` / `--screenshot` | true/false | Optional. |
@@ -40,11 +42,13 @@ Use `--extract-field products.id` or `--fields id,title,price,rating` to narrow 
 
 ## Output
 
-JSON: `meta_data` (url, number_of_results, page, total_pages), `products` (position, title, price, url, brand, etc.), `facets`, `location`. See [reference/walmart/search-output.md](reference/walmart/search-output.md).
+JSON: `products` (array), `products_count`, `page`, `url`, `location`, `html`, `screenshot`. Batch: output is `N.json` in batch folder.
 
 ```json
 {
-  "meta_data": {"url": "https://www.walmart.com/search?q=headphones", "number_of_results": 100, "page": 1, "total_pages": 5},
+  "url": "https://www.walmart.com/search?q=headphones",
+  "page": 1,
+  "products_count": 40,
   "products": [
     {
       "id": "921722537",
@@ -52,12 +56,11 @@ JSON: `meta_data` (url, number_of_results, page, total_pages), `products` (posit
       "title": "Product Name",
       "price": 29.97,
       "url": "/ip/product-name/921722537",
-      "brand": "Brand Name",
       "rating": 4.3,
-      "rating_count": 567
+      "rating_count": 567,
+      "seller_name": "Walmart.com"
     }
   ],
-  "facets": [],
   "location": "United States"
 }
 ```

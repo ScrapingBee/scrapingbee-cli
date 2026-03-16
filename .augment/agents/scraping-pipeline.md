@@ -33,43 +33,56 @@ proceed with large batches.
 
 ### SERP → scrape result pages
 ```bash
+PAGES_DIR=pages_$(date +%s)
 scrapingbee google --extract-field organic_results.url "QUERY" > /tmp/spb_urls.txt
-scrapingbee scrape --output-dir pages_$(date +%s) --input-file /tmp/spb_urls.txt --return-page-markdown true
-scrapingbee export --output-file results.ndjson --input-dir pages_*/
+scrapingbee scrape --output-dir "$PAGES_DIR" --input-file /tmp/spb_urls.txt --return-page-markdown true
+scrapingbee export --output-file results.ndjson --input-dir "$PAGES_DIR"
 ```
 
 ### Fast search → scrape
 ```bash
+PAGES_DIR=pages_$(date +%s)
 scrapingbee fast-search --extract-field organic.link "QUERY" > /tmp/spb_urls.txt
-scrapingbee scrape --output-dir pages_$(date +%s) --input-file /tmp/spb_urls.txt --return-page-markdown true
+scrapingbee scrape --output-dir "$PAGES_DIR" --input-file /tmp/spb_urls.txt --return-page-markdown true
 ```
 
 ### Amazon search → product details → CSV
 ```bash
+PRODUCTS_DIR=products_$(date +%s)
 scrapingbee amazon-search --extract-field products.asin "QUERY" > /tmp/spb_asins.txt
-scrapingbee amazon-product --output-dir products_$(date +%s) --input-file /tmp/spb_asins.txt
-scrapingbee export --output-file products.csv --input-dir products_*/ --format csv
+scrapingbee amazon-product --output-dir "$PRODUCTS_DIR" --input-file /tmp/spb_asins.txt
+scrapingbee export --output-file products.csv --input-dir "$PRODUCTS_DIR" --format csv
 ```
 
 ### YouTube search → video metadata → CSV
 ```bash
+METADATA_DIR=metadata_$(date +%s)
 scrapingbee youtube-search --extract-field results.link "QUERY" > /tmp/spb_videos.txt
-scrapingbee youtube-metadata --output-dir metadata_$(date +%s) --input-file /tmp/spb_videos.txt
-scrapingbee export --output-file videos.csv --input-dir metadata_*/ --format csv
+scrapingbee youtube-metadata --output-dir "$METADATA_DIR" --input-file /tmp/spb_videos.txt
+scrapingbee export --output-file videos.csv --input-dir "$METADATA_DIR" --format csv
 ```
 
 ### Crawl site → export
 ```bash
-scrapingbee crawl --output-dir crawl_$(date +%s) "URL" --max-pages 50
-scrapingbee export --output-file crawl_out.ndjson --input-dir crawl_*/
+CRAWL_DIR=crawl_$(date +%s)
+scrapingbee crawl --output-dir "$CRAWL_DIR" "URL" --max-pages 50
+scrapingbee export --output-file crawl_out.ndjson --input-dir "$CRAWL_DIR"
 ```
 
-### Change monitoring (diff two runs)
+### Ongoing monitoring (update CSV in-place)
 ```bash
-# First run (or use an existing output dir as OLD_DIR)
-scrapingbee scrape --output-dir run_new --input-file inputs.txt
-# Export only changed items
-scrapingbee export --input-dir run_new --diff-dir run_old --format ndjson
+# First run — create baseline CSV
+scrapingbee scrape --output-dir initial_run --input-file urls.txt
+scrapingbee export --input-dir initial_run --format csv --flatten --output-file tracker.csv
+
+# Subsequent runs — refresh CSV with fresh data
+scrapingbee scrape --input-file tracker.csv --input-column url --update-csv \
+  --ai-extract-rules '{"title": "title", "price": "price"}'
+
+# Schedule daily updates via cron
+scrapingbee schedule --every 1d --name my-tracker \
+  scrape --input-file tracker.csv --input-column url --update-csv \
+  --ai-extract-rules '{"title": "title", "price": "price"}'
 ```
 
 ## Rules
@@ -89,7 +102,9 @@ scrapingbee export --input-dir run_new --diff-dir run_old --format ndjson
 |---------|----------------|
 | `scrape` (no JS) | 1 |
 | `scrape` (with JS) | 5 |
-| `scrape` (premium proxy) | 10–25 |
+| `scrape` (premium proxy, no JS) | 10 |
+| `scrape` (premium proxy, with JS) | 25 |
+| `scrape` (stealth proxy) | 75 |
 | `google` / `fast-search` | 10–15 |
 | `amazon-product` / `amazon-search` | 5–15 |
 | `walmart-product` / `walmart-search` | 10–15 |

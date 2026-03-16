@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import click
+from click_option_group import optgroup
 
 from ..batch import (
     _find_completed_n,
@@ -14,21 +15,30 @@ from ..batch import (
     run_api_batch,
     validate_batch_run,
 )
-from ..cli_utils import _validate_page, check_api_response, write_output
+from ..cli_utils import (
+    _batch_options,
+    _validate_page,
+    check_api_response,
+    prepare_batch_inputs,
+    store_common_options,
+    write_output,
+)
 from ..client import Client
 from ..config import BASE_URL, get_api_key
 
 
 @click.command("fast-search")
 @click.argument("query", required=False)
-@click.option("--page", type=int, default=None, help="Page number (default: 1).")
-@click.option(
+@optgroup.group("Search", help="Pagination and locale")
+@optgroup.option("--page", type=int, default=None, help="Page number (default: 1).")
+@optgroup.option(
     "--country-code",
     type=str,
     default=None,
     help="Country code for results (ISO 3166-1, e.g. us, fr).",
 )
-@click.option("--language", type=str, default=None, help="Language code (e.g. en, fr).")
+@optgroup.option("--language", type=str, default=None, help="Language code (e.g. en, fr).")
+@_batch_options
 @click.pass_obj
 def fast_search_cmd(
     obj: dict,
@@ -36,8 +46,10 @@ def fast_search_cmd(
     page: int | None,
     country_code: str | None,
     language: str | None,
+    **kwargs,
 ) -> None:
     """Search using the Fast Search API (sub-second results)."""
+    store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
     try:
         key = get_api_key(None)
@@ -51,10 +63,11 @@ def fast_search_cmd(
             click.echo("cannot use both global --input-file and positional query", err=True)
             raise SystemExit(1)
         try:
-            inputs = read_input_file(input_file)
+            inputs = read_input_file(input_file, input_column=obj.get("input_column"))
         except ValueError as e:
             click.echo(str(e), err=True)
             raise SystemExit(1)
+        inputs = prepare_batch_inputs(inputs, obj)
         usage_info = get_batch_usage(None)
         try:
             validate_batch_run(obj["concurrency"], len(inputs), usage_info)
@@ -87,7 +100,11 @@ def fast_search_cmd(
             verbose=obj["verbose"],
             show_progress=obj.get("progress", True),
             api_call=api_call,
-            diff_dir=obj.get("diff_dir"),
+            on_complete=obj.get("on_complete"),
+            output_format=obj.get("output_format", "files"),
+            post_process=obj.get("post_process"),
+            update_csv_path=input_file if obj.get("update_csv") else None,
+            input_column=obj.get("input_column"),
         )
         return
 

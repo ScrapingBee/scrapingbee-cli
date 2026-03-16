@@ -131,9 +131,12 @@ def _extract_hrefs_from_response(response: Response) -> list[str]:
     if inner is not None:
         return _extract_hrefs_from_body(inner)
     hrefs: list[str] = []
-    for href in response.css("a[href]::attr(href)").getall():
-        if href and isinstance(href, str):
-            hrefs.append(href.strip())
+    try:
+        for href in response.css("a[href]::attr(href)").getall():
+            if href and isinstance(href, str):
+                hrefs.append(href.strip())
+    except (ValueError, TypeError):
+        pass  # Response is JSON/non-HTML — CSS selectors don't apply
     # Markdown links (when body is markdown, e.g. --return-page-markdown true)
     if not hrefs and body:
         for m in _MARKDOWN_LINK_RE.finditer(body):
@@ -162,6 +165,9 @@ class GenericScrapingBeeSpider(Spider):
         name: str | None = None,
         pre_seen_urls: set[str] | None = None,
         initial_write_counter: int = 0,
+        include_pattern: str | None = None,
+        exclude_pattern: str | None = None,
+        save_pattern: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(name=name, **kwargs)
@@ -180,6 +186,11 @@ class GenericScrapingBeeSpider(Spider):
         self._write_counter = initial_write_counter
         # Maps response URL → {file, fetched_at, http_status}; written to manifest.json on close.
         self._url_file_map: dict[str, Any] = {}
+        self._include_re = re.compile(include_pattern) if include_pattern else None
+        self._exclude_re = re.compile(exclude_pattern) if exclude_pattern else None
+        self._save_re = re.compile(save_pattern) if save_pattern else None
+        self._save_count = 0
+        self._fetch_count = 0
 
     def _allowed_netlocs_set(self) -> set[str]:
         if self._allowed_netlocs is not None:
@@ -205,15 +216,23 @@ class GenericScrapingBeeSpider(Spider):
             normalized = _normalize_url(url)
             if normalized in self.seen_urls:
                 continue
-            if self.max_pages != 0 and len(self.seen_urls) >= self.max_pages:
+            if self.max_pages != 0 and self._fetch_count >= self.max_pages:
                 continue
             self.seen_urls.add(normalized)
+            # When --save-pattern is set, use discovery params for initial crawl
+            # (HTML for link finding). Full params only for save-worthy pages.
+            if self._save_re:
+                params = _params_for_discovery(self.scrape_params)
+                callback = self._parse_crawl_and_save
+            else:
+                params = dict(self.scrape_params)
+                callback = self.parse
             yield ScrapingBeeRequest(
                 url,
-                params=dict(self.scrape_params),
+                params=params,
                 headers=self.custom_headers,
                 meta={"depth": 0},
-                callback=self.parse,
+                callback=callback,
             )
 
     def _response_headers_dict(self, response: Response) -> dict:
@@ -289,7 +308,8 @@ class GenericScrapingBeeSpider(Spider):
         depth = response.meta.get("depth", 0)
         if self.max_depth != 0 and depth >= self.max_depth:
             return
-        if self.max_pages != 0 and len(self.seen_urls) >= self.max_pages:
+        # max_pages = max pages fetched from API (credits spent)
+        if self.max_pages != 0 and self._fetch_count >= self.max_pages:
             return
         for href in _extract_hrefs_from_response(response):
             if not href or href.startswith(("#", "mailto:", "javascript:")):
@@ -300,10 +320,12 @@ class GenericScrapingBeeSpider(Spider):
                 continue
             if not self._url_allowed(full_url):
                 continue
+            if self._include_re and not self._include_re.search(full_url):
+                continue
+            if self._exclude_re and self._exclude_re.search(full_url):
+                continue
             normalized = _normalize_url(full_url)
             if normalized in self.seen_urls:
-                continue
-            if self.max_pages != 0 and len(self.seen_urls) >= self.max_pages:
                 continue
             self.seen_urls.add(normalized)
             yield ScrapingBeeRequest(
@@ -317,9 +339,18 @@ class GenericScrapingBeeSpider(Spider):
     def parse(self, response: Response, **kwargs: object) -> Any:
         """Save response, then yield follow requests. If no links found in response,
         yield a discovery request (same URL with HTML-only params) to extract links."""
+        self._fetch_count += 1
         self.logger.info("Fetched %s (%d bytes)", response.url, len(response.body))
-        self._save_response(response)
-        hrefs = _extract_hrefs_from_response(response)
+        # Only save if URL matches --save-pattern (or no pattern set)
+        if not self._save_re or self._save_re.search(response.url):
+            try:
+                self._save_response(response)
+            except Exception as e:
+                self.logger.warning("Failed to save %s: %s", response.url, e)
+        try:
+            hrefs = _extract_hrefs_from_response(response)
+        except Exception:
+            hrefs = []
         if hrefs:
             yield from self._iter_follow_requests(response, dict(self.scrape_params), self.parse)
         else:
@@ -333,31 +364,99 @@ class GenericScrapingBeeSpider(Spider):
                 dont_filter=True,
             )
 
+    def _parse_crawl_and_save(self, response: Response, **kwargs: object) -> Any:
+        """Used when --save-pattern is set. Receives HTML (discovery params),
+        extracts links, follows them, and fires a save request for matching pages."""
+        self._fetch_count += 1
+        self.logger.info("Fetched %s (%d bytes) [crawl]", response.url, len(response.body))
+        # If this page matches --save-pattern, fire a separate request with full params to save
+        if self._save_re and self._save_re.search(response.url):
+            yield ScrapingBeeRequest(
+                response.url,
+                params=dict(self.scrape_params),
+                headers=self.custom_headers,
+                meta=response.meta,
+                callback=self._parse_save_only,
+                dont_filter=True,
+            )
+        # Extract links from HTML and follow them
+        try:
+            hrefs = _extract_hrefs_from_response(response)
+        except Exception:
+            hrefs = []
+        if hrefs:
+            yield from self._iter_follow_requests(
+                response,
+                _params_for_discovery(self.scrape_params),
+                self._parse_crawl_and_save,
+            )
+
+    def _parse_save_only(self, response: Response, **kwargs: object) -> Any:
+        """Save the response (fetched with full params). No link following."""
+        self.logger.info("Fetched %s (%d bytes) [save]", response.url, len(response.body))
+        try:
+            self._save_response(response)
+            self._save_count += 1
+        except Exception as e:
+            self.logger.warning("Failed to save %s: %s", response.url, e)
+
     def _parse_discovery_links_only(self, response: Response, **kwargs: object) -> Any:
         """Handle HTML response from discovery request: extract links and follow (no save)."""
         self.logger.info("Fetched %s (%d bytes) [discovery]", response.url, len(response.body))
-        yield from self._iter_follow_requests(response, dict(self.scrape_params), self.parse)
+        try:
+            yield from self._iter_follow_requests(response, dict(self.scrape_params), self.parse)
+        except Exception as e:
+            self.logger.warning("Discovery failed for %s: %s", response.url, e)
 
 
-def _fetch_sitemap_urls(url: str, *, depth: int = 0) -> list[str]:
+def _fetch_sitemap_urls(url: str, *, api_key: str | None = None, depth: int = 0) -> list[str]:
     """Fetch a sitemap URL and return all page URLs it contains.
 
-    Handles sitemap indexes recursively (up to depth 2). Uses stdlib only.
+    Handles sitemap indexes recursively (up to depth 2).  When *api_key* is
+    provided the sitemap is fetched through the ScrapingBee API (with
+    ``render_js=false`` — 1 credit) so proxies and bot-protection handling
+    apply.  Falls back to stdlib ``urllib`` when no key is given.
     """
-    import urllib.request
+    import asyncio as _asyncio
     from xml.etree import ElementTree as ET
+
+    from .client import Client
+    from .config import BASE_URL
 
     if depth > 2:
         return []
     if not url.startswith(("http://", "https://")):
         click.echo(f"Warning: skipping sitemap URL with unsupported scheme: {url}", err=True)
         return []
-    try:
-        with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310
-            data = resp.read()
-    except Exception as e:
-        click.echo(f"Warning: could not fetch sitemap {url}: {e}", err=True)
-        return []
+
+    if api_key:
+
+        async def _fetch() -> bytes:
+            async with Client(api_key, BASE_URL, timeout=60) as client:
+                body, _headers, status = await client.scrape(
+                    url,
+                    render_js=False,
+                    retries=2,
+                    backoff=2.0,
+                )
+                if status >= 400:
+                    raise RuntimeError(f"HTTP {status}")
+                return body
+
+        try:
+            data = _asyncio.run(_fetch())
+        except Exception as e:
+            click.echo(f"Warning: could not fetch sitemap {url}: {e}", err=True)
+            return []
+    else:
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310
+                data = resp.read()
+        except Exception as e:
+            click.echo(f"Warning: could not fetch sitemap {url}: {e}", err=True)
+            return []
     try:
         root = ET.fromstring(data)
     except ET.ParseError as e:
@@ -378,7 +477,7 @@ def _fetch_sitemap_urls(url: str, *, depth: int = 0) -> list[str]:
         ]
         all_urls: list[str] = []
         for child_url in child_locs:
-            all_urls.extend(_fetch_sitemap_urls(child_url, depth=depth + 1))
+            all_urls.extend(_fetch_sitemap_urls(child_url, api_key=api_key, depth=depth + 1))
         return all_urls
     # Regular urlset
     return [
@@ -407,7 +506,12 @@ def _settings_with_scrapingbee(
     settings = Settings(base_settings) if base_settings else Settings()
     settings.set("SCRAPINGBEE_API_KEY", api_key)
     settings.set("USER_AGENT", USER_AGENT_CLI)
-    settings.set("CONCURRENT_REQUESTS", max(1, concurrency))
+    settings.set("ROBOTSTXT_OBEY", False)  # ScrapingBee handles robots.txt compliance
+    # Cap crawl concurrency — unlike batch, all requests go to one domain via ScrapingBee.
+    # High concurrency causes massive overshoot on --max-pages since requests queue before checks run.
+    capped = min(max(1, concurrency), 50)
+    settings.set("CONCURRENT_REQUESTS", capped)
+    settings.set("CONCURRENT_REQUESTS_PER_DOMAIN", capped)
     if download_delay is not None:
         settings.set("DOWNLOAD_DELAY", download_delay)
     if autothrottle_enabled is not None:
@@ -467,6 +571,9 @@ def run_urls_spider(
     download_delay: float | None = None,
     autothrottle_enabled: bool | None = None,
     resume: bool = False,
+    include_pattern: str | None = None,
+    exclude_pattern: str | None = None,
+    save_pattern: str | None = None,
 ) -> None:
     """Run the built-in generic spider: start from URLs and follow links.
     By default only same-domain links are followed; use allowed_domains or
@@ -494,13 +601,20 @@ def run_urls_spider(
                 )
             except Exception as e:
                 click.echo(f"Warning: could not load manifest for resume: {e}", err=True)
+    # Cap concurrency at max_pages to prevent overshoot — Scrapy queues up to
+    # CONCURRENT_REQUESTS before any response arrives to trigger the limit check.
+    effective_concurrency = concurrency
+    if max_pages > 0:
+        effective_concurrency = min(concurrency, max_pages)
     settings = _settings_with_scrapingbee(
         api_key,
-        concurrency=concurrency,
+        concurrency=effective_concurrency,
         download_delay=download_delay,
         autothrottle_enabled=autothrottle_enabled,
     )
-    settings.set("LOG_LEVEL", "INFO")
+    settings.set("LOG_LEVEL", "WARNING")
+    if max_pages > 0:
+        settings.set("CLOSESPIDER_PAGECOUNT", max_pages)
     process = CrawlerProcess(settings)
     process.crawl(
         GenericScrapingBeeSpider,
@@ -514,5 +628,8 @@ def run_urls_spider(
         allow_external_domains=allow_external_domains,
         pre_seen_urls=pre_seen_urls,
         initial_write_counter=initial_write_counter,
+        include_pattern=include_pattern,
+        exclude_pattern=exclude_pattern,
+        save_pattern=save_pattern,
     )
     process.start()

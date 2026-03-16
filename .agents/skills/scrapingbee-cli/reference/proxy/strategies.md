@@ -22,6 +22,10 @@ ScrapingBee uses rotating proxies by default. For blocked or throttled requests,
 
 Use **`--verbose`** (before or after command) to see `Spb-Cost` header.
 
+## Automatic escalation
+
+Use **`--escalate-proxy true`** to let the CLI auto-escalate through proxy tiers on failure (default -> premium -> stealth). This overrides `--premium-proxy` / `--stealth-proxy` and retries automatically — no manual intervention needed.
+
 ## When to try what
 
 - **429 / 403 / empty or captcha** → Retry with `--premium-proxy true` (and optionally `--country-code`).

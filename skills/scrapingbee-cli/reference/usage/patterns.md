@@ -43,7 +43,7 @@ scrapingbee export --output-file all.ndjson --input-dir pages
 
 For many queries at once, use `--input-file queries.txt google` to run all searches in batch first, then extract and scrape.
 
-> **`--extract-field`** outputs one value per line, making it directly pipeable into `--input-file`. Supports `key.subkey` (array expansion) and `key` (top-level scalar or list). Deeply nested paths like `knowledge_graph.title` or `organic_results.rich_snippet.extensions` are not supported — use `jq` for complex extraction.
+> **`--extract-field`** outputs one value per line, making it directly pipeable into `--input-file`. Supports dot-notation to arbitrary depth: `key`, `key.subkey`, `key.subkey.deeper`, etc. When a path segment hits a list, the remaining path is applied to every item.
 
 ## Amazon search → product details
 
@@ -121,55 +121,50 @@ scrapingbee scrape "https://example.com" --preset extract-links
 
 See [reference/scrape/overview.md](reference/scrape/overview.md) and `scrapingbee scrape --help` for `--preset` values.
 
-## Change monitoring
+## Refreshing data (--update-csv)
 
-**Goal:** Re-run a batch and get only the pages/products that changed since last time.
+**Goal:** Re-fetch data for all items in a CSV and update the file in-place with fresh results.
 
 ```bash
-# Week 1: run the batch
-scrapingbee scrape --output-dir prices_week1 --input-file products.txt
+# Fetch fresh data and update the CSV in-place
+scrapingbee scrape --input-file products.csv --input-column url --update-csv
 
-# Week 2: re-run into a new dir
-scrapingbee scrape --output-dir prices_week2 --input-file products.txt
-
-# Compare: only emit changed items
-scrapingbee export --input-dir prices_week2 --diff-dir prices_week1 --format ndjson
+# Or for Amazon products
+scrapingbee amazon-product --input-file asins.csv --input-column asin --update-csv
 ```
 
 `manifest.json` written by every batch includes `fetched_at` (ISO-8601 UTC), `http_status`, `credits_used`, and `latency_ms` per item, enabling time-series tracking.
 
-> **`--diff-dir` uses MD5 hashing** of the raw response bytes. Any byte-level change triggers "changed" — including whitespace, comment updates, or ad script changes that don't affect the data you care about. For structured data (JSON), post-process with `jq` or `--fields` to compare only the fields that matter. Binary files (PDFs, images) may report "changed" due to embedded timestamps even when content is semantically identical.
-
 ## Price monitoring (scheduled)
 
-**Goal:** Track Amazon/Walmart product prices automatically, getting notified when any product changes.
+**Goal:** Track Amazon/Walmart product prices automatically with scheduled refreshes.
 
 ```bash
-# Create a file with one ASIN per line
-cat > asins.txt <<EOF
+# Create a CSV with one ASIN per line
+cat > asins.csv <<EOF
+asin
 B0DPDRNSXV
 B09G9FPHY6
 B0B5HJWWD1
 EOF
 
-# Run daily — auto-diff injects --diff-dir from the previous run automatically
-scrapingbee schedule --every 1d --auto-diff \
-  --output-dir price-runs/ \
-  --input-file asins.txt \
-  amazon-product --domain com
-
-# After each run, find changed products
-# manifest.json in the output dir has "unchanged": true for stable items
+# Register a daily cron job that refreshes the CSV in-place
+scrapingbee schedule --every 1d --name prices \
+  amazon-product --input-file asins.csv --input-column asin --update-csv --domain com
 ```
 
-Each day's run creates a new timestamped folder under `price-runs/`. Items that didn't change are marked `"unchanged": true` in `manifest.json` and their files are not re-written. To export only changed items after a run:
+### List and manage schedules
 
 ```bash
-# Export changed items from the latest run vs the previous one
-scrapingbee export --input-dir price-runs/RUN_NEW --diff-dir price-runs/RUN_OLD --format csv
-```
+# View active schedules
+scrapingbee schedule --list
 
-Stop monitoring with **Ctrl-C**.
+# Stop a specific schedule
+scrapingbee schedule --stop prices
+
+# Stop all schedules
+scrapingbee schedule --stop all
+```
 
 ## Automated pipelines (subagent)
 

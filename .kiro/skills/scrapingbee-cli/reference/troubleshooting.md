@@ -18,7 +18,7 @@ Escalate through proxy tiers. See [reference/proxy/strategies.md](reference/prox
 
 ## N.err files in batch output
 
-Each `.err` file has the error message on the first line, then the raw API response body (if any).
+Each `.err` file is a JSON object with `error`, `status_code`, `input`, and `body` keys for easy programmatic parsing.
 
 - **Timeout errors** (`asyncio.TimeoutError` / `aiohttp.ServerTimeoutError`): Increase `--retries 5`. The target page is slow — add `--timeout 90000` to give it 90 s.
 - **HTTP 500 from API**: Transient — retry. Add `--retries 5 --backoff 3.0`.
@@ -42,9 +42,10 @@ Each `.err` file has the error message on the first line, then the raw API respo
 
 ## Output file not written
 
-- Global `--output-file` must come **before** the subcommand:
+- Global `--output-file` can appear **before or after** the subcommand — both work:
+  `scrapingbee --output-file out.html scrape URL` ✓
   `scrapingbee scrape --output-file out.html URL` ✓
-  `scrapingbee scrape URL --output-file out.html` ✗
+  `scrapingbee scrape URL --output-file out.html` ✓
 
 - For batch, use `--output-dir`:
   `scrapingbee scrape --output-dir results --input-file urls.txt`
@@ -64,7 +65,15 @@ Run `scrapingbee usage` to see current balance and concurrency limit. Credits de
 | `--premium-proxy true` | 25 |
 | `--stealth-proxy true` | 75 |
 | `--ai-query` / `--ai-extract-rules` | +5 |
+| Fast Search | 5 |
 | Google Search | 10–15 |
 | Amazon / Walmart | 5–15 |
 | YouTube | 5 |
 | ChatGPT | 15 |
+
+## Known API-side issues
+
+These are ScrapingBee API limitations, not CLI bugs. The CLI warns about them where possible.
+
+- **Google classic organic results return empty.** The API parser uses CSS class names that Google has since changed. Searches succeed (HTML is fetched) but `organic_results` is `[]`. News, maps, and shopping searches still work. The CLI warns when `organic_results` is empty.
+- **Response schemas drift over time.** The API may add or rename keys without notice. If code fails on a missing key, inspect the raw JSON with `--output-file` first.

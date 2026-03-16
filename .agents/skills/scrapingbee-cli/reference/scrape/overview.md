@@ -1,6 +1,6 @@
 # Scrape (HTML API)
 
-Fetch one URL or many (batch). Use for HTML, JS-rendered pages, screenshots, or extracted data. **For large responses**, use **`--output-file path`** or (batch) **`--output-dir`** (before or after command) so output goes to files instead of stdout.
+Fetch one URL or many (batch). **Credit:** 5 (JS on), 1 (`--render-js false`), 25 (`--premium-proxy`), 75 (`--stealth-proxy`), +5 for AI features. Use **`--output-file path`** or (batch) **`--output-dir`** (before or after command) so output goes to files instead of stdout.
 
 ## Command
 

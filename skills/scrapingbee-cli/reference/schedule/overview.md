@@ -1,71 +1,91 @@
-# `scrapingbee schedule` — Repeated runs at a fixed interval
+# `scrapingbee schedule` — Cron-based recurring runs
 
-Wrap any `scrapingbee` command to run it automatically on a schedule.
+> **Syntax:** use space-separated values — `--option value`, not `--option=value`.
+
+Register any `scrapingbee` command as a cron job that runs automatically on a repeating interval.
 
 ## Synopsis
 
 ```
-scrapingbee schedule --every INTERVAL [--auto-diff] CMD [CMD_ARGS...]
+scrapingbee schedule --every INTERVAL [--name NAME] CMD [CMD_ARGS...]
+scrapingbee schedule --list
+scrapingbee schedule --stop NAME
+scrapingbee schedule --stop all
 ```
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
-| `--every INTERVAL` | **Required.** Run interval: `30s`, `5m`, `1h`, `2d` |
-| `--auto-diff` | Automatically pass the previous run's `--output-dir` as `--diff-dir` to the next run, enabling change detection across runs |
+| `--every INTERVAL` | **Required** (unless `--list` or `--stop`). Run interval: `5m`, `30m`, `1h`, `2d` |
+| `--name NAME` | Name the schedule for easy identification and management |
+| `--stop NAME` | Remove a named cron entry. Use `--stop all` to remove all scrapingbee schedules |
+| `--list` | Show all active scrapingbee schedules with their running time |
 
 ## Duration format
 
 | Suffix | Unit |
 |--------|------|
-| `s` | seconds |
 | `m` | minutes |
 | `h` | hours |
 | `d` | days |
 
-Examples: `30s`, `5m`, `1h`, `2d`
+Examples: `5m`, `30m`, `1h`, `2d`
 
 ## Examples
 
 ### Monitor a news SERP hourly
 
 ```bash
-scrapingbee schedule --every 1h --output-dir runs/python-news google "python news"
+scrapingbee schedule --every 1h --name python-news google "python news"
 ```
 
-### Detect price changes daily (with diff)
+### Refresh product prices daily with --update-csv
 
 ```bash
-scrapingbee schedule --every 1d --auto-diff \
-  --output-dir price-runs/ \
-  --input-file asins.txt \
-  amazon-product
+scrapingbee schedule --every 1d --name prices \
+  amazon-product --input-file asins.csv --input-column asin --update-csv
 ```
-
-Each run's manifest.json marks `unchanged: true` for products whose price/data hasn't changed.
 
 ### Scrape a page every 30 minutes
 
 ```bash
-scrapingbee schedule --every 30m --output-file latest.html scrape https://example.com/dashboard
+scrapingbee schedule --every 30m --name dashboard scrape "https://example.com/dashboard" --output-file latest.html
 ```
 
 ### Crawl a site weekly
 
 ```bash
-scrapingbee schedule --every 7d --output-dir crawl-runs/ crawl https://docs.example.com \
-  --max-pages 500
+scrapingbee schedule --every 7d --name docs-crawl crawl "https://docs.example.com" \
+  --output-dir crawl-runs/ --max-pages 500
+```
+
+### List active schedules
+
+```bash
+scrapingbee schedule --list
+```
+
+### Stop a named schedule
+
+```bash
+scrapingbee schedule --stop python-news
+```
+
+### Stop all schedules
+
+```bash
+scrapingbee schedule --stop all
 ```
 
 ## Notes
 
-- Stop with **Ctrl-C** — the scheduler prints `[schedule] Stopped.` and exits cleanly.
-- Each run prints `[schedule] Run #N — YYYY-MM-DD HH:MM:SS` and `[schedule] Sleeping Xm...` to stderr.
-- The API key is forwarded automatically from the current session to the subprocess.
-- `--auto-diff` only injects `--diff-dir` when `--output-dir` is present in the sub-command args; the previous run's output directory is detected from `--output-dir`.
+- Schedules are registered as cron jobs and persist across terminal sessions and reboots.
+- Use `--list` to see all active scrapingbee schedules with their interval and running time.
+- Use `--stop NAME` to remove a specific schedule, or `--stop all` to remove all scrapingbee schedules.
+- The API key is forwarded automatically from the current session to the cron job.
 
 ## Related
 
-- [Batch output layout](../batch/output.md) — manifest.json format including `credits_used`, `latency_ms`, `unchanged`
-- [Change detection with --diff-dir](../batch/overview.md)
+- [Batch output layout](../batch/output.md) — manifest.json format including `credits_used`, `latency_ms`
+- [Update CSV (--update-csv)](../batch/overview.md) — refresh input data in-place

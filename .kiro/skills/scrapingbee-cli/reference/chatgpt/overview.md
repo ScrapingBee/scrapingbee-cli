@@ -1,5 +1,7 @@
 # ChatGPT API
 
+> **Syntax:** use space-separated values — `--option value`, not `--option=value`.
+
 Send a prompt to the ScrapingBee ChatGPT endpoint. **No command-specific parameters**; only global flags (`--output-file`, `--verbose`, `--output-dir`, `--concurrency`, `--retries`, `--backoff`). **Credit:** 15 per request.
 
 ## Command

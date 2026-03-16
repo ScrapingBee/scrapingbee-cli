@@ -69,16 +69,20 @@ scrapingbee crawl --output-dir "$CRAWL_DIR" "URL" --max-pages 50
 scrapingbee export --output-file crawl_out.ndjson --input-dir "$CRAWL_DIR"
 ```
 
-### Change monitoring (diff two runs)
+### Ongoing monitoring (update CSV in-place)
 ```bash
-# First run
-OLD_DIR=run_$(date +%s)
-scrapingbee scrape --output-dir "$OLD_DIR" --input-file inputs.txt
+# First run — create baseline CSV
+scrapingbee scrape --output-dir initial_run --input-file urls.txt
+scrapingbee export --input-dir initial_run --format csv --flatten --output-file tracker.csv
 
-# Second run — compare with first
-NEW_DIR=run_$(date +%s)
-scrapingbee --diff-dir "$OLD_DIR" --output-dir "$NEW_DIR" --input-file inputs.txt scrape
-# manifest.json in NEW_DIR marks changed/unchanged; .err files for failures
+# Subsequent runs — refresh CSV with fresh data
+scrapingbee scrape --input-file tracker.csv --input-column url --update-csv \
+  --ai-extract-rules '{"title": "title", "price": "price"}'
+
+# Schedule daily updates via cron
+scrapingbee schedule --every 1d --name my-tracker \
+  scrape --input-file tracker.csv --input-column url --update-csv \
+  --ai-extract-rules '{"title": "title", "price": "price"}'
 ```
 
 ## Rules

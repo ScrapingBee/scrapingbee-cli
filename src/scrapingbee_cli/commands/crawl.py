@@ -9,10 +9,12 @@ from ..batch import get_batch_usage, resolve_batch_concurrency
 from ..cli_utils import (
     DEVICE_DESKTOP_MOBILE,
     WAIT_BROWSER_HELP,
+    _output_options,
     _validate_json_option,
     _validate_range,
     build_scrape_kwargs,
     scrape_kwargs_to_api_params,
+    store_common_options,
 )
 from ..config import get_api_key
 from ..crawl import (
@@ -248,7 +250,7 @@ def _crawl_build_params(
     "--max-pages",
     type=int,
     default=0,
-    help="Max number of pages to fetch (0 = unlimited). Quick-crawl only.",
+    help="Max pages to fetch from API (0 = unlimited). Each page costs credits.",
 )
 @optgroup.option(
     "--allowed-domains",
@@ -266,6 +268,24 @@ def _crawl_build_params(
     help="Follow links to any domain (default: same domain only). Quick-crawl only.",
 )
 @optgroup.option(
+    "--include-pattern",
+    type=str,
+    default=None,
+    help="Regex: only follow URLs matching this pattern.",
+)
+@optgroup.option(
+    "--exclude-pattern",
+    type=str,
+    default=None,
+    help="Regex: skip URLs matching this pattern.",
+)
+@optgroup.option(
+    "--save-pattern",
+    type=str,
+    default=None,
+    help="Regex: only save pages matching this pattern. Other pages are visited for link discovery but not saved.",
+)
+@optgroup.option(
     "--download-delay",
     type=float,
     default=None,
@@ -277,6 +297,26 @@ def _crawl_build_params(
     default=False,
     help="Enable Scrapy AutoThrottle to adapt request rate.",
 )
+@click.option(
+    "--output-dir",
+    "output_dir",
+    default=None,
+    help="Crawl output folder (default: crawl_<timestamp>).",
+)
+@click.option(
+    "--concurrency", type=int, default=0, help="Max concurrent requests (0 = auto from plan)."
+)
+@click.option(
+    "--resume", is_flag=True, default=False, help="Skip already-crawled URLs from previous run."
+)
+@click.option(
+    "--on-complete",
+    "on_complete",
+    type=str,
+    default=None,
+    help="Shell command to run after crawl completes.",
+)
+@_output_options
 @click.pass_obj
 def crawl_cmd(
     obj: dict,
@@ -320,8 +360,16 @@ def crawl_cmd(
     max_pages: int,
     allowed_domains: str | None,
     allow_external_domains: bool,
+    include_pattern: str | None,
+    exclude_pattern: str | None,
+    save_pattern: str | None,
     download_delay: float | None,
     autothrottle: bool,
+    output_dir: str | None,
+    concurrency: int,
+    resume: bool,
+    on_complete: str | None,
+    **kwargs,
 ) -> None:
     """Run a Scrapy spider with ScrapingBee.
 
@@ -341,6 +389,11 @@ def crawl_cmd(
 
     See https://www.scrapingbee.com/documentation/ for parameter details.
     """
+    store_common_options(obj, **kwargs)
+    obj["output_dir"] = output_dir or ""
+    obj["concurrency"] = concurrency or 0
+    obj["resume"] = resume
+    obj["on_complete"] = on_complete
     try:
         key = get_api_key(None)
     except ValueError as e:
@@ -349,7 +402,7 @@ def crawl_cmd(
     # Resolve URLs: either from --from-sitemap or positional target arguments
     if from_sitemap:
         click.echo(f"Fetching sitemap: {from_sitemap}", err=True)
-        sitemap_urls = _fetch_sitemap_urls(from_sitemap)
+        sitemap_urls = _fetch_sitemap_urls(from_sitemap, api_key=key)
         if not sitemap_urls:
             click.echo("No URLs found in sitemap.", err=True)
             raise SystemExit(1)
@@ -368,10 +421,11 @@ def crawl_cmd(
     first = target[0]
     if first.startswith("http://") or first.startswith("https://"):
         urls = list(target)
+        display_concurrency = min(concurrency, max_pages) if max_pages > 0 else min(concurrency, 50)
         if from_concurrency:
-            click.echo(f"Crawl: concurrency {concurrency} (from --concurrency)", err=True)
+            click.echo(f"Crawl: concurrency {display_concurrency} (from --concurrency)", err=True)
         else:
-            click.echo(f"Crawl: concurrency {concurrency} (from usage API)", err=True)
+            click.echo(f"Crawl: concurrency {display_concurrency} (from usage API)", err=True)
         try:
             _validate_json_option("--js-scenario", js_scenario)
             _validate_json_option("--extract-rules", extract_rules)
@@ -442,11 +496,19 @@ def crawl_cmd(
                 download_delay=download_delay,
                 autothrottle_enabled=autothrottle or None,
                 resume=obj.get("resume", False),
+                include_pattern=include_pattern,
+                exclude_pattern=exclude_pattern,
+                save_pattern=save_pattern,
             )
         except ValueError as e:
             click.echo(str(e), err=True)
             raise SystemExit(1)
         click.echo(f"Saved to {out_dir}", err=True)
+        on_complete = obj.get("on_complete")
+        if on_complete:
+            from ..cli_utils import run_on_complete
+
+            run_on_complete(on_complete, output_dir=out_dir)
     else:
         if len(target) > 1:
             click.echo(

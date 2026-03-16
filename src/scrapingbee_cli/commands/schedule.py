@@ -1,149 +1,309 @@
-"""Schedule command — repeatedly run a scrapingbee sub-command at a fixed interval."""
+"""Schedule command — register cron jobs to run scrapingbee commands at intervals."""
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
-import time
 from datetime import datetime
+from pathlib import Path
 
 import click
 
 _DURATION_RE = re.compile(r"^(\d+)(s|m|h|d)$")
 
-_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+_CONFIG_DIR = Path.home() / ".config" / "scrapingbee-cli"
+_REGISTRY_FILE = _CONFIG_DIR / "schedules.json"
+_LOG_DIR = _CONFIG_DIR / "logs"
+
+_CRON_TAG = "# scrapingbee-schedule:"
 
 
-def _parse_duration(s: str) -> int:
-    """Parse a duration string like '30s', '5m', '1h', '2d' → seconds."""
+def _duration_to_cron(s: str) -> str:
+    """Convert a duration string like '5m', '1h', '2d' to a cron expression.
+    Supports: Ns (not supported in cron — error), Nm, Nh, Nd."""
     m = _DURATION_RE.match(s.strip())
     if not m:
         raise click.BadParameter(
-            f"Invalid duration {s!r}. Use e.g. 30s, 5m, 1h, 2d.",
+            f"Invalid duration {s!r}. Use e.g. 5m, 1h, 2d.",
             param_hint="'--every'",
         )
     n, unit = int(m.group(1)), m.group(2)
-    return n * _UNIT_SECONDS[unit]
+    if unit == "s":
+        if n < 60:
+            raise click.BadParameter(
+                "Cron does not support intervals shorter than 1 minute. Use 1m or higher.",
+                param_hint="'--every'",
+            )
+        # Convert seconds to minutes
+        n = n // 60
+        unit = "m"
+    if unit == "m":
+        if n <= 0:
+            raise click.BadParameter("Interval must be at least 1m.", param_hint="'--every'")
+        return f"*/{n} * * * *"
+    if unit == "h":
+        return f"0 */{n} * * *"
+    if unit == "d":
+        return f"0 0 */{n} * *"
+    raise click.BadParameter(f"Unknown unit {unit!r}.", param_hint="'--every'")
 
 
-def _extract_output_dir(cmd_args: tuple[str, ...]) -> str | None:
-    """Extract the value of --output-dir from cmd_args, or None."""
-    args = list(cmd_args)
-    if "--output-dir" in args:
-        idx = args.index("--output-dir")
-        if idx + 1 < len(args):
-            return args[idx + 1]
-    return None
+def _find_scrapingbee() -> str:
+    """Find the scrapingbee executable path."""
+    exe = shutil.which("scrapingbee")
+    if exe:
+        return exe
+    return sys.argv[0]
 
 
-def _make_run_subdir(parent: str) -> str:
-    """Return a unique timestamped sub-run directory path under parent.
+def _get_current_crontab() -> str:
+    """Read the current user crontab. Returns empty string if none."""
+    try:
+        result = subprocess.run(
+            ["crontab", "-l"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.stdout if result.returncode == 0 else ""
+    except Exception:
+        return ""
 
-    E.g. ``price-runs/`` → ``price-runs/run_20250115_100000``.
-    Used by ``--auto-diff`` so each scheduled run writes to its own directory,
-    preventing the same-dir guard from triggering when ``--diff-dir`` and
-    ``--output-dir`` would otherwise point at the same path.
-    """
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return os.path.join(parent, f"run_{ts}")
+
+def _write_crontab(content: str) -> None:
+    """Write a new crontab for the current user."""
+    try:
+        proc = subprocess.run(
+            ["crontab", "-"],
+            input=content,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            "crontab timed out. On macOS, grant Terminal 'Full Disk Access' in "
+            "System Settings > Privacy & Security, or run: crontab -e"
+        )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Failed to write crontab: {proc.stderr.strip()}")
+
+
+def _load_registry() -> dict[str, dict]:
+    """Load the schedules registry."""
+    try:
+        return json.loads(_REGISTRY_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def _save_registry(registry: dict[str, dict]) -> None:
+    """Save the schedules registry."""
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _REGISTRY_FILE.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+
+
+def _auto_name(cmd_args: tuple[str, ...]) -> str:
+    """Generate a schedule name from the command args."""
+    parts = [a for a in cmd_args if not a.startswith("-")]
+    if parts:
+        return "-".join(parts[:2])[:30]
+    return f"schedule-{os.getpid()}"
+
+
+def _format_running_since(created_at: str) -> str:
+    """Format how long a schedule has been running."""
+    try:
+        dt = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S")
+        total_s = int((datetime.now() - dt).total_seconds())
+        if total_s < 60:
+            return f"{total_s}s"
+        if total_s < 3600:
+            return f"{total_s // 60}m"
+        if total_s < 86400:
+            h, m = divmod(total_s // 60, 60)
+            return f"{h}h {m}m"
+        d, h = divmod(total_s // 3600, 24)
+        return f"{d}d {h}h"
+    except ValueError:
+        return "?"
+
+
+def _print_schedules(registry: dict[str, dict]) -> None:
+    """Print a table of registered schedules."""
+    if not registry:
+        click.echo("No active schedules.", err=True)
+        return
+    click.echo(f"\nActive schedules ({len(registry)}):", err=True)
+    click.echo(f"  {'Name':<20} {'Interval':<10} {'Running':<12} Command", err=True)
+    click.echo(f"  {'─' * 20} {'─' * 10} {'─' * 12} {'─' * 40}", err=True)
+    for name, info in registry.items():
+        running = _format_running_since(info.get("created_at", ""))
+        click.echo(
+            f"  {name:<20} {info.get('interval', '?'):<10} "
+            f"{running:<12} {info.get('command', '?')}",
+            err=True,
+        )
+    click.echo(err=True)
+
+
+def _add_schedule(name: str, every: str, cmd_args: tuple[str, ...]) -> None:
+    """Add a cron job for the schedule."""
+    cron_expr = _duration_to_cron(every)
+    exe = _find_scrapingbee()
+
+    # Build the command (without schedule --every --name)
+    full_cmd = f"{exe} {' '.join(cmd_args)}"
+
+    # Ensure log directory exists
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _LOG_DIR / f"{name}.log"
+
+    # Cron line: command >> log 2>&1, tagged with name for identification
+    cron_line = f'{cron_expr} {full_cmd} >> "{log_path}" 2>&1 {_CRON_TAG}{name}'
+
+    # Read current crontab, check for duplicate name
+    current = _get_current_crontab()
+    tag = f"{_CRON_TAG}{name}"
+
+    lines = current.splitlines()
+    # Remove any existing entry with the same name
+    had_existing = any(tag in line for line in lines)
+    if had_existing:
+        if not click.confirm(f"Schedule '{name}' already exists. Replace it?"):
+            click.echo("Cancelled.", err=True)
+            return
+    lines = [line for line in lines if tag not in line]
+    lines.append(cron_line)
+
+    # Write updated crontab
+    new_crontab = "\n".join(lines).strip() + "\n"
+    _write_crontab(new_crontab)
+
+    # Update registry
+    registry = _load_registry()
+    registry[name] = {
+        "interval": every,
+        "cron": cron_expr,
+        "command": full_cmd,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "log": str(log_path),
+    }
+    _save_registry(registry)
+
+    click.echo(f"Schedule '{name}' created: {cron_expr}", err=True)
+    click.echo(f"  Command: {full_cmd}", err=True)
+    click.echo(f"  Log: {log_path}", err=True)
+    click.echo(f"  Stop with: scrapingbee schedule --stop {name}", err=True)
+
+    _print_schedules(registry)
+
+
+def _remove_cron_entry(name: str) -> None:
+    """Remove a cron entry by schedule name tag."""
+    current = _get_current_crontab()
+    tag = f"{_CRON_TAG}{name}"
+    lines = [line for line in current.splitlines() if tag not in line]
+    new_crontab = "\n".join(lines).strip() + "\n" if lines else ""
+    _write_crontab(new_crontab)
+
+
+def _stop_schedule(name: str | None) -> None:
+    """Stop one or all schedules by removing cron entries."""
+    registry = _load_registry()
+
+    if not registry:
+        click.echo("No active schedules to stop.", err=True)
+        raise SystemExit(1)
+
+    if name:
+        if name not in registry:
+            click.echo(f"No schedule named '{name}' found.", err=True)
+            _print_schedules(registry)
+            raise SystemExit(1)
+        _remove_cron_entry(name)
+        del registry[name]
+        _save_registry(registry)
+        click.echo(f"Stopped schedule '{name}'.", err=True)
+    else:
+        click.echo(f"Stopping all {len(registry)} schedule(s):", err=True)
+        for sname in list(registry):
+            _remove_cron_entry(sname)
+            click.echo(f"  Removed '{sname}'", err=True)
+        _save_registry({})
+        click.echo("Done.", err=True)
 
 
 @click.command(
     "schedule",
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
 )
-@click.option("--every", required=True, help="Run interval: 30s, 5m, 1h, 2d")
+@click.option("--every", required=False, default=None, help="Run interval: 5m, 1h, 2d (minimum 1m)")
 @click.option(
-    "--auto-diff",
+    "--name",
+    default=None,
+    help="Name for this schedule. Auto-generated if omitted.",
+)
+@click.option(
+    "--stop",
+    "stop_name",
+    default=None,
+    type=str,
+    is_flag=False,
+    flag_value="__all__",
+    help="Stop a schedule by name (e.g. --stop btc-price), or stop all (--stop all).",
+)
+@click.option(
+    "--list",
+    "list_schedules",
     is_flag=True,
     default=False,
-    help=(
-        "Automatically pass the previous run's output directory as --diff-dir "
-        "to the next run, enabling change detection across runs."
-    ),
+    help="List all active schedules.",
 )
 @click.argument("cmd_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_obj
-def schedule_cmd(obj: dict | None, every: str, auto_diff: bool, cmd_args: tuple[str, ...]) -> None:
-    """Repeatedly run a scrapingbee command at a fixed interval.
+def schedule_cmd(
+    obj: dict | None,
+    every: str | None,
+    name: str | None,
+    stop_name: str | None,
+    list_schedules: bool,
+    cmd_args: tuple[str, ...],
+) -> None:
+    """Schedule a scrapingbee command to run at a fixed interval using cron.
 
     \b
     Examples:
-      scrapingbee schedule --every 1h scrape https://example.com
-      scrapingbee schedule --every 30m --auto-diff --output-dir run google "python news"
+      scrapingbee schedule --every 5m --name btc-price --update-csv scrape --input-file btc.csv --input-column url --extract-rules '{"price":".amount"}'
+      scrapingbee schedule --every 1h --name news google "breaking news" --search-type news
+      scrapingbee schedule --list
+      scrapingbee schedule --stop btc-price
+      scrapingbee schedule --stop all
 
-    Note: global options (--output-dir, --output-file, --input-file) must appear
-    AFTER schedule's own options (--every, --auto-diff) but BEFORE the subcommand name.
+    All options (--update-csv, --input-file, etc.) are part of the subcommand being scheduled.
     """
-    interval = _parse_duration(every)
-    entry = sys.argv[0]  # 'scrapingbee' executable path
+    if list_schedules:
+        _print_schedules(_load_registry())
+        return
 
-    env = os.environ.copy()
+    if stop_name is not None:
+        _stop_schedule(None if stop_name in ("__all__", "all") else stop_name)
+        return
 
-    # Determine base output directory (cmd_args takes precedence over ctx.obj).
-    # When --auto-diff is active this becomes the parent; each run writes to a
-    # unique timestamped subdirectory to avoid the same-dir guard (which blocks
-    # diff_dir == output_dir).
-    base_output_dir: str | None = _extract_output_dir(cmd_args) or (
-        obj.get("output_dir") if obj else None
-    )
-    output_dir_in_cmd_args: bool = "--output-dir" in list(cmd_args)
+    if not every:
+        click.echo("--every is required (unless using --stop or --list).", err=True)
+        raise SystemExit(1)
 
-    run_n = 0
-    prev_output_dir: str | None = None
-    try:
-        while True:
-            run_n += 1
-            click.echo(
-                f"[schedule] Run #{run_n} — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                err=True,
-            )
+    if not cmd_args:
+        click.echo("No command specified. Provide a scrapingbee command to schedule.", err=True)
+        raise SystemExit(1)
 
-            # When --auto-diff and a base output dir are both given, each run
-            # writes to a unique timestamped subdirectory under base_output_dir.
-            if auto_diff and base_output_dir:
-                run_dir: str | None = _make_run_subdir(base_output_dir)
-                if output_dir_in_cmd_args:
-                    # Replace --output-dir value in-place inside cmd_args.
-                    args = list(cmd_args)
-                    idx = args.index("--output-dir")
-                    args[idx + 1] = run_dir
-                    effective_args: list[str] = args
-                    extra_global: list[str] = []
-                else:
-                    # --output-dir was a global CLI option (in ctx.obj); inject it.
-                    effective_args = list(cmd_args)
-                    extra_global = ["--output-dir", run_dir]
-            else:
-                run_dir = None
-                effective_args = list(cmd_args)
-                extra_global = []
-
-            # Inject --diff-dir pointing at the previous run's output directory.
-            if auto_diff and prev_output_dir and "--diff-dir" not in effective_args:
-                cmd = [entry, "--diff-dir", prev_output_dir] + extra_global + effective_args
-            else:
-                cmd = [entry] + extra_global + effective_args
-
-            result = subprocess.run(cmd, env=env, capture_output=False)
-
-            # Track the actual output directory used by this run so the next
-            # run can reference it via --diff-dir.
-            if auto_diff:
-                prev_output_dir = run_dir or _extract_output_dir(cmd_args) or None
-
-            if result.returncode != 0:
-                click.echo(
-                    f"[schedule] Run #{run_n} exited with code {result.returncode}.",
-                    err=True,
-                )
-
-            click.echo(f"[schedule] Sleeping {every}...", err=True)
-            time.sleep(interval)
-    except KeyboardInterrupt:
-        click.echo("\n[schedule] Stopped.", err=True)
+    schedule_name = name or _auto_name(cmd_args)
+    _add_schedule(schedule_name, every, cmd_args)
 
 
 def register(cli: click.Group) -> None:

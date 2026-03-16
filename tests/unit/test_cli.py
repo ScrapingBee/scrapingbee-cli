@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import sys
-
 import pytest
 
-from scrapingbee_cli.cli import _reject_equals_syntax, _reorder_global_options
 from scrapingbee_cli.cli_utils import (
     WAIT_BROWSER_HELP,
     _extract_field_values,
@@ -25,32 +22,6 @@ from scrapingbee_cli.commands.youtube import (
     _extract_video_id,
     _normalize_youtube_search,
 )
-
-
-class TestRejectEqualsSyntax:
-    """_reject_equals_syntax() rejects --option=value and exits with message."""
-
-    def test_equals_syntax_exits_with_message(self, capsys: pytest.CaptureFixture[str]) -> None:
-        old_argv = sys.argv
-        try:
-            sys.argv = ["scrapingbee", "scrape", "https://example.com", "--render-js=false"]
-            with pytest.raises(SystemExit) as exc_info:
-                _reject_equals_syntax()
-            assert exc_info.value.code == 2
-            err = capsys.readouterr().err
-            assert "Use space-separated values" in err
-            assert "render-js" in err
-        finally:
-            sys.argv = old_argv
-
-    def test_space_separated_not_rejected(self) -> None:
-        """Space-separated options do not trigger rejection (no exit)."""
-        old_argv = sys.argv
-        try:
-            sys.argv = ["scrapingbee", "scrape", "https://example.com", "--render-js", "false"]
-            _reject_equals_syntax()  # does not raise
-        finally:
-            sys.argv = old_argv
 
 
 class TestWaitBrowserHelp:
@@ -217,27 +188,6 @@ class TestPresetAndJsScenarioCli:
         code, out, _ = cli_run(["auth", "--help"])
         assert code == 0
         assert "--show" in out
-
-    def test_global_retries_backoff_in_help(self):
-        from tests.conftest import cli_run
-
-        code, out, _ = cli_run(["--help"])
-        assert code == 0
-        assert "retries" in out and "backoff" in out
-
-    def test_global_extract_field_in_help(self):
-        from tests.conftest import cli_run
-
-        code, out, _ = cli_run(["--help"])
-        assert code == 0
-        assert "extract-field" in out
-
-    def test_global_fields_in_help(self):
-        from tests.conftest import cli_run
-
-        code, out, _ = cli_run(["--help"])
-        assert code == 0
-        assert "--fields" in out
 
     def test_google_search_type_includes_ai_mode(self):
         from tests.conftest import cli_run
@@ -454,115 +404,6 @@ class TestYouTubeDurationAlias:
             assert raw in YOUTUBE_DURATION
 
 
-class TestReorderGlobalOptions:
-    """Tests for _reorder_global_options()."""
-
-    def test_empty_argv(self):
-        assert _reorder_global_options([]) == []
-
-    def test_no_subcommand_returns_unchanged(self):
-        argv = ["--help"]
-        assert _reorder_global_options(argv) == ["--help"]
-
-    def test_version_returns_unchanged(self):
-        argv = ["--version"]
-        assert _reorder_global_options(argv) == ["--version"]
-
-    def test_already_before_subcommand(self):
-        argv = ["--verbose", "google", "test query"]
-        assert _reorder_global_options(argv) == ["--verbose", "google", "test query"]
-
-    def test_flag_moved_before_subcommand(self):
-        argv = ["google", "--verbose", "test query"]
-        assert _reorder_global_options(argv) == ["--verbose", "google", "test query"]
-
-    def test_option_with_value_moved(self):
-        argv = ["scrape", "--output-file", "/tmp/out.json", "https://example.com"]
-        assert _reorder_global_options(argv) == [
-            "--output-file",
-            "/tmp/out.json",
-            "scrape",
-            "https://example.com",
-        ]
-
-    def test_multiple_globals_moved(self):
-        argv = ["google", "--verbose", "--output-file", "out.json", "query"]
-        assert _reorder_global_options(argv) == [
-            "--verbose",
-            "--output-file",
-            "out.json",
-            "google",
-            "query",
-        ]
-
-    def test_mixed_global_and_local_options(self):
-        argv = ["scrape", "--verbose", "--render-js", "false", "https://example.com"]
-        result = _reorder_global_options(argv)
-        assert result == [
-            "--verbose",
-            "scrape",
-            "--render-js",
-            "false",
-            "https://example.com",
-        ]
-
-    def test_schedule_skipped(self):
-        argv = ["schedule", "--every", "1h", "--verbose", "scrape", "URL"]
-        assert _reorder_global_options(argv) == argv
-
-    def test_export_collision_diff_dir_stays(self):
-        """--diff-dir stays with export (it has its own --diff-dir option)."""
-        argv = ["export", "--diff-dir", "old/", "--input-dir", "new/"]
-        assert _reorder_global_options(argv) == argv
-
-    def test_google_no_collision_diff_dir_moved(self):
-        """--diff-dir is moved for google (no collision)."""
-        argv = ["--input-file", "q.txt", "google", "--diff-dir", "old/"]
-        assert _reorder_global_options(argv) == [
-            "--input-file",
-            "q.txt",
-            "--diff-dir",
-            "old/",
-            "google",
-        ]
-
-    def test_value_matching_subcommand_name(self):
-        """--output-file scrape scrape URL — Phase 1 skips the value 'scrape'."""
-        argv = ["--output-file", "scrape", "scrape", "https://example.com"]
-        assert _reorder_global_options(argv) == [
-            "--output-file",
-            "scrape",
-            "scrape",
-            "https://example.com",
-        ]
-
-    def test_subcommand_specific_option_not_moved(self):
-        """A subcommand option like --render-js is not a global option, so stays."""
-        argv = ["scrape", "--render-js", "false", "URL"]
-        result = _reorder_global_options(argv)
-        assert result == ["scrape", "--render-js", "false", "URL"]
-
-    def test_globals_before_and_after(self):
-        """Some globals before, some after — all end up before."""
-        argv = ["--verbose", "google", "--output-file", "out.json", "query"]
-        assert _reorder_global_options(argv) == [
-            "--verbose",
-            "--output-file",
-            "out.json",
-            "google",
-            "query",
-        ]
-
-    def test_every_global_option_recognized(self):
-        """Each global option is moved when placed after a subcommand."""
-        from scrapingbee_cli.cli import _GLOBAL_OPTION_SPECS
-
-        for opt, takes_value in _GLOBAL_OPTION_SPECS.items():
-            argv = ["google", opt] + (["VAL"] if takes_value else []) + ["query"]
-            result = _reorder_global_options(argv)
-            assert result[0] == opt, f"{opt} should be moved before the subcommand"
-
-
 class TestYouTubeChoiceConstants:
     """Tests verifying YouTube filter choice constants."""
 
@@ -710,7 +551,7 @@ class TestCommandHelpOutput:
 
         code, out, _ = cli_run(["export", "--help"])
         assert code == 0
-        for param in ("--input-dir", "--format", "--diff-dir"):
+        for param in ("--input-dir", "--format", "--flatten"):
             assert param in out, f"{param} should appear in export --help"
         assert "ndjson" in out
         assert "csv" in out
@@ -720,8 +561,7 @@ class TestCommandHelpOutput:
 
         code, out, _ = cli_run(["schedule", "--help"])
         assert code == 0
-        for param in ("--every", "--auto-diff"):
-            assert param in out, f"{param} should appear in schedule --help"
+        assert "--every" in out, "--every should appear in schedule --help"
 
     def test_usage_help(self):
         from tests.conftest import cli_run
@@ -771,27 +611,6 @@ class TestCommandHelpOutput:
             assert param in out, f"{param} should appear in google --help"
         for search_type in ("classic", "news", "maps", "shopping", "images", "ai-mode"):
             assert search_type in out, f"search type {search_type!r} should appear in google --help"
-
-    def test_global_help_all_options(self):
-        from tests.conftest import cli_run
-
-        code, out, _ = cli_run(["--help"])
-        assert code == 0
-        for param in (
-            "--output-file",
-            "--verbose",
-            "--output-dir",
-            "--input-file",
-            "--concurrency",
-            "--retries",
-            "--backoff",
-            "--resume",
-            "--no-progress",
-            "--extract-field",
-            "--fields",
-            "--diff-dir",
-        ):
-            assert param in out, f"{param} should appear in global --help"
 
     def test_global_help_lists_all_commands(self):
         from tests.conftest import cli_run
