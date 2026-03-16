@@ -2,12 +2,14 @@
 # Syncs skills and agent files from the canonical source to all tool-specific directories.
 #
 # Source of truth:
-#   skills/scrapingbee-cli/              → canonical skill (Claude Code plugin)
-#   skills/scrapingbee-cli/.claude/agents/scraping-pipeline.md  → canonical agent
+#   plugins/scrapingbee-cli/skills/scrapingbee-cli/              → canonical skill (Claude Code plugin)
+#   plugins/scrapingbee-cli/skills/scrapingbee-cli/.claude/agents/scraping-pipeline.md  → canonical agent
 #
 # Skills destinations:
-#   .agents/skills/scrapingbee-cli/      (Amp, RooCode, OpenCode, Gemini CLI)
+#   .agents/skills/scrapingbee-cli/      (Amp, RooCode, Gemini CLI)
+#   .github/skills/scrapingbee-cli/      (GitHub Copilot)
 #   .kiro/skills/scrapingbee-cli/        (Kiro IDE)
+#   .opencode/skills/scrapingbee-cli/    (OpenCode)
 #
 # Agent destinations (markdown):
 #   .gemini/agents/scraping-pipeline.md
@@ -23,7 +25,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
-SOURCE_SKILL="$REPO_ROOT/skills/scrapingbee-cli"
+SOURCE_SKILL="$REPO_ROOT/plugins/scrapingbee-cli/skills/scrapingbee-cli"
 SOURCE_AGENT="$SOURCE_SKILL/.claude/agents/scraping-pipeline.md"
 
 # ---------------------------------------------------------------------------
@@ -33,7 +35,9 @@ echo "Syncing skills..."
 
 SKILL_DIRS=(
     "$REPO_ROOT/.agents/skills/scrapingbee-cli"
+    "$REPO_ROOT/.github/skills/scrapingbee-cli"
     "$REPO_ROOT/.kiro/skills/scrapingbee-cli"
+    "$REPO_ROOT/.opencode/skills/scrapingbee-cli"
 )
 
 for dest in "${SKILL_DIRS[@]}"; do

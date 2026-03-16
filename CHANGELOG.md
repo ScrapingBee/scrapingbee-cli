@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-03-16
+
+### Changed
+
+- **Plugin directory restructured:** Separated marketplace catalog from plugin content. Plugin now lives at `plugins/scrapingbee-cli/` with its own `.claude-plugin/plugin.json`, matching the Claude Code marketplace spec.
+- **`marketplace.json` fixed:** Moved top-level `description` to `metadata.description`, updated plugin `source` to `./plugins/scrapingbee-cli`, removed non-spec `$schema` field.
+- **`AGENTS.md` upgraded:** Now comprehensive and self-contained — covers all commands, options, pipelines, extraction, crawling, scheduling, credit costs, troubleshooting, and known limitations. Serves as the single source of truth for tools that read `AGENTS.md` (Codex CLI, Cursor, Windsurf, Amp, RooCode, Continue, and others).
+
+### Added
+
+- **GitHub Copilot skills:** Added `.github/skills/scrapingbee-cli/` for Copilot skill discovery.
+- **OpenCode skills:** Added `.opencode/skills/scrapingbee-cli/` for OpenCode skill discovery.
+- **`sync-skills.sh` updated:** Now syncs skills to `.github/skills/` and `.opencode/skills/` in addition to existing destinations.
+
 ## [1.2.1] - 2026-03-16
 
 ### Fixed
