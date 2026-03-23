@@ -20,6 +20,7 @@ from scrapy.settings import Settings
 from scrapy.utils.project import get_project_settings
 from scrapy_scrapingbee import ScrapingBeeRequest
 
+from . import user_agent
 from .batch import _batch_subdir_for_extension, extension_for_crawl
 
 if TYPE_CHECKING:
@@ -487,7 +488,7 @@ def _fetch_sitemap_urls(url: str, *, api_key: str | None = None, depth: int = 0)
     ] or [loc.text.strip() for loc in root.findall(".//url/loc") if loc.text and loc.text.strip()]
 
 
-USER_AGENT_CLI = "ScrapingBee/CLI"
+USER_AGENT_CLI = user_agent()
 
 
 def default_crawl_output_dir() -> str:

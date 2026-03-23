@@ -10,6 +10,7 @@ from typing import Any
 import aiohttp
 import certifi
 
+from . import user_agent
 from .config import BASE_URL
 
 
@@ -45,7 +46,7 @@ class Client:
         self._session = aiohttp.ClientSession(
             connector=connector,
             timeout=timeout,
-            headers={"User-Agent": "ScrapingBee/CLI"},
+            headers={"User-Agent": user_agent()},
         )
         return self
 
