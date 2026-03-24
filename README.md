@@ -90,6 +90,7 @@ scrapingbee schedule --list
 
 ## More information
 
+- **[Advanced usage examples](docs/advanced-usage.md)** – Shell piping, command chaining, batch workflows, monitoring scripts, NDJSON streaming, screenshots, Google search patterns, LLM chunking, and more.
 - **[ScrapingBee API documentation](https://www.scrapingbee.com/documentation/)** – Parameters, response formats, credit costs, and best practices.
 - **Claude / AI agents:** This repo includes a [Claude Skill](https://github.com/ScrapingBee/scrapingbee-cli/tree/main/skills/scrapingbee-cli) and [Claude Plugin](.claude-plugin/) for agent use with file-based output and security rules.
 
