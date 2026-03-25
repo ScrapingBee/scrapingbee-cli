@@ -181,6 +181,8 @@ def walmart_search_cmd(
                 backoff=obj.get("backoff", 2.0) or 2.0,
             )
         check_api_response(data, status_code)
+        from ..credits import walmart_credits
+
         write_output(
             data,
             headers,
@@ -190,6 +192,7 @@ def walmart_search_cmd(
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
             command="walmart-search",
+            credit_cost=walmart_credits(parse_bool(light_request)),
         )
 
     asyncio.run(_single())
@@ -298,6 +301,8 @@ def walmart_product_cmd(
                 backoff=obj.get("backoff", 2.0) or 2.0,
             )
         check_api_response(data, status_code)
+        from ..credits import walmart_credits
+
         write_output(
             data,
             headers,
@@ -307,6 +312,7 @@ def walmart_product_cmd(
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
             command="walmart-product",
+            credit_cost=walmart_credits(parse_bool(light_request)),
         )
 
     asyncio.run(_single())

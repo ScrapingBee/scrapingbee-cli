@@ -17,6 +17,7 @@ from ..batch import (
 from ..cli_utils import (
     _batch_options,
     check_api_response,
+    parse_bool,
     prepare_batch_inputs,
     store_common_options,
     write_output,
@@ -27,9 +28,34 @@ from ..config import BASE_URL, get_api_key
 
 @click.command()
 @click.argument("prompt", nargs=-1, required=False)
-@_batch_options
+@click.option(
+    "--search",
+    type=str,
+    default=None,
+    help="Enable web search to enhance the response (true/false).",
+)
+@click.option(
+    "--add-html",
+    type=str,
+    default=None,
+    help="Include full HTML of the page in results (true/false).",
+)
+@click.option(
+    "--country-code",
+    type=str,
+    default=None,
+    help="Country code for geolocation (ISO 3166-1).",
+)
+@_batch_options  # must be after command-specific options
 @click.pass_obj
-def chatgpt_cmd(obj: dict, prompt: tuple[str, ...], **kwargs) -> None:
+def chatgpt_cmd(
+    obj: dict,
+    prompt: tuple[str, ...],
+    search: str | None,
+    add_html: str | None,
+    country_code: str | None,
+    **kwargs,
+) -> None:
     """Send a prompt to the ChatGPT API."""
     store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
@@ -64,6 +90,9 @@ def chatgpt_cmd(obj: dict, prompt: tuple[str, ...], **kwargs) -> None:
         async def api_call(client, p):
             return await client.chatgpt(
                 p,
+                search=parse_bool(search),
+                add_html=parse_bool(add_html),
+                country_code=country_code,
                 retries=obj.get("retries", 3) or 3,
                 backoff=obj.get("backoff", 2.0) or 2.0,
             )
@@ -96,6 +125,9 @@ def chatgpt_cmd(obj: dict, prompt: tuple[str, ...], **kwargs) -> None:
         async with Client(key, BASE_URL) as client:
             data, headers, status_code = await client.chatgpt(
                 prompt_str,
+                search=parse_bool(search),
+                add_html=parse_bool(add_html),
+                country_code=country_code,
                 retries=obj.get("retries", 3) or 3,
                 backoff=obj.get("backoff", 2.0) or 2.0,
             )
@@ -109,6 +141,7 @@ def chatgpt_cmd(obj: dict, prompt: tuple[str, ...], **kwargs) -> None:
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
             command="chatgpt",
+            credit_cost=15,
         )
 
     asyncio.run(_single())

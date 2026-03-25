@@ -167,6 +167,8 @@ def amazon_product_cmd(
                 backoff=obj.get("backoff", 2.0) or 2.0,
             )
         check_api_response(data, status_code)
+        from ..credits import amazon_credits
+
         write_output(
             data,
             headers,
@@ -176,6 +178,7 @@ def amazon_product_cmd(
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
             command="amazon-product",
+            credit_cost=amazon_credits(parse_bool(light_request)),
         )
 
     asyncio.run(_single())
@@ -338,6 +341,8 @@ def amazon_search_cmd(
                 backoff=obj.get("backoff", 2.0) or 2.0,
             )
         check_api_response(data, status_code)
+        from ..credits import amazon_credits
+
         write_output(
             data,
             headers,
@@ -347,6 +352,7 @@ def amazon_search_cmd(
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
             command="amazon-search",
+            credit_cost=amazon_credits(parse_bool(light_request)),
         )
 
     asyncio.run(_single())

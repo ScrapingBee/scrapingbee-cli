@@ -10,9 +10,17 @@ Command-line client for the [ScrapingBee](https://www.scrapingbee.com/) API: scr
 
 ## Installation
 
+**Recommended** — install with [uv](https://docs.astral.sh/uv/) (no virtual environment needed):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install scrapingbee-cli
+```
+
+**Alternative** — install with pip in a virtual environment:
+
 ```bash
 pip install scrapingbee-cli
-# or (isolated): pipx install scrapingbee-cli
 ```
 
 From source: clone the repo and run `pip install -e .` in the project root.
@@ -51,7 +59,7 @@ scrapingbee [command] [arguments] [options]
 | `amazon-product` / `amazon-search` | Amazon product and search |
 | `walmart-search` / `walmart-product` | Walmart search and product |
 | `youtube-search` / `youtube-metadata` | YouTube search and video metadata |
-| `chatgpt` | ChatGPT API |
+| `chatgpt` | ChatGPT API (`--search true` for web-enhanced responses) |
 | `export` | Merge batch/crawl output to ndjson, txt, or csv (with --flatten, --columns) |
 | `schedule` | Schedule commands via cron (--name, --list, --stop) |
 
@@ -90,6 +98,7 @@ scrapingbee schedule --list
 
 ## More information
 
+- **[CLI Documentation](https://www.scrapingbee.com/documentation/cli/)** – Full CLI reference with pipelines, parameters, and examples.
 - **[Advanced usage examples](docs/advanced-usage.md)** – Shell piping, command chaining, batch workflows, monitoring scripts, NDJSON streaming, screenshots, Google search patterns, LLM chunking, and more.
 - **[ScrapingBee API documentation](https://www.scrapingbee.com/documentation/)** – Parameters, response formats, credit costs, and best practices.
 - **Claude / AI agents:** This repo includes a [Claude Skill](https://github.com/ScrapingBee/scrapingbee-cli/tree/main/skills/scrapingbee-cli) and [Claude Plugin](.claude-plugin/) for agent use with file-based output and security rules.

@@ -1,17 +1,16 @@
-"""Estimated ScrapingBee credit costs per API command.
+"""ScrapingBee credit costs per API command.
 
-These are shown in verbose mode when the ``spb-cost`` response header is absent
-(SERP endpoints do not include that header).  Values are taken from the
-ScrapingBee documentation.
+Exact costs are computed from request parameters when possible.
+Estimated ranges are shown as fallback when the ``spb-cost`` response header
+is absent (SERP endpoints do not include that header).
 """
 
 from __future__ import annotations
 
-# Mapping from CLI command name → estimated credits per request.
-# Ranges are expressed as strings (e.g. "10-15") for display purposes.
+# Fallback ranges — only used when exact cost cannot be determined.
 ESTIMATED_CREDITS: dict[str, str] = {
     "google": "10-15",
-    "fast-search": "5",
+    "fast-search": "10",
     "amazon-product": "5-15",
     "amazon-search": "5-15",
     "walmart-search": "10-15",
@@ -20,3 +19,39 @@ ESTIMATED_CREDITS: dict[str, str] = {
     "youtube-metadata": "5",
     "chatgpt": "15",
 }
+
+
+def google_credits(light_request: bool | None = None) -> int:
+    """Google Search API: 10 for light requests (default), 15 for regular."""
+    if light_request is False:
+        return 15
+    return 10  # light_request=true is the default
+
+
+def fast_search_credits() -> int:
+    """Fast Search API: always 10 credits."""
+    return 10
+
+
+def amazon_credits(light_request: bool | None = None) -> int:
+    """Amazon API: 5 for light requests (default for product), 15 for regular."""
+    if light_request is False:
+        return 15
+    return 5
+
+
+def walmart_credits(light_request: bool | None = None) -> int:
+    """Walmart API: 10 for light requests, 15 for regular."""
+    if light_request is False:
+        return 15
+    return 10
+
+
+def youtube_credits() -> int:
+    """YouTube API: always 5 credits."""
+    return 5
+
+
+def chatgpt_credits() -> int:
+    """ChatGPT API: always 15 credits."""
+    return 15

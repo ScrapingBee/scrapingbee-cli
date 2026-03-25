@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-03-25
+
+### Added
+
+- **ChatGPT `--search`, `--add-html`, `--country-code` flags:** The `chatgpt` command now supports web-enhanced responses (`--search true`), full HTML inclusion (`--add-html true`), and geolocation (`--country-code gb`). `--search false` is silently ignored (only `true` sends the param).
+- **Auto-prepend `https://`:** URLs without a scheme (e.g. `example.com`) now automatically get `https://` prepended, matching curl/httpie behavior. Works for `scrape`, `crawl`, and `--from-sitemap`.
+- **`--extract-field` path suggestions:** When `--extract-field` doesn't match any data, the CLI now prints a warning with all available dot-paths instead of silent empty output.
+- **Exact credit costs in `--verbose`:** SERP commands (Google, Fast Search, Amazon, Walmart, YouTube, ChatGPT) now show exact credit costs based on request parameters (e.g. `Credit Cost: 10` for Google light requests) instead of estimated ranges.
+- **Unit tests for all v1.2.3 changes:** 39 new unit tests in `tests/unit/test_v122_fixes.py` plus 8 new e2e tests (FX-01 through FX-08).
+- **CLI documentation page:** Full docs at https://www.scrapingbee.com/documentation/cli/ — installation, authentication, all commands, parameters, pipelines, and examples.
+
+### Fixed
+
+- **`--allowed-domains` crawl bug:** Fixed a bug where `--allowed-domains` caused crawls to produce no output. Scrapy's built-in `OffsiteMiddleware` was reading the spider's `allowed_domains` attribute and filtering out all ScrapingBee proxy requests. Renamed to `_cli_allowed_domains` to avoid the conflict.
+- **`--max-depth` with non-HTML modes:** Disabled Scrapy's built-in `DepthMiddleware` which incorrectly incremented depth on discovery re-fetches, breaking `--max-depth` when using `--ai-query`, `--return-page-markdown`, or other non-HTML output modes.
+- **Misleading screenshot warning removed:** `--screenshot-full-page true` without `--screenshot` no longer prints a false "has no effect" warning — the API handles it correctly and produces a valid screenshot.
+- **Fast Search credit cost:** Corrected from 5 to 10 credits in the estimated fallback.
+
+### Changed
+
+- **Installation recommendation:** Docs now recommend `uv tool install scrapingbee-cli` over `pip install` for isolated, globally-available installation without virtual environment management.
+- **Version bumped to 1.2.3** across `pyproject.toml`, `__init__.py`, all skill files, and plugin manifests.
+
 ## [1.2.2] - 2026-03-16
 
 ### Changed

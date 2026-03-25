@@ -195,6 +195,28 @@ def _resolve_dotpath(obj: Any, keys: list[str]) -> Any:
     return cur
 
 
+def _collect_dotpaths(obj: Any, prefix: str = "", max_depth: int = 4) -> list[str]:
+    """Recursively collect all valid dot-paths from a JSON object.
+
+    For arrays, peeks into the first element. Caps at *max_depth* to
+    avoid huge output on deeply nested structures.
+    """
+    if max_depth <= 0:
+        return []
+    paths: list[str] = []
+    if isinstance(obj, dict):
+        for key in obj.keys():
+            full = f"{prefix}.{key}" if prefix else key
+            paths.append(full)
+            paths.extend(_collect_dotpaths(obj[key], full, max_depth - 1))
+    elif isinstance(obj, list) and obj:
+        # Peek into first element to show available sub-paths
+        first = obj[0] if isinstance(obj[0], dict) else None
+        if first:
+            paths.extend(_collect_dotpaths(first, prefix, max_depth - 1))
+    return paths
+
+
 def _extract_field_values(data: bytes, path: str) -> bytes:
     """Extract values from JSON data using a dot-path expression.
 
@@ -215,6 +237,14 @@ def _extract_field_values(data: bytes, path: str) -> bytes:
     result = _resolve_dotpath(obj, keys)
 
     if result is None:
+        paths = _collect_dotpaths(obj)
+        hint = ""
+        if paths:
+            hint = "\n  Available paths:\n    " + "\n    ".join(paths)
+        click.echo(
+            f"Warning: --extract-field '{path}' did not match any data.{hint}",
+            err=True,
+        )
         return b""
     if isinstance(result, list):
         values = [str(v) for v in result if v is not None]
@@ -524,6 +554,13 @@ async def scrape_with_escalation(
     return data, headers, status_code
 
 
+def ensure_url_scheme(url: str) -> str:
+    """Prepend https:// if the URL has no scheme (like curl/httpie do)."""
+    if url and not url.startswith(("http://", "https://", "ftp://")):
+        return "https://" + url
+    return url
+
+
 def prepare_batch_inputs(inputs: list[str], obj: dict) -> list[str]:
     """Apply --deduplicate and --sample to batch inputs."""
     from .batch import deduplicate_inputs, sample_inputs
@@ -578,6 +615,7 @@ def write_output(
     extract_field: str | None = None,
     fields: str | None = None,
     command: str | None = None,
+    credit_cost: int | None = None,
 ) -> None:
     """Write response data to file or stdout; optionally print verbose headers.
 
@@ -604,11 +642,14 @@ def write_output(
                     click.echo(f"{label}: {val}", err=True)
                     if key == "spb-cost":
                         spb_cost_present = True
-        if not spb_cost_present and command:
-            from scrapingbee_cli.credits import ESTIMATED_CREDITS
+        if not spb_cost_present:
+            if credit_cost is not None:
+                click.echo(f"Credit Cost: {credit_cost}", err=True)
+            elif command:
+                from scrapingbee_cli.credits import ESTIMATED_CREDITS
 
-            if command in ESTIMATED_CREDITS:
-                click.echo(f"Credit Cost (estimated): {ESTIMATED_CREDITS[command]}", err=True)
+                if command in ESTIMATED_CREDITS:
+                    click.echo(f"Credit Cost (estimated): {ESTIMATED_CREDITS[command]}", err=True)
         click.echo("---", err=True)
     if extract_field:
         data = _extract_field_values(data, extract_field)

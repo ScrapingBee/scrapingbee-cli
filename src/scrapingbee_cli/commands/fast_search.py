@@ -123,6 +123,8 @@ def fast_search_cmd(
                 backoff=obj.get("backoff", 2.0) or 2.0,
             )
         check_api_response(data, status_code)
+        from ..credits import fast_search_credits
+
         write_output(
             data,
             headers,
@@ -132,6 +134,7 @@ def fast_search_cmd(
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
             command="fast-search",
+            credit_cost=fast_search_credits(),
         )
 
     asyncio.run(_single())
