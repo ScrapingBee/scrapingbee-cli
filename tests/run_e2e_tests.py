@@ -1800,8 +1800,14 @@ def build_tests(fx: dict[str, str]) -> list[Test]:
         Test(
             "FX-06",
             "screenshot-full-page without --screenshot",
-            ["scrape", "https://example.com", "--screenshot-full-page", "true",
-             "--output-file", "/tmp/sb_fx_fullpage.png"],
+            [
+                "scrape",
+                "https://example.com",
+                "--screenshot-full-page",
+                "true",
+                "--output-file",
+                "/tmp/sb_fx_fullpage.png",
+            ],
             combined_checks(exit_ok()),
         ),
         # Crawl --allowed-domains
@@ -1810,10 +1816,13 @@ def build_tests(fx: dict[str, str]) -> list[Test]:
             "crawl --allowed-domains",
             [
                 "crawl",
-                "--output-dir", fx["crawl_allowed_dir"],
+                "--output-dir",
+                fx["crawl_allowed_dir"],
                 "https://books.toscrape.com",
-                "--max-pages", "3",
-                "--allowed-domains", "books.toscrape.com",
+                "--max-pages",
+                "3",
+                "--allowed-domains",
+                "books.toscrape.com",
             ],
             manifest_in(fx["crawl_allowed_dir"], 1),
             timeout=120,

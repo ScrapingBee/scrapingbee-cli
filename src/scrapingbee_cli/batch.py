@@ -297,10 +297,27 @@ async def _fetch_usage_async(api_key: str) -> dict:
         return parse_usage(body)
 
 
+# Cache usage API responses to avoid hitting the 6 calls/min rate limit.
+_usage_cache: dict | None = None
+_usage_cache_time: float = 0
+_USAGE_CACHE_TTL = 30  # seconds
+
+
 def get_batch_usage(api_key_flag: str | None) -> dict:
-    """Return usage info (max_concurrency, credits) from usage API."""
+    """Return usage info (max_concurrency, credits) from usage API.
+
+    Caches the result for 30 seconds to avoid hitting the usage API
+    rate limit (6 calls/min).
+    """
+    global _usage_cache, _usage_cache_time  # noqa: PLW0603
+    now = time.monotonic()
+    if _usage_cache is not None and (now - _usage_cache_time) < _USAGE_CACHE_TTL:
+        return _usage_cache
     key = get_api_key(api_key_flag)
-    return asyncio.run(_fetch_usage_async(key))
+    result = asyncio.run(_fetch_usage_async(key))
+    _usage_cache = result
+    _usage_cache_time = now
+    return result
 
 
 MIN_CREDITS_TO_RUN_BATCH = 100

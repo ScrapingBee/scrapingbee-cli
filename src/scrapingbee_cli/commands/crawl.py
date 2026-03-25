@@ -402,6 +402,7 @@ def crawl_cmd(
     # Resolve URLs: either from --from-sitemap or positional target arguments
     if from_sitemap:
         from ..cli_utils import ensure_url_scheme
+
         from_sitemap = ensure_url_scheme(from_sitemap)
         click.echo(f"Fetching sitemap: {from_sitemap}", err=True)
         sitemap_urls = _fetch_sitemap_urls(from_sitemap, api_key=key)
@@ -421,6 +422,7 @@ def crawl_cmd(
         concurrency = 16
         from_concurrency = False
     from ..cli_utils import ensure_url_scheme
+
     first = target[0]
     if first.startswith("http://") or first.startswith("https://") or "." in first:
         urls = [ensure_url_scheme(t) for t in target]

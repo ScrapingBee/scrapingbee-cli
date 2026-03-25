@@ -366,6 +366,7 @@ def scrape_cmd(
 
     if url:
         from ..cli_utils import ensure_url_scheme
+
         url = ensure_url_scheme(url)
 
     try:
