@@ -13,12 +13,8 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-import json
-from io import StringIO
 from unittest.mock import AsyncMock, patch
 
-import click
-import pytest
 from click.testing import CliRunner
 
 from scrapingbee_cli.cli_utils import ensure_url_scheme
@@ -31,7 +27,6 @@ from scrapingbee_cli.credits import (
     walmart_credits,
     youtube_credits,
 )
-
 
 # =============================================================================
 # 1-2. ChatGPT client params
