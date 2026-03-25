@@ -282,6 +282,7 @@ def youtube_search_cmd(
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
             command="youtube-search",
+            credit_cost=5,
         )
 
     asyncio.run(_single())
@@ -373,6 +374,7 @@ def youtube_metadata_cmd(
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
             command="youtube-metadata",
+            credit_cost=5,
         )
 
     asyncio.run(_single())

@@ -341,6 +341,7 @@ def create_fixtures() -> dict[str, str]:
         ("crawl_txt_dir", "/tmp/sb_crawl_txt"),
         ("crawl_nojs_dir", "/tmp/sb_crawl_nojs"),
         ("crawl_cc_dir", "/tmp/sb_crawl_cc"),
+        ("crawl_allowed_dir", "/tmp/sb_crawl_allowed"),
         ("noprog_dir", "/tmp/sb_noprog"),
     ]:
         f[name] = path
@@ -1751,6 +1752,78 @@ def build_tests(fx: dict[str, str]) -> list[Test]:
             "schedule --help",
             ["schedule", "--help"],
             combined_checks(exit_ok(), stdout_contains("--every")),
+        ),
+    ]
+
+    # ── FX: post-v1.2.2 fixes ─────────────────────────────────────────────────
+    tests += [
+        # ChatGPT --search true
+        Test(
+            "FX-01",
+            "chatgpt --search true",
+            ["chatgpt", "What is 2+2?", "--search", "true"],
+            combined_checks(exit_ok(), stdout_contains("4")),
+            timeout=60,
+        ),
+        # ChatGPT --search false (should not error)
+        Test(
+            "FX-02",
+            "chatgpt --search false (no error)",
+            ["chatgpt", "What is 2+2?", "--search", "false"],
+            combined_checks(exit_ok()),
+            timeout=60,
+        ),
+        # ChatGPT --add-html true
+        Test(
+            "FX-03",
+            "chatgpt --add-html true",
+            ["chatgpt", "Hello", "--add-html", "true"],
+            combined_checks(exit_ok(), stdout_contains("full_html")),
+            timeout=60,
+        ),
+        # ChatGPT --country-code
+        Test(
+            "FX-04",
+            "chatgpt --country-code gb",
+            ["chatgpt", "Hello", "--country-code", "gb"],
+            combined_checks(exit_ok()),
+            timeout=60,
+        ),
+        # Auto-prepend https://
+        Test(
+            "FX-05",
+            "scrape without https:// (auto-prepend)",
+            ["scrape", "httpbin.scrapingbee.com/html"],
+            combined_checks(exit_ok(), stdout_contains("Herman Melville")),
+        ),
+        # --screenshot-full-page without --screenshot (no warning, still works)
+        Test(
+            "FX-06",
+            "screenshot-full-page without --screenshot",
+            ["scrape", "https://example.com", "--screenshot-full-page", "true",
+             "--output-file", "/tmp/sb_fx_fullpage.png"],
+            combined_checks(exit_ok()),
+        ),
+        # Crawl --allowed-domains
+        Test(
+            "FX-07",
+            "crawl --allowed-domains",
+            [
+                "crawl",
+                "--output-dir", fx["crawl_allowed_dir"],
+                "https://books.toscrape.com",
+                "--max-pages", "3",
+                "--allowed-domains", "books.toscrape.com",
+            ],
+            manifest_in(fx["crawl_allowed_dir"], 1),
+            timeout=120,
+        ),
+        # Exact credit cost (google --verbose)
+        Test(
+            "FX-08",
+            "google --verbose shows exact Credit Cost",
+            ["google", "test", "--verbose"],
+            combined_checks(exit_ok(), stderr_contains("Credit Cost: 10")),
         ),
     ]
 

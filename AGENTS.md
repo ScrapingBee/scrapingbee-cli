@@ -6,8 +6,9 @@ Single-sentence summary: one CLI to scrape URLs, run batches and crawls, and cal
 
 ## Prerequisites — run first
 
-1. **Install:** `pip install scrapingbee-cli` (or `pipx install scrapingbee-cli` for isolation). All commands including `crawl` are available immediately — no extras needed.
+1. **Install:** `uv tool install scrapingbee-cli` (recommended) or `pip install scrapingbee-cli`. All commands including `crawl` are available immediately — no extras needed.
 2. **Authenticate:** `scrapingbee auth` or set `SCRAPINGBEE_API_KEY`.
+3. **Docs:** Full CLI documentation at https://www.scrapingbee.com/documentation/cli/
 3. **Check credits:** `scrapingbee usage` — always run before large batches.
 
 ## Commands
@@ -23,7 +24,7 @@ Single-sentence summary: one CLI to scrape URLs, run batches and crawls, and cal
 | `scrapingbee walmart-search QUERY` | Walmart search → `products.id` |
 | `scrapingbee youtube-search QUERY` | YouTube search → `results.link` |
 | `scrapingbee youtube-metadata ID` | Full metadata for a video (URL or ID accepted) |
-| `scrapingbee chatgpt PROMPT` | Send a prompt to ChatGPT via ScrapingBee |
+| `scrapingbee chatgpt PROMPT` | Send a prompt to ChatGPT via ScrapingBee (`--search true` for web-enhanced) |
 | `scrapingbee crawl URL` | Crawl a site following links, with AI extraction and --save-pattern filtering |
 | `scrapingbee export --input-dir DIR` | Merge batch/crawl output to NDJSON, TXT, or CSV (with --flatten, --columns) |
 | `scrapingbee schedule --every 1d --name NAME CMD` | Schedule commands via cron (--list, --stop NAME, --stop all) |
@@ -172,9 +173,13 @@ Options are per-command — run `scrapingbee [command] --help` to see the full l
 | `scrape` (with JS, default) | 5 |
 | `scrape` (premium proxy) | 10-25 |
 | `scrape` + AI extraction (`--ai-extract-rules`) | +5 |
-| `google` / `fast-search` | 10-15 |
-| `amazon-product` / `amazon-search` | 5-15 |
-| `walmart-product` / `walmart-search` | 10-15 |
+| `google` (light, default) | 10 |
+| `google` (regular, `--light-request false`) | 15 |
+| `fast-search` | 10 |
+| `amazon-product` / `amazon-search` (light, default) | 5 |
+| `amazon-product` / `amazon-search` (regular) | 15 |
+| `walmart-product` / `walmart-search` (light, default) | 10 |
+| `walmart-product` / `walmart-search` (regular) | 15 |
 | `youtube-search` / `youtube-metadata` | 5 |
 | `chatgpt` | 15 |
 
@@ -191,7 +196,8 @@ Each failed item writes `N.err` in the output directory — a JSON file with `er
 - **Rate limited (429)**: reduce `--concurrency`, or add `--retries 5`
 - **Crawl stops early**: site uses JS for navigation — JS rendering is on by default; check `--max-pages` limit
 - **Crawl saves too many pages**: use `--save-pattern "/product/"` to only save matching pages
-- **Amazon 400 error with --country**: `--country` must not match the domain (e.g. don't use `--country us` with `--domain com`, or `--country de` with `--domain de`). Use `--zip-code` instead when targeting the domain's own country.
+- **Amazon 400 error with --country**: `--country` must not match the domain's own country (e.g. don't use `--country us` with `--domain com`). Use a different country or `--zip-code` instead.
+- **URLs without https://**: The CLI auto-prepends `https://` when no scheme is given.
 
 ## Known limitations
 

@@ -401,6 +401,8 @@ def crawl_cmd(
         raise SystemExit(1)
     # Resolve URLs: either from --from-sitemap or positional target arguments
     if from_sitemap:
+        from ..cli_utils import ensure_url_scheme
+        from_sitemap = ensure_url_scheme(from_sitemap)
         click.echo(f"Fetching sitemap: {from_sitemap}", err=True)
         sitemap_urls = _fetch_sitemap_urls(from_sitemap, api_key=key)
         if not sitemap_urls:
@@ -418,9 +420,10 @@ def crawl_cmd(
     except Exception:
         concurrency = 16
         from_concurrency = False
+    from ..cli_utils import ensure_url_scheme
     first = target[0]
-    if first.startswith("http://") or first.startswith("https://"):
-        urls = list(target)
+    if first.startswith("http://") or first.startswith("https://") or "." in first:
+        urls = [ensure_url_scheme(t) for t in target]
         display_concurrency = min(concurrency, max_pages) if max_pages > 0 else min(concurrency, 50)
         if from_concurrency:
             click.echo(f"Crawl: concurrency {display_concurrency} (from --concurrency)", err=True)

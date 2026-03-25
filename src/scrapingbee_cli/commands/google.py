@@ -200,6 +200,8 @@ def google_cmd(
             )
         check_api_response(data, status_code)
         _warn_empty_organic(data, search_type)
+        from ..credits import google_credits
+
         write_output(
             data,
             headers,
@@ -209,6 +211,7 @@ def google_cmd(
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
             command="google",
+            credit_cost=google_credits(parse_bool(light_request)),
         )
 
     asyncio.run(_single())

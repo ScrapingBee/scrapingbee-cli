@@ -364,6 +364,10 @@ def scrape_cmd(
         click.echo("expected one URL argument, or use global --input-file for batch", err=True)
         raise SystemExit(1)
 
+    if url:
+        from ..cli_utils import ensure_url_scheme
+        url = ensure_url_scheme(url)
+
     try:
         key = get_api_key(None)
     except ValueError as e:
@@ -419,19 +423,12 @@ def scrape_cmd(
             k, v = h.split(":", 1)
             custom_headers[k.strip()] = v.strip()
 
-        if parse_bool(screenshot):
-            if screenshot_selector and parse_bool(screenshot_full_page):
-                click.echo(
-                    "Cannot use both --screenshot-selector and --screenshot-full-page; choose one.",
-                    err=True,
-                )
-                raise SystemExit(1)
-        elif screenshot_selector or parse_bool(screenshot_full_page):
+        if parse_bool(screenshot) and screenshot_selector and parse_bool(screenshot_full_page):
             click.echo(
-                "Note: --screenshot-selector and --screenshot-full-page have no effect "
-                "without --screenshot=true.",
+                "Cannot use both --screenshot-selector and --screenshot-full-page; choose one.",
                 err=True,
             )
+            raise SystemExit(1)
 
         scrape_kwargs = build_scrape_kwargs(
             method=method,

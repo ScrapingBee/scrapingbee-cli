@@ -179,7 +179,9 @@ class GenericScrapingBeeSpider(Spider):
         self.output_dir = output_dir
         self.allow_external_domains = allow_external_domains
         # None = derive from start_urls (same-domain); else only these netlocs
-        self.allowed_domains = allowed_domains
+        # Note: do NOT use self.allowed_domains — Scrapy's OffsiteMiddleware
+        # would filter ScrapingBee proxy requests (app.scrapingbee.com ≠ target domain).
+        self._cli_allowed_domains = allowed_domains
         self._allowed_netlocs: set[str] | None = None  # set when first request runs
         self.seen_urls: set[str] = set(pre_seen_urls) if pre_seen_urls else set()
         self._write_lock = threading.Lock()
@@ -198,8 +200,8 @@ class GenericScrapingBeeSpider(Spider):
         if self.allow_external_domains:
             self._allowed_netlocs = set()  # empty = allow all
             return self._allowed_netlocs
-        if self.allowed_domains:
-            self._allowed_netlocs = {d.lower().strip() for d in self.allowed_domains if d}
+        if self._cli_allowed_domains:
+            self._allowed_netlocs = {d.lower().strip() for d in self._cli_allowed_domains if d}
             return self._allowed_netlocs
         self._allowed_netlocs = {urlparse(u).netloc.lower() for u in self.start_urls}
         return self._allowed_netlocs
@@ -519,6 +521,13 @@ def _settings_with_scrapingbee(
     middlewares = dict(settings.get("DOWNLOADER_MIDDLEWARES", {}))
     middlewares[SCRAPINGBEE_MIDDLEWARE] = MIDDLEWARE_PRIORITY
     settings.set("DOWNLOADER_MIDDLEWARES", middlewares)
+    # Disable Scrapy's DepthMiddleware — we track depth manually in meta.
+    # The built-in middleware increments depth on every yielded request, which
+    # causes discovery re-fetches (same URL, HTML-only) to consume a depth
+    # level and break --max-depth for non-HTML modes (--ai-query, etc.).
+    spider_mw = dict(settings.get("SPIDER_MIDDLEWARES", {}))
+    spider_mw["scrapy.spidermiddlewares.depth.DepthMiddleware"] = None
+    settings.set("SPIDER_MIDDLEWARES", spider_mw)
     return settings
 
 

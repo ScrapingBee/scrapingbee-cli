@@ -539,12 +539,22 @@ class Client:
     async def chatgpt(
         self,
         prompt: str,
+        search: bool | None = None,
+        add_html: bool | None = None,
+        country_code: str | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
+        params: dict[str, object] = {"prompt": prompt}
+        if search:
+            params["search"] = "true"
+        if add_html is not None:
+            params["add_html"] = str(add_html).lower()
+        if country_code is not None:
+            params["country_code"] = country_code
         return await self._get_with_retry(
             "/chatgpt",
-            {"prompt": prompt},
+            params,
             retries=retries,
             backoff=backoff,
         )
