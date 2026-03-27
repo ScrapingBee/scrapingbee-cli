@@ -96,6 +96,14 @@ scrapingbee schedule --every 1d --name price-tracker scrape --input-file product
 scrapingbee schedule --list
 ```
 
+## Security
+
+The `--post-process`, `--on-complete`, and `schedule` commands execute arbitrary shell commands on your machine. These features are **disabled by default** and require explicit human setup to enable.
+
+For advanced features setup, see the Security section in our [CLI documentation](https://www.scrapingbee.com/documentation/cli/).
+
+**Do not enable these features in AI agent environments** where commands may be constructed from scraped web content. ScrapingBee is not responsible for any damages caused by shell execution features. Use at your own discretion.
+
 ## More information
 
 - **[CLI Documentation](https://www.scrapingbee.com/documentation/cli/)** – Full CLI reference with pipelines, parameters, and examples.

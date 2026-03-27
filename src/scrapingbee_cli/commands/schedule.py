@@ -153,11 +153,17 @@ def _print_schedules(registry: dict[str, dict]) -> None:
 
 def _add_schedule(name: str, every: str, cmd_args: tuple[str, ...]) -> None:
     """Add a cron job for the schedule."""
+    from ..audit import log_exec
+    from ..exec_gate import require_exec
+
     cron_expr = _duration_to_cron(every)
     exe = _find_scrapingbee()
 
     # Build the command (without schedule --every --name)
     full_cmd = f"{exe} {' '.join(cmd_args)}"
+
+    require_exec("schedule", full_cmd)
+    log_exec("schedule", full_cmd)
 
     # Ensure log directory exists
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -274,7 +280,7 @@ def schedule_cmd(
     list_schedules: bool,
     cmd_args: tuple[str, ...],
 ) -> None:
-    """Schedule a scrapingbee command to run at a fixed interval using cron.
+    """[Advanced] Schedule a scrapingbee command to run at a fixed interval using cron. Requires unsafe mode.
 
     \b
     Examples:

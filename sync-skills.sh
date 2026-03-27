@@ -26,6 +26,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 SOURCE_SKILL="$REPO_ROOT/plugins/scrapingbee-cli/skills/scrapingbee-cli"
+SOURCE_GUARD="$REPO_ROOT/plugins/scrapingbee-cli/skills/scrapingbee-cli-guard"
 SOURCE_AGENT="$SOURCE_SKILL/.claude/agents/scraping-pipeline.md"
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,24 @@ for dest in "${SKILL_DIRS[@]}"; do
         --exclude='.claude' \
         --exclude='.DS_Store' \
         "$SOURCE_SKILL/" "$dest/"
+    echo "  Updated: $dest"
+done
+
+# Guard skill
+echo "Syncing guard skill..."
+
+GUARD_DIRS=(
+    "$REPO_ROOT/.agents/skills/scrapingbee-cli-guard"
+    "$REPO_ROOT/.github/skills/scrapingbee-cli-guard"
+    "$REPO_ROOT/.kiro/skills/scrapingbee-cli-guard"
+    "$REPO_ROOT/.opencode/skills/scrapingbee-cli-guard"
+)
+
+for dest in "${GUARD_DIRS[@]}"; do
+    mkdir -p "$dest"
+    rsync -a --delete \
+        --exclude='.DS_Store' \
+        "$SOURCE_GUARD/" "$dest/"
     echo "  Updated: $dest"
 done
 

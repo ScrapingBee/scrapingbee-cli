@@ -105,7 +105,7 @@ def _batch_options(f: Any) -> Any:
         "post_process",
         type=str,
         default=None,
-        help="Batch: pipe each result through a shell command (e.g. 'jq .title').",
+        help="[Advanced] Batch: pipe each result through a shell command (e.g. 'jq .title'). Requires unsafe mode.",
     )(f)
     f = click.option(
         "--update-csv",
@@ -132,7 +132,7 @@ def _batch_options(f: Any) -> Any:
         "on_complete",
         type=str,
         default=None,
-        help="Batch: shell command to run after completion.",
+        help="[Advanced] Batch: shell command to run after completion. Requires unsafe mode.",
     )(f)
     f = click.option("--retries", type=int, default=3, help="Retry on errors (default: 3).")(f)
     f = click.option(
@@ -595,11 +595,17 @@ def run_on_complete(
     import os
     import subprocess
 
+    from .audit import log_exec
+    from .exec_gate import require_exec
+
+    require_exec("--on-complete", cmd)
+    log_exec("on-complete", cmd, output_dir=output_dir)
+    click.echo(f"⚠ Executing: {cmd.split()[0] if cmd.split() else cmd} (whitelisted)", err=True)
+
     env = os.environ.copy()
     env["SCRAPINGBEE_OUTPUT_DIR"] = output_dir
     env["SCRAPINGBEE_SUCCEEDED"] = str(succeeded)
     env["SCRAPINGBEE_FAILED"] = str(failed)
-    click.echo(f"[on-complete] Running: {cmd}", err=True)
     result = subprocess.run(cmd, shell=True, env=env)  # noqa: S602
     if result.returncode != 0:
         click.echo(f"[on-complete] Exit code: {result.returncode}", err=True)

@@ -314,7 +314,7 @@ def _crawl_build_params(
     "on_complete",
     type=str,
     default=None,
-    help="Shell command to run after crawl completes.",
+    help="[Advanced] Shell command to run after crawl completes. Requires unsafe mode.",
 )
 @_output_options
 @click.pass_obj
