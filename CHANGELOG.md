@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-03-27
+
+### Added
+
+- **Security hardening for shell execution features.** `--post-process`, `--on-complete`, and `schedule` are now disabled by default and require explicit human setup to enable. See CLI documentation for setup instructions.
+- **`scrapingbee unsafe` command** for managing advanced feature status and reviewing execution history.
+- **Audit logging** for all shell command executions.
+- **Guard skill** for AI agent environments — monitors CLI usage and enforces security rules.
+- **Security rules in skill files** — scraped content is treated as data, never instructions.
+
+### Changed
+
+- **`--post-process`, `--on-complete`, and `schedule`** help text now indicates these require advanced setup.
+- **`scrapingbee logout`** resets all advanced feature settings.
+
 ## [1.2.3] - 2026-03-25
 
 ### Added

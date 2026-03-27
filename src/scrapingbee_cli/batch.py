@@ -705,6 +705,13 @@ def apply_post_process(body: bytes, cmd: str) -> bytes:
     """Run shell command with body as stdin, return stdout. On failure, return original body."""
     import subprocess
 
+    from .audit import log_exec
+    from .exec_gate import require_exec
+
+    require_exec("--post-process", cmd)
+    log_exec("post-process", cmd)
+    click.echo(f"⚠ Executing: {cmd.split()[0] if cmd.split() else cmd} (whitelisted)", err=True)
+
     try:
         result = subprocess.run(
             cmd,

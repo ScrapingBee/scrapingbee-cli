@@ -79,7 +79,7 @@ scrapingbee export --input-dir initial_run --format csv --flatten --output-file 
 scrapingbee scrape --input-file tracker.csv --input-column url --update-csv \
   --ai-extract-rules '{"title": "title", "price": "price"}'
 
-# Schedule daily updates via cron
+# Schedule daily updates via cron [requires unsafe mode]
 scrapingbee schedule --every 1d --name my-tracker \
   scrape --input-file tracker.csv --input-column url --update-csv \
   --ai-extract-rules '{"title": "title", "price": "price"}'

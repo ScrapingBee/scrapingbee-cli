@@ -35,3 +35,6 @@ def register_commands(cli: click.Group) -> None:
     chatgpt.register(cli)
     export.register(cli)
     schedule.register(cli)
+    from . import unsafe
+
+    unsafe.register(cli)
