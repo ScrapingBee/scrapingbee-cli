@@ -154,6 +154,7 @@ YOUTUBE_SORT_BY = ["relevance", "rating", "view-count", "upload-date"]
 @optgroup.option("--hdr", type=str, default=None, help="HDR videos only (true/false).")
 @optgroup.option("--location", type=str, default=None, help="With location (true/false).")
 @optgroup.option("--vr180", type=str, default=None, help="VR180 only (true/false).")
+@optgroup.option("--purchased", type=str, default=None, help="Purchased only (true/false).")
 @_batch_options
 @click.pass_obj
 def youtube_search_cmd(
@@ -173,6 +174,7 @@ def youtube_search_cmd(
     hdr: str | None,
     location: str | None,
     vr180: str | None,
+    purchased: str | None,
     **kwargs,
 ) -> None:
     """Search YouTube videos."""
@@ -224,6 +226,7 @@ def youtube_search_cmd(
                 hdr=parse_bool(hdr),
                 location=parse_bool(location),
                 vr180=parse_bool(vr180),
+                purchased=parse_bool(purchased),
                 retries=obj.get("retries", 3) or 3,
                 backoff=obj.get("backoff", 2.0) or 2.0,
             )
@@ -269,6 +272,7 @@ def youtube_search_cmd(
                 hdr=parse_bool(hdr),
                 location=parse_bool(location),
                 vr180=parse_bool(vr180),
+                purchased=parse_bool(purchased),
                 retries=obj.get("retries", 3) or 3,
                 backoff=obj.get("backoff", 2.0) or 2.0,
             )

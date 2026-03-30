@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`--scraping-config` parameter** for `scrape` and `crawl` commands. Apply a pre-saved scraping configuration by name from the ScrapingBee dashboard. Inline options override config settings.
+- **`--start-page` for `walmart-search`** to paginate search results.
+- **`--device` for `walmart-product`** to select device type (desktop, mobile, tablet).
+- **`--purchased` filter for `youtube-search`** to filter by purchased content.
 - **Parameter value flexibility.** Choice parameters now accept both hyphens and underscores interchangeably (e.g. `--sort-by price-low` and `--sort-by price_low` both work).
 - **Improved command whitelist validation.**
 - **Improved security rules in skill files.**
