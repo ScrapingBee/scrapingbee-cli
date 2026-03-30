@@ -177,6 +177,7 @@ class Client:
         custom_google: bool | None = None,
         transparent_status_code: bool | None = None,
         body: str | None = None,
+        scraping_config: str | None = None,
         retries: int = 3,
         backoff: float = 2.0,
         **kwargs: Any,
@@ -217,6 +218,7 @@ class Client:
             ("device", device),
             ("custom_google", self._bool(custom_google)),
             ("transparent_status_code", self._bool(transparent_status_code)),
+            ("scraping_config", scraping_config),
         ]:
             if v is not None:
                 params[k] = str(v) if not isinstance(v, str) else v
@@ -415,6 +417,7 @@ class Client:
     async def walmart_search(
         self,
         query: str,
+        start_page: int | None = None,
         min_price: int | None = None,
         max_price: int | None = None,
         sort_by: str | None = None,
@@ -432,6 +435,7 @@ class Client:
     ) -> tuple[bytes, dict, int]:
         params = {
             "query": query,
+            "start_page": start_page if start_page is not None else None,
             "min_price": min_price if min_price is not None else None,
             "max_price": max_price if max_price is not None else None,
             "sort_by": sort_by,
@@ -455,6 +459,7 @@ class Client:
     async def walmart_product(
         self,
         product_id: str,
+        device: str | None = None,
         domain: str | None = None,
         delivery_zip: str | None = None,
         store_id: str | None = None,
@@ -466,6 +471,7 @@ class Client:
     ) -> tuple[bytes, dict, int]:
         params = {
             "product_id": product_id,
+            "device": device,
             "domain": domain,
             "delivery_zip": delivery_zip,
             "store_id": store_id,
@@ -497,6 +503,7 @@ class Client:
         hdr: bool | None = None,
         location: bool | None = None,
         vr180: bool | None = None,
+        purchased: bool | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -516,6 +523,7 @@ class Client:
             "hdr": self._bool(hdr),
             "location": self._bool(location),
             "vr180": self._bool(vr180),
+            "purchased": self._bool(purchased),
         }
         return await self._get_with_retry(
             "/youtube/search",

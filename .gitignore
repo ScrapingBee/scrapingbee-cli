@@ -24,6 +24,7 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+test_failures/
 
 # CLI output (regenerated on every run)
 batch_*/

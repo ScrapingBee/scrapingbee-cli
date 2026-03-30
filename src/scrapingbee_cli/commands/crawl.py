@@ -59,6 +59,7 @@ def _crawl_build_params(
     device: str | None,
     custom_google: str | None,
     transparent_status_code: str | None,
+    scraping_config: str | None = None,
 ) -> dict[str, str]:
     """Build ScrapingBee API params dict from crawl options (quick-crawl URL mode)."""
     kwargs = build_scrape_kwargs(
@@ -97,6 +98,7 @@ def _crawl_build_params(
         custom_google=custom_google,
         transparent_status_code=transparent_status_code,
         body=None,
+        scraping_config=scraping_config,
     )
     return scrape_kwargs_to_api_params(kwargs)
 
@@ -116,6 +118,12 @@ def _crawl_build_params(
     type=click.Path(exists=True, file_okay=False, path_type=str),
     default=None,
     help="Path to Scrapy project. Spider mode only.",
+)
+@click.option(
+    "--scraping-config",
+    type=str,
+    default=None,
+    help="Apply a pre-saved scraping configuration by name. Create configs in the ScrapingBee dashboard. Inline options override config settings.",
 )
 @optgroup.group("Rendering", help="JavaScript rendering and viewport options")
 @optgroup.option(
@@ -323,6 +331,7 @@ def crawl_cmd(
     target: tuple[str, ...],
     from_sitemap: str | None,
     project: str | None,
+    scraping_config: str | None,
     render_js: str | None,
     js_scenario: str | None,
     wait: int | None,
@@ -467,6 +476,7 @@ def crawl_cmd(
                 device=device,
                 custom_google=custom_google,
                 transparent_status_code=transparent_status_code,
+                scraping_config=scraping_config,
             )
         except ValueError as e:
             click.echo(str(e), err=True)

@@ -44,7 +44,9 @@ scrapingbee [command] [arguments] [options]
 - **`scrapingbee --help`** – List all commands.
 - **`scrapingbee [command] --help`** – Options and parameters for that command.
 
-**Options are per-command.** Each command has its own set of options — run `scrapingbee [command] --help` to see them. Common options across batch-capable commands include `--output-file`, `--output-dir`, `--input-file`, `--input-column`, `--concurrency`, `--output-format`, `--retries`, `--backoff`, `--resume`, `--update-csv`, `--no-progress`, `--extract-field`, `--fields`, `--deduplicate`, `--sample`, `--post-process`, `--on-complete`, and `--verbose`. For details, see the [documentation](https://www.scrapingbee.com/documentation/).
+**Options are per-command.** Each command has its own set of options — run `scrapingbee [command] --help` to see them. Common options across batch-capable commands include `--output-file`, `--output-dir`, `--input-file`, `--input-column`, `--concurrency`, `--output-format`, `--retries`, `--backoff`, `--resume`, `--update-csv`, `--no-progress`, `--extract-field`, `--fields`, `--deduplicate`, `--sample`, `--post-process`, `--on-complete`, `--scraping-config`, and `--verbose`. For details, see the [documentation](https://www.scrapingbee.com/documentation/).
+
+**Parameter values:** Choice parameters accept both hyphens and underscores interchangeably (e.g. `--sort-by price-low` and `--sort-by price_low` both work).
 
 ### Commands
 
@@ -80,6 +82,7 @@ scrapingbee [command] [arguments] [options]
 - **Scheduling:** `scrapingbee schedule --every 1d --name prices scrape --input-file products.csv --update-csv` registers a cron job. Use `--list`, `--stop NAME`, or `--stop all`.
 - **Deduplication & sampling:** `--deduplicate` removes duplicate URLs; `--sample 100` processes only 100 random items.
 - **RAG chunking:** `scrape --chunk-size 500 --chunk-overlap 50 --return-page-markdown true` outputs NDJSON chunks ready for vector DB ingestion.
+- **Scraping configurations:** `--scraping-config "My-Config"` applies a pre-saved configuration from your ScrapingBee dashboard. Inline options override config settings. Create configurations in the [request builder](https://app.scrapingbee.com/).
 
 ### Examples
 

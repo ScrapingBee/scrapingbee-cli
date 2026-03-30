@@ -17,7 +17,9 @@ from ..batch import (
 )
 from ..cli_utils import (
     DEVICE_DESKTOP_MOBILE_TABLET,
+    NormalizedChoice,
     _batch_options,
+    _validate_page,
     _validate_price_range,
     check_api_response,
     norm_val,
@@ -34,12 +36,13 @@ WALMART_SORT_BY = ["best-match", "price-low", "price-high", "best-seller"]
 
 @click.command("walmart-search")
 @click.argument("query", required=False)
-@optgroup.group("Filters", help="Price and sort")
+@optgroup.group("Pagination & filters", help="Pages, price, and sort")
+@optgroup.option("--start-page", type=int, default=None, help="Starting page number.")
 @optgroup.option("--min-price", type=int, default=None, help="Minimum price filter (integer).")
 @optgroup.option("--max-price", type=int, default=None, help="Maximum price filter (integer).")
 @optgroup.option(
     "--sort-by",
-    type=click.Choice(WALMART_SORT_BY, case_sensitive=False),
+    type=NormalizedChoice(WALMART_SORT_BY, case_sensitive=False),
     default=None,
     help="Sort order.",
 )
@@ -74,6 +77,7 @@ WALMART_SORT_BY = ["best-match", "price-low", "price-high", "best-seller"]
 def walmart_search_cmd(
     obj: dict,
     query: str | None,
+    start_page: int | None,
     min_price: int | None,
     max_price: int | None,
     sort_by: str | None,
@@ -96,6 +100,7 @@ def walmart_search_cmd(
     except ValueError as e:
         click.echo(str(e), err=True)
         raise SystemExit(1)
+    _validate_page(start_page, "start_page")
     _validate_price_range(min_price, max_price)
 
     if input_file:
@@ -123,6 +128,7 @@ def walmart_search_cmd(
         async def api_call(client, q):
             return await client.walmart_search(
                 q,
+                start_page=start_page,
                 min_price=min_price,
                 max_price=max_price,
                 sort_by=norm_val(sort_by),
@@ -165,6 +171,7 @@ def walmart_search_cmd(
         async with Client(key, BASE_URL) as client:
             data, headers, status_code = await client.walmart_search(
                 query,
+                start_page=start_page,
                 min_price=min_price,
                 max_price=max_price,
                 sort_by=norm_val(sort_by),
@@ -200,7 +207,13 @@ def walmart_search_cmd(
 
 @click.command("walmart-product")
 @click.argument("product_id", required=False)
-@optgroup.group("Locale", help="Domain and delivery location")
+@optgroup.group("Device & locale", help="Device, domain, and delivery location")
+@optgroup.option(
+    "--device",
+    type=click.Choice(DEVICE_DESKTOP_MOBILE_TABLET, case_sensitive=False),
+    default=None,
+    help="Device: desktop, mobile, or tablet.",
+)
 @optgroup.option("--domain", type=str, default=None, help="Walmart domain.")
 @optgroup.option("--delivery-zip", type=str, default=None, help="Delivery ZIP code.")
 @optgroup.option("--store-id", type=str, default=None, help="Walmart store ID.")
@@ -213,6 +226,7 @@ def walmart_search_cmd(
 def walmart_product_cmd(
     obj: dict,
     product_id: str | None,
+    device: str | None,
     domain: str | None,
     delivery_zip: str | None,
     store_id: str | None,
@@ -255,6 +269,7 @@ def walmart_product_cmd(
         async def api_call(client, pid):
             return await client.walmart_product(
                 pid,
+                device=device,
                 domain=domain,
                 delivery_zip=delivery_zip,
                 store_id=store_id,
@@ -291,6 +306,7 @@ def walmart_product_cmd(
         async with Client(key, BASE_URL) as client:
             data, headers, status_code = await client.walmart_product(
                 product_id,
+                device=device,
                 domain=domain,
                 delivery_zip=delivery_zip,
                 store_id=store_id,
