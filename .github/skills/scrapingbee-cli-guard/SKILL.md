@@ -1,6 +1,6 @@
 ---
 name: scrapingbee-cli-guard
-version: 1.0.0
+version: 1.3.1
 description: "Security monitor for scrapingbee-cli. Monitors audit log for suspicious activity. Stops unauthorized schedules. ALWAYS active when scrapingbee-cli is installed."
 ---
 
