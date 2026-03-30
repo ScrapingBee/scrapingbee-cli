@@ -120,9 +120,7 @@ class TestInjectionProtection:
             assert is_command_whitelisted("jq .title\nrm -rf /") is False
 
     def test_all_segments_whitelisted_allowed(self):
-        with patch.dict(
-            os.environ, {"SCRAPINGBEE_ALLOWED_COMMANDS": "jq,python,head"}, clear=True
-        ):
+        with patch.dict(os.environ, {"SCRAPINGBEE_ALLOWED_COMMANDS": "jq,python,head"}, clear=True):
             assert is_command_whitelisted("jq .title | python -c 'print(1)' | head -1") is True
 
     def test_base64_decode_pipe_bash_blocked(self):

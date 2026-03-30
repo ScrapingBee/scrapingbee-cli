@@ -269,7 +269,14 @@ class TestBuildScrapeKwargs:
 
     def test_all_keys_present(self) -> None:
         kwargs = build_scrape_kwargs()
-        for key in ("render_js", "method", "screenshot", "country_code", "extract_rules", "scraping_config"):
+        for key in (
+            "render_js",
+            "method",
+            "screenshot",
+            "country_code",
+            "extract_rules",
+            "scraping_config",
+        ):
             assert key in kwargs, f"Expected key {key!r} in build_scrape_kwargs output"
 
     def test_scraping_config_preserved(self) -> None:

