@@ -17,6 +17,7 @@ from ..batch import (
 )
 from ..cli_utils import (
     DEVICE_DESKTOP_MOBILE_TABLET,
+    NormalizedChoice,
     _batch_options,
     _validate_page,
     check_api_response,
@@ -191,7 +192,7 @@ def amazon_product_cmd(
 @optgroup.option("--pages", type=int, default=None, help="Number of pages to fetch.")
 @optgroup.option(
     "--sort-by",
-    type=click.Choice(AMAZON_SORT_BY, case_sensitive=False),
+    type=NormalizedChoice(AMAZON_SORT_BY, case_sensitive=False),
     default=None,
     help="Sort order.",
 )

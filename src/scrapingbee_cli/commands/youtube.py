@@ -17,6 +17,7 @@ from ..batch import (
     validate_batch_run,
 )
 from ..cli_utils import (
+    NormalizedChoice,
     _batch_options,
     check_api_response,
     norm_val,
@@ -117,26 +118,26 @@ YOUTUBE_SORT_BY = ["relevance", "rating", "view-count", "upload-date"]
 @optgroup.group("Filters", help="Upload date, type, duration, sort")
 @optgroup.option(
     "--upload-date",
-    type=click.Choice(YOUTUBE_UPLOAD_DATE, case_sensitive=False),
+    type=NormalizedChoice(YOUTUBE_UPLOAD_DATE, case_sensitive=False),
     default=None,
     help="Filter by upload date.",
 )
 @optgroup.option(
     "--type",
     "type_",
-    type=click.Choice(YOUTUBE_TYPE, case_sensitive=False),
+    type=NormalizedChoice(YOUTUBE_TYPE, case_sensitive=False),
     default=None,
     help="Result type.",
 )
 @optgroup.option(
     "--duration",
-    type=click.Choice(YOUTUBE_DURATION, case_sensitive=False),
+    type=NormalizedChoice(YOUTUBE_DURATION, case_sensitive=False),
     default=None,
     help="Duration: short (<4 min), medium (4-20 min), long (>20 min).",
 )
 @optgroup.option(
     "--sort-by",
-    type=click.Choice(YOUTUBE_SORT_BY, case_sensitive=False),
+    type=NormalizedChoice(YOUTUBE_SORT_BY, case_sensitive=False),
     default=None,
     help="Sort order.",
 )

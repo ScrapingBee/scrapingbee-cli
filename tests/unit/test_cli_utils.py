@@ -11,6 +11,7 @@ import click
 import pytest
 
 from scrapingbee_cli.cli_utils import (
+    NormalizedChoice,
     build_scrape_kwargs,
     chunk_text,
     parse_bool,
@@ -268,8 +269,20 @@ class TestBuildScrapeKwargs:
 
     def test_all_keys_present(self) -> None:
         kwargs = build_scrape_kwargs()
-        for key in ("render_js", "method", "screenshot", "country_code", "extract_rules"):
+        for key in ("render_js", "method", "screenshot", "country_code", "extract_rules", "scraping_config"):
             assert key in kwargs, f"Expected key {key!r} in build_scrape_kwargs output"
+
+    def test_scraping_config_preserved(self) -> None:
+        kwargs = build_scrape_kwargs(scraping_config="My-Blog-Config")
+        assert kwargs["scraping_config"] == "My-Blog-Config"
+
+    def test_scraping_config_none_by_default(self) -> None:
+        kwargs = build_scrape_kwargs()
+        assert kwargs["scraping_config"] is None
+
+    def test_scraping_config_case_sensitive(self) -> None:
+        kwargs = build_scrape_kwargs(scraping_config="ScrapingBee-Blog-Configuration")
+        assert kwargs["scraping_config"] == "ScrapingBee-Blog-Configuration"
 
 
 class TestScrapeKwargsToApiParams:
@@ -306,6 +319,49 @@ class TestScrapeKwargsToApiParams:
     def test_omits_empty_string(self) -> None:
         params = scrape_kwargs_to_api_params({"country_code": ""})
         assert "country_code" not in params
+
+    def test_scraping_config_passed_through(self) -> None:
+        params = scrape_kwargs_to_api_params({"scraping_config": "My-Config"})
+        assert params["scraping_config"] == "My-Config"
+
+    def test_scraping_config_omitted_when_none(self) -> None:
+        params = scrape_kwargs_to_api_params({"scraping_config": None})
+        assert "scraping_config" not in params
+
+
+class TestNormalizedChoice:
+    """Tests for NormalizedChoice custom Click type."""
+
+    def test_underscore_converted_to_hyphen(self) -> None:
+        choice = NormalizedChoice(["price-low", "price-high"], case_sensitive=False)
+        ctx = click.Context(click.Command("test"))
+        assert choice.convert("price_low", None, ctx) == "price-low"
+
+    def test_hyphen_accepted_directly(self) -> None:
+        choice = NormalizedChoice(["price-low", "price-high"], case_sensitive=False)
+        ctx = click.Context(click.Command("test"))
+        assert choice.convert("price-low", None, ctx) == "price-low"
+
+    def test_invalid_choice_rejected(self) -> None:
+        choice = NormalizedChoice(["price-low", "price-high"], case_sensitive=False)
+        ctx = click.Context(click.Command("test"))
+        with pytest.raises(click.exceptions.BadParameter):
+            choice.convert("invalid_value", None, ctx)
+
+    def test_case_insensitive(self) -> None:
+        choice = NormalizedChoice(["price-low"], case_sensitive=False)
+        ctx = click.Context(click.Command("test"))
+        assert choice.convert("PRICE_LOW", None, ctx) == "price-low"
+
+    def test_no_change_when_no_underscores(self) -> None:
+        choice = NormalizedChoice(["relevance", "rating"], case_sensitive=False)
+        ctx = click.Context(click.Command("test"))
+        assert choice.convert("relevance", None, ctx) == "relevance"
+
+    def test_multiple_underscores(self) -> None:
+        choice = NormalizedChoice(["price-low-to-high"], case_sensitive=False)
+        ctx = click.Context(click.Command("test"))
+        assert choice.convert("price_low_to_high", None, ctx) == "price-low-to-high"
 
     def test_output_values_are_all_strings(self) -> None:
         params = scrape_kwargs_to_api_params({"render_js": True, "wait": 500, "country_code": "gb"})

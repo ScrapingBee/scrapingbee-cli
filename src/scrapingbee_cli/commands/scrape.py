@@ -85,6 +85,12 @@ SCRAPE_PRESETS = (
     help="Apply a predefined set of options. Preset only sets options you did not set. See --help for list.",
 )
 @click.option(
+    "--scraping-config",
+    type=str,
+    default=None,
+    help="Apply a pre-saved scraping configuration by name. Create configs in the ScrapingBee dashboard. Inline options override config settings.",
+)
+@click.option(
     "--force-extension",
     type=str,
     default=None,
@@ -308,6 +314,7 @@ def scrape_cmd(
     obj: dict,
     url: str | None,
     preset: str | None,
+    scraping_config: str | None,
     force_extension: str | None,
     render_js: str | None,
     js_scenario: str | None,
@@ -467,6 +474,7 @@ def scrape_cmd(
             custom_google=custom_google,
             transparent_status_code=transparent_status_code,
             body=body,
+            scraping_config=scraping_config,
         )
     except ValueError as e:
         click.echo(str(e), err=True)

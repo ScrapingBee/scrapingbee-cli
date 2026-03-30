@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scrapingbee-cli"
-version = "1.3.0"
+version = "1.3.1"
 description = "Command-line client for the ScrapingBee API: scrape pages (single or batch), crawl sites, check usage/credits, and use Google Search, Fast Search, Amazon, Walmart, YouTube, and ChatGPT from the terminal."
 readme = "README.md"
 license = "MIT"

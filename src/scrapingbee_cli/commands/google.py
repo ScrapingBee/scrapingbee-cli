@@ -17,6 +17,7 @@ from ..batch import (
 )
 from ..cli_utils import (
     DEVICE_DESKTOP_MOBILE,
+    NormalizedChoice,
     _batch_options,
     _validate_page,
     check_api_response,
@@ -56,7 +57,7 @@ def _warn_empty_organic(data: bytes, search_type: str | None) -> None:
 @optgroup.group("Search", help="Search type, locale, and pagination")
 @optgroup.option(
     "--search-type",
-    type=click.Choice(
+    type=NormalizedChoice(
         ["classic", "news", "maps", "lens", "shopping", "images", "ai-mode"],
         case_sensitive=False,
     ),

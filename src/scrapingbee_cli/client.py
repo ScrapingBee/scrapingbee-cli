@@ -177,6 +177,7 @@ class Client:
         custom_google: bool | None = None,
         transparent_status_code: bool | None = None,
         body: str | None = None,
+        scraping_config: str | None = None,
         retries: int = 3,
         backoff: float = 2.0,
         **kwargs: Any,
@@ -217,6 +218,7 @@ class Client:
             ("device", device),
             ("custom_google", self._bool(custom_google)),
             ("transparent_status_code", self._bool(transparent_status_code)),
+            ("scraping_config", scraping_config),
         ]:
             if v is not None:
                 params[k] = str(v) if not isinstance(v, str) else v

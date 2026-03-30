@@ -17,6 +17,7 @@ from ..batch import (
 )
 from ..cli_utils import (
     DEVICE_DESKTOP_MOBILE_TABLET,
+    NormalizedChoice,
     _batch_options,
     _validate_price_range,
     check_api_response,
@@ -39,7 +40,7 @@ WALMART_SORT_BY = ["best-match", "price-low", "price-high", "best-seller"]
 @optgroup.option("--max-price", type=int, default=None, help="Maximum price filter (integer).")
 @optgroup.option(
     "--sort-by",
-    type=click.Choice(WALMART_SORT_BY, case_sensitive=False),
+    type=NormalizedChoice(WALMART_SORT_BY, case_sensitive=False),
     default=None,
     help="Sort order.",
 )

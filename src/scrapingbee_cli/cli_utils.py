@@ -9,6 +9,23 @@ from typing import Any
 import click
 
 
+class NormalizedChoice(click.Choice):
+    """Choice type that accepts both hyphens and underscores.
+
+    Automatically converts underscores to hyphens before validation,
+    allowing users to use either format interchangeably.
+    Example: both --sort-by price-low and --sort-by price_low work.
+    """
+
+    def convert(self, value: str, param: Any, ctx: Any) -> str:
+        """Convert underscores to hyphens before validation."""
+        if value is not None:
+            normalized = value.replace("_", "-")
+        else:
+            normalized = value
+        return super().convert(normalized, param, ctx)
+
+
 def _output_options(f: Any) -> Any:
     """Output + Retry options (for commands without batch support)."""
     f = click.option(
@@ -385,6 +402,7 @@ def build_scrape_kwargs(
     custom_google: str | None = None,
     transparent_status_code: str | None = None,
     body: str | None = None,
+    scraping_config: str | None = None,
 ) -> dict[str, Any]:
     """Build kwargs for Client.scrape() from scrape command options.
     Single source of parse_bool for bool-like opts."""
@@ -424,6 +442,7 @@ def build_scrape_kwargs(
         "custom_google": parse_bool(custom_google),
         "transparent_status_code": parse_bool(transparent_status_code),
         "body": body,
+        "scraping_config": scraping_config,
     }
 
 
