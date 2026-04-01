@@ -490,22 +490,3 @@ class TestEstimatedCredits:
         for cmd, cost in ESTIMATED_CREDITS.items():
             assert isinstance(cost, str), f"{cmd}: cost should be str"
             assert cost.strip(), f"{cmd}: cost should be non-empty"
-
-
-class TestScheduleHelpers:
-    """Tests for schedule._duration_to_cron."""
-
-    def test_minutes_cron(self) -> None:
-        assert _duration_to_cron("5m") == "*/5 * * * *"
-
-    def test_hours_cron(self) -> None:
-        assert _duration_to_cron("1h") == "0 */1 * * *"
-
-    def test_days_cron(self) -> None:
-        assert _duration_to_cron("2d") == "0 0 */2 * *"
-
-    def test_seconds_rejected(self) -> None:
-        import pytest
-
-        with pytest.raises(click.BadParameter, match="shorter than 1 minute"):
-            _duration_to_cron("30s")

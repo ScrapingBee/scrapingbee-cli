@@ -2,7 +2,7 @@
 
 > **Syntax:** use space-separated values — `--option value`, not `--option=value`.
 
-Sub-second SERP results. Simpler than Google. **Credit:** 5 per request. JSON output; use **`--output-file file.json`** (before or after command).
+Sub-second SERP results. Simpler than Google. **Credit:** 10 per request. JSON output; use **`--output-file file.json`** (before or after command).
 
 ## Command
 

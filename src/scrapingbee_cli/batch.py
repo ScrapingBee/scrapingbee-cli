@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TextIO
 from urllib.parse import urlparse
 
 import click
@@ -221,19 +222,25 @@ def read_input_file(path: str, *, input_column: str | None = None) -> list[str]:
             rows = list(reader)
         if not rows:
             raise ValueError(f'input file "{path}" has no rows')
-        # Determine column index
+        # Determine column index and detect header row
         col_idx = 0
+        header = [c.strip() for c in rows[0]]
+        has_header = header and not header[0].startswith(("http://", "https://", "/"))
+
         if input_column is not None:
             if input_column.isdigit():
                 col_idx = int(input_column)
+                if has_header:
+                    rows = rows[1:]
             else:
-                # Treat first row as header
-                header = [c.strip() for c in rows[0]]
                 if input_column in header:
                     col_idx = header.index(input_column)
                     rows = rows[1:]  # skip header row
                 else:
                     raise ValueError(f'column "{input_column}" not found in CSV header: {header}')
+        elif has_header:
+            rows = rows[1:]  # skip header row when no --input-column specified
+
         lines = []
         for row in rows:
             if col_idx < len(row) and row[col_idx].strip():
@@ -297,27 +304,108 @@ async def _fetch_usage_async(api_key: str) -> dict:
         return parse_usage(body)
 
 
-# Cache usage API responses to avoid hitting the 6 calls/min rate limit.
+# ── Usage cache ──────────────────────────────────────────────────────────────
+# Three-level: in-process → file (persistent across sessions) → API.
+# File lock prevents cache stampede: when the cache is stale, only ONE process
+# fetches from the API; all others wait and then read the freshly written value.
+
 _usage_cache: dict | None = None
 _usage_cache_time: float = 0
-_USAGE_CACHE_TTL = 30  # seconds
+_USAGE_CACHE_TTL = 12  # seconds — with a sliding-window rate limit of 6/min, using
+# exactly 10s yields 7 calls in any 60s window (T=0..60). 12s → at most 5 calls/min.
+
+
+def _usage_cache_path() -> Path:
+    """Return the cache file path — respects SCRAPINGBEE_USAGE_CACHE_DIR for test isolation."""
+    base = Path(os.environ.get("SCRAPINGBEE_USAGE_CACHE_DIR", "")) or (
+        Path.home() / ".config" / "scrapingbee-cli"
+    )
+    return base / "usage_cache.json"
+
+
+_USAGE_LOCK_PATH = Path.home() / ".config" / "scrapingbee-cli" / "usage_cache.lock"
+
+
+def _key_hash(api_key: str) -> str:
+    """Short hash of the API key used to namespace the file cache entry."""
+    return hashlib.sha256(api_key.encode()).hexdigest()[:16]
+
+
+def read_usage_file_cache(api_key: str) -> dict | None:
+    """Return cached usage data if the file cache is fresh and matches the key."""
+    try:
+        import json as _json
+
+        raw = _usage_cache_path().read_text(encoding="utf-8")
+        entry = _json.loads(raw)
+        if entry.get("key_hash") != _key_hash(api_key):
+            return None
+        age = time.time() - float(entry["ts"])
+        if age > _USAGE_CACHE_TTL:
+            return None
+        data = entry.get("data")
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def write_usage_file_cache(api_key: str, data: dict) -> None:
+    """Write usage data to the shared file cache."""
+    try:
+        import json as _json
+
+        p = _usage_cache_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        entry = {"ts": time.time(), "key_hash": _key_hash(api_key), "data": data}
+        p.write_text(_json.dumps(entry), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _acquire_usage_lock(lf: object, timeout: float = 10.0) -> None:
+    """Block until exclusive lock is acquired, or give up after timeout."""
+    try:
+        import fcntl
+
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+                return
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return  # give up — proceed without exclusive lock
+                time.sleep(0.05)
+    except ImportError:
+        pass  # Windows: no fcntl, fall through without locking
+
+
+def _release_usage_lock(lf: object) -> None:
+    try:
+        import fcntl
+
+        fcntl.flock(lf, fcntl.LOCK_UN)  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def get_batch_usage(api_key_flag: str | None) -> dict:
-    """Return usage info (max_concurrency, credits) from usage API.
+    """Return usage info (max_concurrency, credits) from a live API call.
 
-    Caches the result for 30 seconds to avoid hitting the usage API
-    rate limit (6 calls/min).
+    When SCRAPINGBEE_USAGE_CACHE=1 is set (test environments only), the file
+    cache is used to avoid 429 errors from repeated calls in the same session.
     """
-    global _usage_cache, _usage_cache_time  # noqa: PLW0603
-    now = time.monotonic()
-    if _usage_cache is not None and (now - _usage_cache_time) < _USAGE_CACHE_TTL:
-        return _usage_cache
     key = get_api_key(api_key_flag)
-    result = asyncio.run(_fetch_usage_async(key))
-    _usage_cache = result
-    _usage_cache_time = now
-    return result
+    if os.environ.get("SCRAPINGBEE_USAGE_CACHE") == "1":
+        cached = read_usage_file_cache(key)
+        if cached is not None:
+            return cached
+        result = asyncio.run(_fetch_usage_async(key))
+        write_usage_file_cache(key, result)
+        return result
+    return asyncio.run(_fetch_usage_async(key))
 
 
 MIN_CREDITS_TO_RUN_BATCH = 100
@@ -497,8 +585,18 @@ async def run_batch_async(
     tasks = [run_one(i, inp) for i, inp in enumerate(inputs)]
     ordered = await asyncio.gather(*tasks, return_exceptions=True)
     results: list[BatchResult] = []
-    for item in ordered:
+    for i, item in enumerate(ordered):
         if isinstance(item, BaseException):
+            results.append(
+                BatchResult(
+                    index=i,
+                    input=inputs[i],
+                    body=b"",
+                    headers={},
+                    status_code=0,
+                    error=item if isinstance(item, Exception) else RuntimeError(str(item)),
+                )
+            )
             continue
         _, result = item
         results.append(result)
@@ -622,9 +720,90 @@ def write_batch_output_to_dir(
         manifest_path = os.path.join(abs_dir, "manifest.json")
         with open(manifest_path, "w", encoding="utf-8") as f:
             _json.dump(manifest, f, indent=2, ensure_ascii=False)
+    # Store batch metadata alongside manifest for --resume discovery
+    _save_batch_meta(abs_dir, len(results), len(manifest), len(failures))
     succeeded = len(manifest)
     failed = len(failures)
     return abs_dir, succeeded, failed
+
+
+_BATCH_META_FILE = ".batch_meta.json"
+
+
+def _save_batch_meta(output_dir: str, total: int, succeeded: int, failed: int) -> None:
+    """Save batch metadata for --resume discovery."""
+    import json as _json
+    import sys
+    from datetime import datetime, timezone
+
+    meta_path = os.path.join(output_dir, _BATCH_META_FILE)
+    # Reconstruct the original command from sys.argv
+    cmd = " ".join(sys.argv)
+    meta = {
+        "command": cmd,
+        "total": total,
+        "succeeded": succeeded,
+        "failed": failed,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # Merge with existing meta (preserve created_at from first run)
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                existing = _json.load(f)
+            if "created_at" in existing:
+                meta["created_at"] = existing["created_at"]
+            if "command" in existing:
+                meta["command"] = existing["command"]
+        except Exception:
+            pass
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            _json.dump(meta, f, indent=2, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def find_incomplete_batches(search_dir: str = ".") -> list[dict]:
+    """Scan for batch/crawl directories with incomplete results.
+
+    Returns a list of dicts with keys: dir, command, total, succeeded, failed, created_at.
+    Sorted by created_at descending (most recent first). Max 10 results.
+    """
+    import json as _json
+
+    results = []
+    base = Path(search_dir).resolve()
+    # Scan for batch_* and crawl_* directories
+    for pattern in ("batch_*", "crawl_*"):
+        for d in base.glob(pattern):
+            if not d.is_dir():
+                continue
+            meta_path = d / _BATCH_META_FILE
+            if not meta_path.is_file():
+                continue
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    meta = _json.load(f)
+            except Exception:
+                continue
+            total = meta.get("total", 0)
+            succeeded = meta.get("succeeded", 0)
+            if succeeded >= total:
+                continue  # Complete, skip
+            results.append(
+                {
+                    "dir": str(d),
+                    "command": meta.get("command", ""),
+                    "total": total,
+                    "succeeded": succeeded,
+                    "failed": meta.get("failed", 0),
+                    "created_at": meta.get("created_at", ""),
+                }
+            )
+    # Sort by created_at descending, limit to 10
+    results.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return results[:10]
 
 
 def update_csv_with_results(
@@ -727,8 +906,23 @@ def apply_post_process(body: bytes, cmd: str) -> bytes:
     return body
 
 
-def write_ndjson_line(result: BatchResult) -> None:
-    """Write a single NDJSON line to stdout for a batch result."""
+def write_ndjson_line(
+    result: BatchResult,
+    fh: TextIO | None = None,
+    fields: str | None = None,
+) -> None:
+    """Write a single NDJSON line for a batch result.
+
+    When *fields* is provided (comma-separated) and the body is a JSON object,
+    the named fields are promoted to top-level keys instead of being nested
+    under "body".  Falls back to the standard {"body": ...} layout if the body
+    is not a parseable JSON object.
+
+    Args:
+        result: The batch result to write.
+        fh: File handle to write to. If None, writes to stdout.
+        fields: Optional comma-separated field names to promote from body.
+    """
     import json as _json
     import sys as _sys
 
@@ -740,45 +934,93 @@ def write_ndjson_line(result: BatchResult) -> None:
             body_str = result.body.decode("utf-8", errors="replace")
         except Exception:
             body_str = repr(result.body)
-    # Try to parse body as JSON so it nests properly
-    try:
-        body_obj = _json.loads(body_str)
-    except (ValueError, TypeError):
-        body_obj = body_str
-    line = _json.dumps(
-        {
+
+    obj: dict
+    if fields:
+        from .cli_utils import _parse_field_blocks, _parse_path, _resolve_path
+
+        blocks = _parse_field_blocks(fields)
+        try:
+            body_obj = _json.loads(body_str) if body_str else {}
+            field_values: dict = {}
+            for name, path_str in blocks:
+                segments = _parse_path(path_str)
+                val = _resolve_path(body_obj, segments)
+                field_values[name] = val
+            obj = {
+                "index": result.index + 1,
+                "input": result.input,
+                "status_code": result.status_code,
+                **field_values,
+                "error": str(result.error) if result.error else None,
+                "fetched_at": result.fetched_at,
+                "latency_ms": result.latency_ms,
+            }
+        except (ValueError, TypeError):
+            fields = None  # fall through to standard layout
+
+    if not fields:
+        try:
+            body_parsed: object = _json.loads(body_str)
+        except (ValueError, TypeError):
+            body_parsed = body_str
+        obj = {
             "index": result.index + 1,
             "input": result.input,
             "status_code": result.status_code,
-            "body": body_obj,
+            "body": body_parsed,
             "error": str(result.error) if result.error else None,
             "fetched_at": result.fetched_at,
             "latency_ms": result.latency_ms,
-        },
-        ensure_ascii=False,
-    )
-    _sys.stdout.write(line + "\n")
-    _sys.stdout.flush()
+        }
+
+    line = _json.dumps(obj, ensure_ascii=False)
+    out: TextIO = fh if fh is not None else _sys.stdout
+    out.write(line + "\n")
+    out.flush()
 
 
 def write_batch_output_csv(
     results: list[BatchResult],
     output_file: str | None,
+    fields: str | None = None,
 ) -> tuple[str, int, int]:
-    """Write batch results as CSV. Returns (output_path, succeeded, failed)."""
+    """Write batch results as CSV. Returns (output_path, succeeded, failed).
+
+    When *fields* is provided (comma-separated) and the body is a JSON object,
+    each named field becomes its own column instead of everything going into a
+    single "body" column.  Falls back to the standard layout per-row if the
+    body is not parseable as a JSON object.
+    """
     import csv
     import io
+    import json as _json
     import sys as _sys
 
+    if fields:
+        from .cli_utils import _parse_field_blocks, _parse_path, _resolve_path
+
+        blocks = _parse_field_blocks(fields)
+        col_names = [name for name, _ in blocks]
+    else:
+        blocks = []
+        col_names = []
     succeeded = 0
     failed = 0
     if output_file:
-        fh = open(output_file, "w", encoding="utf-8", newline="")
+        try:
+            fh = open(output_file, "w", encoding="utf-8", newline="")
+        except OSError as e:
+            click.echo(f"Cannot write to '{output_file}': {e.strerror}", err=True)
+            raise SystemExit(1)
     else:
         fh = io.TextIOWrapper(_sys.stdout.buffer, encoding="utf-8", newline="")
     try:
         writer = csv.writer(fh)
-        writer.writerow(["index", "input", "status_code", "body", "error"])
+        if col_names:
+            writer.writerow(["index", "input", "status_code"] + col_names + ["error"])
+        else:
+            writer.writerow(["index", "input", "status_code", "body", "error"])
         for result in results:
             if result.skipped:
                 continue
@@ -793,10 +1035,37 @@ def write_batch_output_csv(
                 failed += 1
             else:
                 succeeded += 1
-            writer.writerow([result.index + 1, result.input, result.status_code, body_str, err_str])
+            if blocks:
+                try:
+                    body_obj = _json.loads(body_str) if body_str else {}
+                    row: list = [result.index + 1, result.input, result.status_code]
+                    for _, path_str in blocks:
+                        segments = _parse_path(path_str)
+                        v = _resolve_path(body_obj, segments)
+                        if v is None:
+                            row.append("")
+                        elif isinstance(v, (dict, list)):
+                            row.append(_json.dumps(v, ensure_ascii=False))
+                        elif isinstance(v, str):
+                            row.append(v)
+                        else:
+                            row.append(str(v))
+                    row.append(err_str)
+                    writer.writerow(row)
+                except (ValueError, TypeError):
+                    # Body isn't parseable — fall back to single body column
+                    writer.writerow(
+                        [result.index + 1, result.input, result.status_code, body_str, err_str]
+                    )
+            else:
+                writer.writerow(
+                    [result.index + 1, result.input, result.status_code, body_str, err_str]
+                )
     finally:
         if output_file:
             fh.close()
+        else:
+            fh.detach()  # release stdout.buffer without closing it
     return output_file or "<stdout>", succeeded, failed
 
 
@@ -814,12 +1083,22 @@ async def _run_api_batch_async(
     show_progress: bool,
     api_call: ApiCallFn,
     on_complete: str | None = None,
-    output_format: str = "files",
+    output_format: str | None = None,
     post_process: str | None = None,
     update_csv_path: str | None = None,
     input_column: str | None = None,
+    output_file: str | None = None,
+    extract_field: str | None = None,
+    fields: str | None = None,
 ) -> None:
     ndjson_pp = post_process if output_format == "ndjson" else None
+    ndjson_fh = None
+    if output_format == "ndjson" and output_file:
+        try:
+            ndjson_fh = open(output_file, "w", encoding="utf-8")
+        except OSError as e:
+            click.echo(f"Cannot write to '{output_file}': {e.strerror}", err=True)
+            raise SystemExit(1)
 
     def _ndjson_callback(result: BatchResult) -> None:
         if ndjson_pp and result.body and not result.error:
@@ -836,7 +1115,7 @@ async def _run_api_batch_async(
                 fetched_at=result.fetched_at,
                 latency_ms=result.latency_ms,
             )
-        write_ndjson_line(result)
+        write_ndjson_line(result, fh=ndjson_fh, fields=fields)
 
     async with Client(key, BASE_URL, connector_limit=concurrency) as client:
 
@@ -851,50 +1130,92 @@ async def _run_api_batch_async(
                 return b"", {}, 0, e, "json"
 
         on_result_cb = _ndjson_callback if output_format == "ndjson" else None
-        results = await run_batch_async(
-            inputs,
-            concurrency,
-            do_one,
-            from_user=from_user,
-            skip_n=skip_n,
-            show_progress=show_progress,
-            on_result=on_result_cb,
-        )
+        try:
+            results = await run_batch_async(
+                inputs,
+                concurrency,
+                do_one,
+                from_user=from_user,
+                skip_n=skip_n,
+                show_progress=show_progress,
+                on_result=on_result_cb,
+            )
+        except BaseException:
+            if ndjson_fh:
+                ndjson_fh.close()
+            raise
 
+    # Apply fields filter to batch results (extract_field blocked by validation for csv/ndjson)
+    if fields:
+        from .cli_utils import _filter_fields
+
+        for r in results:
+            if r.body and not r.error and not r.skipped:
+                r.body = _filter_fields(r.body, fields)
+
+    if extract_field and not output_format:
+        from .cli_utils import _extract_field_values
+
+        for r in results:
+            if r.body and not r.error and not r.skipped:
+                r.body = _extract_field_values(r.body, extract_field)
+
+    out_dir_resolved = ""
+    out_file_resolved = ""
     if update_csv_path:
-        out_path, succeeded, failed = update_csv_with_results(
+        out_file_resolved, succeeded, failed = update_csv_with_results(
             update_csv_path,
             input_column,
             results,
-            output_dir,
+            output_file,
         )
-        click.echo(f"CSV updated: {succeeded} succeeded, {failed} failed. Output: {out_path}")
+        click.echo(
+            f"CSV updated: {succeeded} succeeded, {failed} failed. Output: {out_file_resolved}",
+            err=True,
+        )
     elif output_format == "ndjson":
+        if ndjson_fh:
+            ndjson_fh.close()
         succeeded = sum(1 for r in results if not r.error and not r.skipped)
         failed = sum(1 for r in results if r.error and not r.skipped)
-        click.echo(f"Batch complete: {succeeded} succeeded, {failed} failed.", err=True)
+        out_file_resolved = output_file or ""
+        out_label = out_file_resolved or "<stdout>"
+        click.echo(
+            f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_label}",
+            err=True,
+        )
     elif output_format == "csv":
         if post_process:
             for r in results:
                 if r.body and not r.error and not r.skipped:
                     r.body = apply_post_process(r.body, post_process)
-        out_path, succeeded, failed = write_batch_output_csv(results, output_dir)
-        click.echo(f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_path}")
+        out_file_resolved, succeeded, failed = write_batch_output_csv(
+            results, output_file, fields=fields
+        )
+        click.echo(
+            f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_file_resolved}",
+            err=True,
+        )
     else:
-        out_dir, succeeded, failed = write_batch_output_to_dir(
+        out_dir_resolved, succeeded, failed = write_batch_output_to_dir(
             results,
             output_dir,
             verbose,
             post_process=post_process,
         )
         click.echo(
-            f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_dir}",
+            f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_dir_resolved}",
+            err=True,
         )
-    if on_complete and output_format == "files" and not update_csv_path:
+    if on_complete:
         from .cli_utils import run_on_complete
 
         run_on_complete(
-            on_complete, output_dir=output_dir or "", succeeded=succeeded, failed=failed
+            on_complete,
+            output_dir=out_dir_resolved,
+            output_file=out_file_resolved,
+            succeeded=succeeded,
+            failed=failed,
         )
     if failed:
         raise SystemExit(1)
@@ -911,12 +1232,15 @@ def run_api_batch(
     show_progress: bool,
     api_call: ApiCallFn,
     on_complete: str | None = None,
-    output_format: str = "files",
+    output_format: str | None = None,
     post_process: str | None = None,
     update_csv_path: str | None = None,
     input_column: str | None = None,
+    output_file: str | None = None,
+    extract_field: str | None = None,
+    fields: str | None = None,
 ) -> None:
-    """Run a batch of single-item API calls and write results to an output directory."""
+    """Run a batch of single-item API calls and write results."""
     asyncio.run(
         _run_api_batch_async(
             key=key,
@@ -933,5 +1257,8 @@ def run_api_batch(
             post_process=post_process,
             update_csv_path=update_csv_path,
             input_column=input_column,
+            output_file=output_file,
+            extract_field=extract_field,
+            fields=fields,
         )
     )

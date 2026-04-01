@@ -16,6 +16,7 @@ scrapingbee export --output-file results.csv --input-dir products/ --format csv 
 | `--input-dir` | (Required) Batch or crawl output directory. |
 | `--format` | `ndjson` (default), `txt`, or `csv`. |
 | `--flatten` | CSV: recursively flatten nested dicts to dot-notation columns. |
+| `--flatten-depth` | int | CSV: max nesting depth for `--flatten` (default: 5). Use higher values for deeply nested data. |
 | `--columns` | CSV: comma-separated column names to include. Rows missing all selected columns are dropped. |
 | `--deduplicate` | CSV: remove duplicate rows. |
 | `--output-file` | Write to file instead of stdout. |

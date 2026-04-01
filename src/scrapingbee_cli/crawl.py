@@ -20,8 +20,8 @@ from scrapy.settings import Settings
 from scrapy.utils.project import get_project_settings
 from scrapy_scrapingbee import ScrapingBeeRequest
 
-from . import user_agent
-from .batch import _batch_subdir_for_extension, extension_for_crawl
+from . import user_agent_headers
+from .batch import _batch_subdir_for_extension, extension_for_crawl, extension_from_url_path
 
 if TYPE_CHECKING:
     from scrapy import Request
@@ -32,6 +32,23 @@ MIDDLEWARE_PRIORITY = 725
 # 0 means unlimited
 DEFAULT_MAX_DEPTH = 0
 DEFAULT_MAX_PAGES = 0
+
+# URL extensions that will never contain HTML links — skip discovery re-requests for these.
+_NON_HTML_URL_EXTENSIONS = frozenset(
+    {
+        "jpg",
+        "jpeg",
+        "png",
+        "gif",
+        "webp",
+        "svg",
+        "ico",  # images
+        "pdf",
+        "zip",  # binary downloads
+        "css",
+        "js",  # web assets
+    }
+)
 
 
 def _normalize_url(url: str) -> str:
@@ -88,6 +105,31 @@ def _preferred_extension_from_scrape_params(params: dict[str, Any]) -> str | Non
     return None
 
 
+def _requires_discovery_phase(scrape_params: dict[str, Any]) -> bool:
+    """Return True if these scrape params always produce non-HTML responses.
+
+    When True, every crawled page needs an extra HTML-only discovery request to
+    find outgoing links, approximately doubling credit usage.  Affected modes:
+      - extract_rules / ai_extract_rules / ai_query  → always returns JSON
+      - return_page_text                             → always returns plain text
+      - screenshot (without json_response)           → always returns raw PNG
+    """
+    if (
+        scrape_params.get("extract_rules")
+        or scrape_params.get("ai_extract_rules")
+        or scrape_params.get("ai_query")
+    ):
+        return True
+    if _param_truthy(scrape_params, "return_page_text"):
+        return True
+    # Raw screenshot (no JSON wrapper) → binary PNG, no extractable links.
+    if _param_truthy(scrape_params, "screenshot") and not _param_truthy(
+        scrape_params, "json_response"
+    ):
+        return True
+    return False
+
+
 def _body_from_json_response(body: bytes) -> bytes | None:
     """If body is JSON with a 'body' or 'content' field (ScrapingBee
     json_response), return that inner content."""
@@ -136,8 +178,8 @@ def _extract_hrefs_from_response(response: Response) -> list[str]:
         for href in response.css("a[href]::attr(href)").getall():
             if href and isinstance(href, str):
                 hrefs.append(href.strip())
-    except (ValueError, TypeError):
-        pass  # Response is JSON/non-HTML — CSS selectors don't apply
+    except Exception:
+        pass  # Response is binary/non-HTML — CSS selectors may raise any error
     # Markdown links (when body is markdown, e.g. --return-page-markdown true)
     if not hrefs and body:
         for m in _MARKDOWN_LINK_RE.finditer(body):
@@ -296,9 +338,13 @@ class GenericScrapingBeeSpider(Spider):
         """Write manifest.json (URL → relative filename) when the crawl ends."""
         if not self.output_dir or not self._url_file_map:
             return
-        manifest_path = Path(self.output_dir).resolve() / "manifest.json"
+        abs_dir = str(Path(self.output_dir).resolve())
+        manifest_path = Path(abs_dir) / "manifest.json"
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(self._url_file_map, f, indent=2, ensure_ascii=False)
+        from .batch import _save_batch_meta
+
+        _save_batch_meta(abs_dir, len(self._url_file_map), len(self._url_file_map), 0)
 
     def _iter_follow_requests(
         self,
@@ -357,6 +403,11 @@ class GenericScrapingBeeSpider(Spider):
         if hrefs:
             yield from self._iter_follow_requests(response, dict(self.scrape_params), self.parse)
         else:
+            # Skip discovery re-request for URLs that are clearly binary/non-HTML resources
+            # (images, PDFs, CSS, JS, etc.) — they will never contain <a href> links.
+            url_ext = extension_from_url_path(response.url)
+            if url_ext in _NON_HTML_URL_EXTENSIONS:
+                return
             discovery_params = _params_for_discovery(self.scrape_params)
             yield ScrapingBeeRequest(
                 response.url,
@@ -490,7 +541,7 @@ def _fetch_sitemap_urls(url: str, *, api_key: str | None = None, depth: int = 0)
     ] or [loc.text.strip() for loc in root.findall(".//url/loc") if loc.text and loc.text.strip()]
 
 
-USER_AGENT_CLI = user_agent()
+USER_AGENT_CLI = user_agent_headers()["User-Agent"]
 
 
 def default_crawl_output_dir() -> str:

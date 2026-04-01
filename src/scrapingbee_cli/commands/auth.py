@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import getpass
+import sys
 
 import click
 
@@ -19,19 +20,89 @@ from ..config import (
 DOCS_URL = "https://www.scrapingbee.com/documentation/"
 
 
-def _validate_api_key(key: str) -> bool:
-    """Validate API key by calling the usage endpoint. Returns True if valid."""
+def _masked_getpass(prompt: str) -> str:
+    """Like getpass.getpass() but echoes '*' for each character typed.
 
-    async def _check() -> int:
+    Falls back to getpass.getpass() when stdin is not a TTY (pipes, CI) or on
+    platforms that don't support termios (Windows).
+    """
+    if not sys.stdin.isatty():
+        return getpass.getpass(prompt)
+    try:
+        import termios
+    except ImportError:
+        return getpass.getpass(prompt)
+
+    sys.stderr.write(prompt)
+    sys.stderr.flush()
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    chars: list[str] = []
+    try:
+        # Set cbreak mode directly via termios (tty.cbreak removed in Python 3.13).
+        new = termios.tcgetattr(fd)
+        new[3] &= ~(termios.ECHO | termios.ICANON)
+        new[6][termios.VMIN] = 1
+        new[6][termios.VTIME] = 0
+        termios.tcsetattr(fd, termios.TCSANOW, new)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch in ("\n", "\r"):
+                sys.stderr.write("\n")
+                sys.stderr.flush()
+                break
+            if ch in ("\x7f", "\x08"):  # DEL / Backspace
+                if chars:
+                    chars.pop()
+                    sys.stderr.write("\b \b")
+                    sys.stderr.flush()
+            elif ch == "\x03":  # Ctrl+C
+                sys.stderr.write("\n")
+                sys.stderr.flush()
+                raise KeyboardInterrupt
+            elif ch == "\x04" and not chars:  # Ctrl+D on empty input
+                raise EOFError
+            elif ch and ord(ch) >= 32:  # printable character
+                chars.append(ch)
+                sys.stderr.write("*")
+                sys.stderr.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    return "".join(chars)
+
+
+def _validate_api_key(key: str) -> tuple[bool, str]:
+    """Validate API key by calling the usage endpoint.
+
+    Returns (True, "") on success, or (False, error_message) on failure.
+    Distinguishes between invalid keys and network errors.
+    """
+
+    async def _check() -> tuple[int, bytes]:
         async with Client(key, BASE_URL) as client:
-            _, _, status_code = await client.usage(retries=1, backoff=1.0)
-            return status_code
+            data, _, status_code = await client.usage(retries=1, backoff=1.0)
+            return status_code, data
 
     try:
-        status = asyncio.run(_check())
-        return status == 200
-    except Exception:
-        return False
+        status, data = asyncio.run(_check())
+        if status == 200:
+            return True, ""
+        # API returned an error — try to extract the message
+        try:
+            import json
+
+            msg = json.loads(data.decode("utf-8", errors="replace")).get("message", "")
+        except Exception:
+            msg = ""
+        if status == 401:
+            return False, msg or "Invalid API key."
+        return False, msg or f"API returned status {status}."
+    except OSError as e:
+        return False, f"Network error: {e}"
+    except asyncio.TimeoutError:
+        return False, "Connection timed out. Check your internet connection."
+    except Exception as e:
+        return False, f"Could not verify API key: {e}"
 
 
 _UNSAFE_DISCLAIMER = """
@@ -148,7 +219,7 @@ def auth_cmd(obj: dict, auth_api_key: str | None, show_path_only: bool, unsafe_m
 
         # Prompt for API key (interactive only)
         try:
-            raw = getpass.getpass("ScrapingBee API key: ")
+            raw = _masked_getpass("ScrapingBee API key: ")
         except (EOFError, KeyboardInterrupt):
             click.echo("\nAborted.", err=True)
             raise SystemExit(1)
@@ -158,8 +229,9 @@ def auth_cmd(obj: dict, auth_api_key: str | None, show_path_only: bool, unsafe_m
             raise SystemExit(1)
 
         click.echo("Validating API key...", err=True)
-        if not _validate_api_key(key):
-            click.echo("Invalid API key.", err=True)
+        valid, err_msg = _validate_api_key(key)
+        if not valid:
+            click.echo(err_msg or "Invalid API key.", err=True)
             raise SystemExit(1)
 
         # Save key and set unsafe verified
@@ -175,7 +247,7 @@ def auth_cmd(obj: dict, auth_api_key: str | None, show_path_only: bool, unsafe_m
     key = auth_api_key or get_api_key_if_set(None)
     if not key:
         try:
-            raw = getpass.getpass("ScrapingBee API key: ")
+            raw = _masked_getpass("ScrapingBee API key: ")
         except (EOFError, KeyboardInterrupt):
             click.echo(
                 "Cannot read API key (non-interactive). Use --api-key KEY or set SCRAPINGBEE_API_KEY.",
@@ -187,8 +259,9 @@ def auth_cmd(obj: dict, auth_api_key: str | None, show_path_only: bool, unsafe_m
             click.echo("No API key entered.", err=True)
             raise SystemExit(1)
     click.echo("Validating API key...", err=True)
-    if not _validate_api_key(key):
-        click.echo("Invalid API key. Please check your key and try again.", err=True)
+    valid, err_msg = _validate_api_key(key)
+    if not valid:
+        click.echo(err_msg or "Invalid API key. Please check your key and try again.", err=True)
         raise SystemExit(1)
     path = save_api_key_to_dotenv(key)
     click.echo(f"API key saved to {path}. You can now run scrapingbee commands.")

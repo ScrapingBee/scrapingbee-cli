@@ -310,7 +310,7 @@ def test_batch_output_dir_has_files(api_key):
             env=env,
         )
         assert code == 0, err or out
-        assert "Batch complete" in out
+        assert "Batch complete" in err
         assert out_dir.exists()
         # Count files (may be in root or in screenshots/ / files/ subdirs)
         all_files = [f for f in out_dir.rglob("*") if f.is_file() and f.suffix not in (".err",)]
@@ -393,7 +393,7 @@ def test_batch_chatgpt(api_key):
             env=env,
         )
         assert code == 0, err or out
-        assert "Batch complete" in out
+        assert "Batch complete" in err
         assert out_dir.exists()
         json_files = list(out_dir.glob("*.json"))
         assert len(json_files) >= 2, (

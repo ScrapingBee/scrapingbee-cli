@@ -125,7 +125,7 @@ def google_cmd(
 
     if input_file:
         if query:
-            click.echo("cannot use both global --input-file and positional query", err=True)
+            click.echo("cannot use both --input-file and positional query", err=True)
             raise SystemExit(1)
         try:
             inputs = read_input_file(input_file, input_column=obj.get("input_column"))
@@ -157,8 +157,8 @@ def google_cmd(
                 extra_params=extra_params,
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
-                retries=obj.get("retries", 3) or 3,
-                backoff=obj.get("backoff", 2.0) or 2.0,
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
             )
 
         run_api_batch(
@@ -172,15 +172,18 @@ def google_cmd(
             show_progress=obj.get("progress", True),
             api_call=api_call,
             on_complete=obj.get("on_complete"),
-            output_format=obj.get("output_format", "files"),
+            output_format=obj.get("output_format"),
             post_process=obj.get("post_process"),
             update_csv_path=input_file if obj.get("update_csv") else None,
             input_column=obj.get("input_column"),
+            output_file=obj.get("output_file") or None,
+            extract_field=obj.get("extract_field"),
+            fields=obj.get("fields"),
         )
         return
 
     if not query:
-        click.echo("expected one search query, or use global --input-file for batch", err=True)
+        click.echo("expected one search query, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
     async def _single() -> None:
@@ -196,8 +199,8 @@ def google_cmd(
                 extra_params=extra_params,
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
-                retries=obj.get("retries", 3) or 3,
-                backoff=obj.get("backoff", 2.0) or 2.0,
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
             )
         check_api_response(data, status_code)
         _warn_empty_organic(data, search_type)
@@ -209,6 +212,7 @@ def google_cmd(
             status_code,
             obj["output_file"],
             obj["verbose"],
+            smart_extract=obj.get("smart_extract"),
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
             command="google",

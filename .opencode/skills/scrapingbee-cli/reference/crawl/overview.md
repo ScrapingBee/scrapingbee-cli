@@ -56,6 +56,7 @@ With `--resume`, already-crawled URLs (from `manifest.json` in the output dir) a
 | `--allow-external-domains` | Follow any domain. Default: same domain only. |
 | `--include-pattern` | Regex: only follow URLs matching this pattern. |
 | `--exclude-pattern` | Regex: skip URLs matching this pattern. |
+| `--save-pattern` | Regex: only save pages whose URL matches this pattern. Other pages are still visited for link discovery but not written to disk. Useful for crawling with cheap HTML to find links while applying expensive extract/AI options only to matching pages. |
 | `--download-delay` | Seconds between requests (Scrapy DOWNLOAD_DELAY). |
 | `--autothrottle` | Enable Scrapy AutoThrottle to adapt request rate. |
 

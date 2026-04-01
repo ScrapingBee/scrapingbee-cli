@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import re
 import sys
 from typing import Any
 
@@ -39,6 +41,13 @@ def _output_options(f: Any) -> Any:
         "--verbose", is_flag=True, default=False, help="Show response headers and status code."
     )(f)
     f = click.option(
+        "--smart-extract",
+        "smart_extract",
+        type=str,
+        default=None,
+        help="Extract data using path language. Auto-detects JSON/HTML/XML/CSV.",
+    )(f)
+    f = click.option(
         "--extract-field",
         "extract_field",
         type=str,
@@ -68,6 +77,13 @@ def _batch_options(f: Any) -> Any:
         "--verbose", is_flag=True, default=False, help="Show response headers and status code."
     )(f)
     f = click.option(
+        "--smart-extract",
+        "smart_extract",
+        type=str,
+        default=None,
+        help="Extract data using path language. Auto-detects JSON/HTML/XML/CSV.",
+    )(f)
+    f = click.option(
         "--extract-field",
         "extract_field",
         type=str,
@@ -95,9 +111,9 @@ def _batch_options(f: Any) -> Any:
     f = click.option(
         "--output-format",
         "output_format",
-        type=click.Choice(["files", "csv", "ndjson"], case_sensitive=False),
-        default="files",
-        help="Batch: output format (files, csv, or ndjson).",
+        type=click.Choice(["csv", "ndjson"], case_sensitive=False),
+        default=None,
+        help="Batch: stream all results to a single file (csv or ndjson). Default: individual files in --output-dir.",
     )(f)
     f = click.option(
         "--concurrency",
@@ -109,13 +125,13 @@ def _batch_options(f: Any) -> Any:
         "--deduplicate",
         is_flag=True,
         default=False,
-        help="Batch: normalize URLs and remove duplicates from input.",
+        help="Batch: normalize URLs and remove duplicates from input. Runs before --sample.",
     )(f)
     f = click.option(
         "--sample",
         type=int,
         default=0,
-        help="Batch: process only N random items from input (0 = all).",
+        help="Batch: process only N random items from input (0 = all). Runs after --deduplicate.",
     )(f)
     f = click.option(
         "--post-process",
@@ -155,20 +171,55 @@ def _batch_options(f: Any) -> Any:
     f = click.option(
         "--backoff", type=float, default=2.0, help="Retry backoff multiplier (default: 2.0)."
     )(f)
+    f = click.option(
+        "--overwrite", is_flag=True, default=False, help="Overwrite output file without prompting."
+    )(f)
     return f
+
+
+def confirm_overwrite(path: str | None, overwrite: bool = False) -> None:
+    """If path exists, prompt for confirmation unless --overwrite is set."""
+    if not path:
+        return
+    from pathlib import Path
+
+    if Path(path).exists() and not overwrite:
+        if not click.confirm(f"'{path}' already exists. Overwrite?"):
+            click.echo("Cancelled.", err=True)
+            raise SystemExit(0)
 
 
 def store_common_options(obj: dict, **kwargs: Any) -> None:
     """Store decorator option values into the obj dict."""
     obj["output_file"] = kwargs.get("output_file")
     obj["verbose"] = kwargs.get("verbose", False)
+    obj["smart_extract"] = kwargs.get("smart_extract")
     obj["extract_field"] = kwargs.get("extract_field")
     obj["fields"] = kwargs.get("fields")
+    if obj["extract_field"] and not obj["smart_extract"]:
+        click.echo(
+            "Note: --extract-field is deprecated and will be removed in v2.0.0. "
+            "Use --smart-extract instead (same syntax, plus auto-format detection).",
+            err=True,
+        )
+    if obj["fields"] and not obj["smart_extract"]:
+        click.echo(
+            "Note: --fields is deprecated and will be removed in v2.0.0. "
+            "Use --smart-extract with '{name:path}' syntax instead.",
+            err=True,
+        )
     obj["input_file"] = kwargs.get("input_file")
     obj["input_column"] = kwargs.get("input_column")
     obj["output_dir"] = kwargs.get("output_dir") or ""
-    obj["output_format"] = kwargs.get("output_format", "files")
-    obj["concurrency"] = kwargs.get("concurrency") or 0
+    obj["output_format"] = kwargs.get("output_format")  # None = individual files
+    raw_concurrency = kwargs.get("concurrency") or 0
+    if raw_concurrency < 0:
+        click.echo(
+            f"Invalid --concurrency value: {raw_concurrency}. Must be 0 (auto) or a positive number.",
+            err=True,
+        )
+        raise SystemExit(1)
+    obj["concurrency"] = raw_concurrency
     obj["deduplicate"] = kwargs.get("deduplicate", False)
     obj["sample"] = kwargs.get("sample", 0)
     obj["post_process"] = kwargs.get("post_process")
@@ -176,122 +227,855 @@ def store_common_options(obj: dict, **kwargs: Any) -> None:
     obj["resume"] = kwargs.get("resume", False)
     obj["progress"] = not kwargs.get("no_progress", False)
     obj["on_complete"] = kwargs.get("on_complete")
+    obj["overwrite"] = kwargs.get("overwrite", False)
     obj["retries"] = kwargs.get("retries") if kwargs.get("retries") is not None else 3
     obj["backoff"] = kwargs.get("backoff") if kwargs.get("backoff") is not None else 2.0
 
+    # Validate flag combinations
+    output_format = obj["output_format"]
+    has_input = bool(obj.get("input_file"))
+    has_output_file = bool(obj.get("output_file"))
+    has_output_dir = bool(obj.get("output_dir"))
 
-def _resolve_dotpath(obj: Any, keys: list[str]) -> Any:
-    """Walk *obj* using *keys* (dot-path segments).
+    # Check if output file already exists (skip for --update-csv which intentionally overwrites)
+    if has_output_file and not obj.get("update_csv"):
+        confirm_overwrite(obj["output_file"], obj.get("overwrite", False))
 
-    - When a segment hits a **list**, the remaining path is applied to every
-      dict item in that list and the results are collected into a flat list.
-    - When a segment hits a **dict**, traversal continues into the nested dict.
-    - Returns ``None`` if the path cannot be resolved.
+    # Mutual exclusion: --output-file and --output-dir
+    if has_output_file and has_output_dir:
+        click.echo(
+            "Cannot use both --output-file and --output-dir. "
+            "Use --output-file for single-file output (csv/ndjson), "
+            "or --output-dir for individual files.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if has_input:
+        if output_format in ("csv", "ndjson"):
+            # Single-file formats: use --output-file, not --output-dir
+            if has_output_dir:
+                click.echo(
+                    f"Cannot use --output-dir with --output-format {output_format}. "
+                    f"Use --output-file to specify a file path, or omit for stdout.",
+                    err=True,
+                )
+                raise SystemExit(1)
+        else:
+            # Individual files mode: use --output-dir, not --output-file
+            if has_output_file:
+                click.echo(
+                    "Cannot use --output-file in batch mode without --output-format. "
+                    "Use --output-dir for batch output, or use `scrapingbee export` to merge results.",
+                    err=True,
+                )
+                raise SystemExit(1)
+        if obj.get("update_csv"):
+            if output_format == "csv":
+                click.echo(
+                    "Cannot use --update-csv with --output-format csv. "
+                    "--update-csv already produces CSV by updating the input file.",
+                    err=True,
+                )
+                raise SystemExit(1)
+            if not str(obj["input_file"]).lower().endswith(".csv"):
+                click.echo(
+                    "--update-csv requires a CSV input file (ending in .csv).",
+                    err=True,
+                )
+                raise SystemExit(1)
+        if obj.get("resume") and output_format in ("csv", "ndjson"):
+            click.echo(
+                f"Cannot use --resume with --output-format {output_format}. "
+                "--resume only works with individual files mode (no --output-format).",
+                err=True,
+            )
+            raise SystemExit(1)
+        if obj.get("extract_field") and output_format in ("csv", "ndjson"):
+            click.echo(
+                f"Cannot use --extract-field with --output-format {output_format}. "
+                "--extract-field works with individual files mode (no --output-format). "
+                "Use --fields to filter nested fields in csv/ndjson output.",
+                err=True,
+            )
+            raise SystemExit(1)
+        if obj.get("on_complete") and output_format and not has_output_file:
+            click.echo(
+                f"Cannot use --on-complete with --output-format {output_format} without --output-file. "
+                "The on-complete script needs a file path to reference.",
+                err=True,
+            )
+            raise SystemExit(1)
+    else:
+        # Single-URL mode: reject batch-only flags
+        batch_only = []
+        if obj.get("update_csv"):
+            batch_only.append("--update-csv")
+        if obj.get("resume"):
+            batch_only.append("--resume")
+        if has_output_dir:
+            batch_only.append("--output-dir")
+        if obj.get("concurrency"):
+            batch_only.append("--concurrency")
+        if obj.get("deduplicate"):
+            batch_only.append("--deduplicate")
+        if obj.get("sample"):
+            batch_only.append("--sample")
+        if obj.get("input_column"):
+            batch_only.append("--input-column")
+        if obj.get("on_complete"):
+            batch_only.append("--on-complete")
+        if output_format:
+            batch_only.append("--output-format")
+        if obj.get("post_process"):
+            batch_only.append("--post-process")
+        if batch_only:
+            import shlex
+            import sys
+
+            click.echo(
+                f"Cannot use {', '.join(batch_only)} without --input-file (batch mode only).",
+                err=True,
+            )
+            # Reconstruct a suggested batch command from argv
+            _bool_flags = {
+                "--deduplicate",
+                "--no-progress",
+                "--resume",
+                "--update-csv",
+                "--verbose",
+                "--overwrite",
+                "--escalate-proxy",
+            }
+            kept: list[str] = []
+            argv_rest = sys.argv[2:]  # after 'scrapingbee <command>'
+            i = 0
+            while i < len(argv_rest):
+                arg = argv_rest[i]
+                if arg.startswith("-"):
+                    kept.append(arg)
+                    if (
+                        arg not in _bool_flags
+                        and i + 1 < len(argv_rest)
+                        and not argv_rest[i + 1].startswith("-")
+                    ):
+                        i += 1
+                        kept.append(argv_rest[i])
+                # else: positional (URL, query, ASIN…) — drop it
+                i += 1
+            cmd_name = sys.argv[1] if len(sys.argv) > 1 else "scrape"
+            suggestion = " ".join(
+                ["scrapingbee", shlex.quote(cmd_name), "--input-file", "urls.txt"]
+                + [shlex.quote(a) for a in kept]
+            )
+            click.echo(f"Use --input-file to run in batch mode:\n  {suggestion}", err=True)
+            if "--resume" in batch_only:
+                click.echo(
+                    "To discover incomplete batches in the current directory:\n"
+                    "  scrapingbee --resume",
+                    err=True,
+                )
+            raise SystemExit(1)
+
+
+def _parse_path(path: str) -> list[tuple[str, Any]]:
+    """Parse a path expression into typed segments.
+
+    Syntax
+    ------
+    ``.key``           literal key navigation (maps over lists)
+    ``(any chars)``    escaped literal key (for keys with dots, spaces, etc.)
+    ``[0]``, ``[-1]``  index into array or dict by position
+    ``[0, 3, 7]``      multi-index (cherry-pick specific items)
+    ``[0:5]``          slice (contiguous range)
+    ``[keys]``         dict keys as a list (maps over lists)
+    ``[values]``       dict values as a list (maps over lists)
+    ``...key``         recursive search — find key at any depth
+    ``...(esc)``       recursive search with escaped key name
+
+    Examples
+    --------
+    >>> _parse_path("xhr.body.paths")
+    [("key", "xhr"), ("key", "body"), ("key", "paths")]
+    >>> _parse_path("xhr[0].body.paths[keys]")
+    [("key", "xhr"), ("index", 0), ("key", "body"), ("key", "paths"), ("keys", None)]
+    >>> _parse_path("(a.b).c")
+    [("key", "a.b"), ("key", "c")]
+    >>> _parse_path("...summary")
+    [("recurse", "summary")]
+    >>> _parse_path("xhr.body.paths[0, 3, 7]")
+    [("key", "xhr"), ("key", "body"), ("key", "paths"), ("multi_index", [0, 3, 7])]
+    """
+    segments: list[tuple[str, Any]] = []
+    i = 0
+    n = len(path)
+
+    def _read_paren(start: int) -> tuple[str, int]:
+        """Read from ``(`` to depth-matched ``)``, return (content, end_pos)."""
+        depth = 1
+        j = start + 1
+        while j < n and depth > 0:
+            if path[j] == "(":
+                depth += 1
+            elif path[j] == ")":
+                depth -= 1
+            j += 1
+        return path[start + 1 : j - 1], j
+
+    while i < n:
+        # --- Recursive search: ...key~N or ...(escaped)~N ---
+        if path[i : i + 3] == "...":
+            i += 3
+            if i < n and path[i] == "(":
+                key, i = _read_paren(i)
+            else:
+                j = i
+                while j < n and path[j] not in ".[(~":
+                    j += 1
+                key = path[i:j]
+                i = j
+            # Optional ~N context expansion suffix
+            context = 0
+            if i < n and path[i] == "~":
+                i += 1
+                j = i
+                while j < n and path[j].isdigit():
+                    j += 1
+                context = int(path[i:j]) if j > i else 0
+                i = j
+            if key:
+                segments.append(("recurse", (key, context)))
+
+        # --- Dot separator ---
+        elif path[i] == ".":
+            i += 1
+
+        # --- Escaped literal key: (any chars) ---
+        elif path[i] == "(":
+            key, i = _read_paren(i)
+            segments.append(("key", key))
+
+        # --- Bracket expression: [0], [0:5], [0,3,7], [keys], [values] ---
+        elif path[i] == "[":
+            try:
+                j = path.index("]", i + 1)
+            except ValueError:
+                segments.append(("key", path[i:]))
+                break
+            inner = path[i + 1 : j].strip()
+            if inner == "keys":
+                segments.append(("keys", None))
+            elif inner == "values":
+                segments.append(("values", None))
+            elif inner.startswith("="):
+                # Value filter: [=*pattern*]
+                segments.append(("filter_value", inner[1:]))
+            elif "=" in inner and not inner.lstrip("-").isdigit():
+                # Key filter: [key=*pattern*]
+                eq = inner.index("=")
+                segments.append(("filter_key", (inner[:eq].strip(), inner[eq + 1 :].strip())))
+            elif "," in inner:
+                # Multi-index: [0, 3, 7]
+                indices = [int(x.strip()) for x in inner.split(",") if x.strip()]
+                segments.append(("multi_index", indices))
+            elif ":" in inner:
+                # Slice: [0:5]
+                parts = inner.split(":", 1)
+                start = int(parts[0]) if parts[0].strip() else None
+                end = int(parts[1]) if parts[1].strip() else None
+                segments.append(("slice", (start, end)))
+            elif inner.lstrip("-").isdigit():
+                segments.append(("index", int(inner)))
+            else:
+                segments.append(("key", inner))
+            i = j + 1
+
+        # --- Plain key name ---
+        else:
+            j = i
+            while j < n and path[j] not in ".[(":
+                j += 1
+            segments.append(("key", path[i:j]))
+            i = j
+
+    return segments
+
+
+def _map_over_list(cur: list, segments: list[tuple[str, Any]]) -> Any:
+    """Apply *segments* to each item in *cur*, collecting and flattening results."""
+    collected: list[Any] = []
+    for item in cur:
+        v = _resolve_path(item, segments)
+        if v is None:
+            continue
+        if isinstance(v, list):
+            collected.extend(v)
+        else:
+            collected.append(v)
+    return collected if collected else None
+
+
+def _recursive_find(obj: Any, key: str, context: int = 0) -> list[Any]:
+    """Walk *obj* recursively, collecting every value where a dict key matches *key*.
+
+    Supports glob patterns (``*``) for partial matching:
+    - ``...*email*``  — any key containing "email"
+    - ``...url*``     — any key starting with "url"
+    - ``...*_at``     — any key ending with "_at"
+
+    When *context* > 0, returns the ancestor subtree N levels above each match
+    instead of just the matched value (``~N`` context expansion).
+
+    Descends into dicts, lists, and auto-parses JSON strings.
+    """
+    is_pattern = "*" in key
+    _match = (lambda k: fnmatch.fnmatchcase(k, key)) if is_pattern else (lambda k: k == key)
+
+    if context == 0:
+        # Fast path: no ancestry tracking needed
+        results: list[Any] = []
+        _recursive_walk_simple(obj, _match, results)
+        return results
+
+    # Context expansion: track ancestry for ~N
+    results = []
+    _recursive_walk_ctx(obj, _match, context, ancestry=[], results=results)
+    return results
+
+
+def _recursive_walk_simple(obj: Any, match: Any, results: list[Any]) -> None:
+    """Fast recursive walk — collects matched values without ancestry tracking."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if match(k):
+                results.append(v)
+            _recursive_walk_simple(v, match, results)
+    elif isinstance(obj, list):
+        for item in obj:
+            _recursive_walk_simple(item, match, results)
+    elif isinstance(obj, str) and obj.startswith(("{", "[")):
+        try:
+            _recursive_walk_simple(json.loads(obj), match, results)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+
+def _recursive_walk_ctx(
+    obj: Any, match: Any, context: int, ancestry: list[Any], results: list[Any]
+) -> None:
+    """Recursive walk with ancestry tracking for ``~N`` context expansion.
+
+    ~1 = parent dict, ~2 = grandparent, ~3 = great-grandparent, etc.
+    When the ancestor level exceeds the tree depth, returns the root.
+    """
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if match(k):
+                if context <= 1:
+                    results.append(obj)  # ~1 = the parent dict
+                else:
+                    idx = len(ancestry) - (context - 1)
+                    idx = max(0, idx)
+                    results.append(ancestry[idx] if idx < len(ancestry) else obj)
+            ancestry.append(obj)
+            try:
+                _recursive_walk_ctx(v, match, context, ancestry, results)
+            finally:
+                ancestry.pop()
+    elif isinstance(obj, list):
+        for item in obj:
+            ancestry.append(obj)
+            try:
+                _recursive_walk_ctx(item, match, context, ancestry, results)
+            finally:
+                ancestry.pop()
+    elif isinstance(obj, str) and obj.startswith(("{", "[")):
+        try:
+            _recursive_walk_ctx(json.loads(obj), match, context, ancestry, results)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+
+def _build_matcher(pattern: str):
+    """Build a value matcher from a pattern string.
+
+    Three modes:
+    - ``/regex/``    — regex search (``re.search``)
+    - ``*glob*``     — glob matching (``fnmatch``)
+    - ``text``       — substring matching (``in``)
+    """
+    if pattern.startswith("/") and pattern.endswith("/") and len(pattern) > 1:
+        try:
+            rx = re.compile(pattern[1:-1])
+        except re.error as e:
+            click.echo(f"Warning: invalid regex '{pattern}': {e}", err=True)
+            return lambda v: False
+        return lambda v: rx.search(str(v)) is not None
+    if "*" in pattern:
+        return lambda v: fnmatch.fnmatchcase(str(v), pattern)
+    return lambda v: pattern in str(v)
+
+
+def _resolve_path(obj: Any, segments: list[tuple[str, Any]]) -> Any:
+    """Walk *obj* using parsed path segments.
+
+    Segment types and their behavior:
+
+    **Navigate** (maps over lists automatically):
+    - ``("key", name)``       — dict key lookup
+    - ``("keys", None)``      — all dict keys as a list
+    - ``("values", None)``    — all dict values as a list
+    - ``("recurse", name)``   — recursive search for key at any depth
+
+    **Select** (picks from the container directly):
+    - ``("index", n)``        — single element by position
+    - ``("multi_index", [..])``— multiple elements by position
+    - ``("slice", (a, b))``   — contiguous range
+
+    JSON strings starting with ``{`` or ``[`` are auto-parsed before
+    any operation, allowing traversal through embedded JSON
+    (e.g. ``xhr.body.paths`` where body is a stringified JSON response).
     """
     cur: Any = obj
-    for i, key in enumerate(keys):
-        if isinstance(cur, dict):
-            cur = cur.get(key)
-            if cur is None:
+    for i, (stype, sval) in enumerate(segments):
+        # --- Auto-parse JSON strings before any operation ---
+        if isinstance(cur, str) and cur.startswith(("{", "[")):
+            try:
+                cur = json.loads(cur)
+            except (json.JSONDecodeError, ValueError):
                 return None
-        elif isinstance(cur, list):
-            # Remaining keys need to be applied to each item in the list.
-            rest = keys[i:]
-            collected: list[Any] = []
-            for item in cur:
-                v = _resolve_dotpath(item, rest)
-                if v is None:
-                    continue
-                if isinstance(v, list):
-                    collected.extend(v)
+
+        # ── Navigate operations (map over lists) ─────────────────────────
+
+        if stype == "key":
+            if isinstance(cur, dict):
+                cur = cur.get(sval)
+                if cur is None:
+                    return None
+            elif isinstance(cur, list):
+                return _map_over_list(cur, segments[i:])
+            else:
+                return None
+
+        elif stype == "keys":
+            if isinstance(cur, dict):
+                cur = list(cur.keys())
+            elif isinstance(cur, list):
+                return _map_over_list(cur, segments[i:])
+            else:
+                return None
+
+        elif stype == "values":
+            if isinstance(cur, dict):
+                cur = list(cur.values())
+            elif isinstance(cur, list):
+                return _map_over_list(cur, segments[i:])
+            else:
+                return None
+
+        elif stype == "recurse":
+            rkey, ctx = sval if isinstance(sval, tuple) else (sval, 0)
+            found = _recursive_find(cur, rkey, context=ctx)
+            if not found:
+                return None
+            rest = segments[i + 1 :]
+            if rest:
+                return _resolve_path(found, rest)
+            cur = found
+
+        # ── Select operations (pick from container) ──────────────────────
+
+        elif stype == "index":
+            if isinstance(cur, list):
+                try:
+                    cur = cur[sval]
+                except IndexError:
+                    return None
+            elif isinstance(cur, dict):
+                try:
+                    cur = cur[list(cur.keys())[sval]]
+                except IndexError:
+                    return None
+            else:
+                return None
+
+        elif stype == "multi_index":
+            if isinstance(cur, list):
+                picked = []
+                for idx in sval:
+                    try:
+                        picked.append(cur[idx])
+                    except IndexError:
+                        pass
+                cur = picked if picked else None
+                if cur is None:
+                    return None
+            elif isinstance(cur, dict):
+                dk = list(cur.keys())
+                picked = []
+                for idx in sval:
+                    try:
+                        picked.append(cur[dk[idx]])
+                    except IndexError:
+                        pass
+                cur = picked if picked else None
+                if cur is None:
+                    return None
+            else:
+                return None
+
+        elif stype == "slice":
+            start, end = sval
+            if isinstance(cur, list):
+                cur = cur[start:end]
+            elif isinstance(cur, dict):
+                keys = list(cur.keys())[start:end]
+                cur = {k: cur[k] for k in keys}
+            else:
+                return None
+
+        # ── Filter operations (keep matching items) ──────────────────────
+
+        elif stype == "filter_value":
+            # [=text], [=*glob*], or [=/regex/] — keep values matching
+            _fmatch = _build_matcher(sval)
+            if isinstance(cur, list):
+                cur = [v for v in cur if v is not None and _fmatch(v)]
+                if not cur:
+                    return None
+            elif cur is not None and not _fmatch(cur):
+                return None
+
+        elif stype == "filter_key":
+            # [key=text], [key=*glob*], or [key=/regex/] — filter dicts
+            fkey, pattern = sval
+            _fmatch = _build_matcher(pattern)
+            if isinstance(cur, list):
+                filtered = []
+                for item in cur:
+                    if isinstance(item, dict) and fkey in item and _fmatch(item[fkey]):
+                        filtered.append(item)
+                cur = filtered if filtered else None
+                if cur is None:
+                    return None
+            elif isinstance(cur, dict):
+                if fkey in cur and _fmatch(cur[fkey]):
+                    pass  # keep cur as-is
                 else:
-                    collected.append(v)
-            return collected if collected else None
-        else:
-            return None
+                    return None
+            else:
+                return None
+
+    # Final auto-parse: if the result is a JSON string, parse it
+    if isinstance(cur, str) and cur.startswith(("{", "[")):
+        try:
+            cur = json.loads(cur)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
     return cur
 
 
-def _collect_dotpaths(obj: Any, prefix: str = "", max_depth: int = 4) -> list[str]:
-    """Recursively collect all valid dot-paths from a JSON object.
+def _resolve_dotpath(obj: Any, keys: list[str]) -> Any:
+    """Walk *obj* using dot-path key strings (backward-compatible interface).
 
-    For arrays, peeks into the first element. Caps at *max_depth* to
-    avoid huge output on deeply nested structures.
+    Converts ``["a", "b", "c"]`` to ``[("key", "a"), ("key", "b"), ("key", "c")]``
+    and delegates to :func:`_resolve_path`.
+    """
+    segments = [("key", k) for k in keys]
+    return _resolve_path(obj, segments)
+
+
+def _parse_field_blocks(fields: str) -> list[tuple[str, str]]:
+    """Parse a ``--fields`` value into ``(name, path)`` pairs.
+
+    New format (``{name:path}`` blocks)::
+
+        '{endpoints:paths[keys]},{title:info.title}'
+        → [("endpoints", "paths[keys]"), ("title", "info.title")]
+
+    Short form (no colon — last key segment becomes the name)::
+
+        '{paths[keys]}'  → [("paths[keys]", "paths[keys]")]
+        '{info.title}'   → [("title", "info.title")]
+
+    Backward-compatible format (plain comma-separated, no braces)::
+
+        'title,price'  → [("title", "title"), ("price", "price")]
+    """
+    fields = fields.strip()
+    if not fields:
+        return []
+
+    # Backward compat: if no '{', split on commas (old format)
+    if "{" not in fields:
+        return [(f.strip(), f.strip()) for f in fields.split(",") if f.strip()]
+
+    # New format: parse {} blocks
+    result: list[tuple[str, str]] = []
+    i = 0
+    n = len(fields)
+    while i < n:
+        # Skip whitespace and commas between blocks
+        while i < n and fields[i] in " ,\t":
+            i += 1
+        if i >= n:
+            break
+        if fields[i] != "{":
+            # Stray text outside {} — skip to next { or end
+            i += 1
+            continue
+
+        # Read from { to matching }, tracking () depth
+        i += 1  # skip {
+        depth = 0
+        j = i
+        while j < n:
+            if fields[j] == "(":
+                depth += 1
+            elif fields[j] == ")":
+                depth -= 1
+            elif fields[j] == "}" and depth == 0:
+                break
+            j += 1
+        block = fields[i:j].strip()
+        i = j + 1  # skip }
+
+        if not block:
+            continue
+
+        # Split on first ':' that's not inside []
+        bracket_depth = 0
+        colon_pos = -1
+        for ci, ch in enumerate(block):
+            if ch == "[":
+                bracket_depth += 1
+            elif ch == "]":
+                bracket_depth -= 1
+            elif ch == ":" and bracket_depth == 0:
+                colon_pos = ci
+                break
+
+        if colon_pos >= 0:
+            name = block[:colon_pos].strip()
+            path = block[colon_pos + 1 :].strip()
+        else:
+            path = block
+            # Derive name from last key segment
+            segs = _parse_path(path)
+            name = path
+            for stype, sval in reversed(segs):
+                if stype == "key":
+                    name = sval
+                    break
+                if stype == "recurse":
+                    name = sval[0] if isinstance(sval, tuple) else sval
+                    break
+
+        result.append((name, path))
+    return result
+
+
+_NEEDS_ESCAPE = set(".[](){}… ")  # chars in key names that need (escaping)
+
+
+def _format_key(prefix: str, key: str) -> str:
+    """Format a dict key for hint display, using ``(escaped)`` if needed."""
+    if any(c in key for c in _NEEDS_ESCAPE):
+        segment = f"({key})"
+    else:
+        segment = key
+    return f"{prefix}.{segment}" if prefix else segment
+
+
+def _collect_dotpaths(obj: Any, prefix: str = "", max_depth: int = 4) -> list[str]:
+    """Recursively collect all valid paths from a JSON object for hint messages.
+
+    Shows dot-paths for dict keys (with ``(escaped)`` for special chars),
+    ``[0]`` for arrays, ``[keys]``/``[values]`` for dicts, ``...key`` hint
+    for recursive search, and peeks into JSON strings.
     """
     if max_depth <= 0:
         return []
     paths: list[str] = []
     if isinstance(obj, dict):
+        paths.append(f"{prefix}[keys]" if prefix else "[keys]")
+        paths.append(f"{prefix}[values]" if prefix else "[values]")
         for key in obj.keys():
-            full = f"{prefix}.{key}" if prefix else key
+            full = _format_key(prefix, key)
             paths.append(full)
             paths.extend(_collect_dotpaths(obj[key], full, max_depth - 1))
     elif isinstance(obj, list) and obj:
-        # Peek into first element to show available sub-paths
-        first = obj[0] if isinstance(obj[0], dict) else None
-        if first:
-            paths.extend(_collect_dotpaths(first, prefix, max_depth - 1))
+        for idx in range(min(len(obj), 3)):
+            paths.append(f"{prefix}[{idx}]" if prefix else f"[{idx}]")
+        if isinstance(obj[0], dict):
+            paths.extend(_collect_dotpaths(obj[0], prefix, max_depth - 1))
+    elif isinstance(obj, str) and obj.startswith(("{", "[")):
+        try:
+            parsed = json.loads(obj)
+            paths.extend(_collect_dotpaths(parsed, prefix, max_depth - 1))
+        except (json.JSONDecodeError, ValueError):
+            pass
     return paths
 
 
+def _resolve_single_part(obj: Any, part: str) -> Any:
+    """Resolve one part of an expression.
+
+    Uses ``_parse_path`` + ``_resolve_path``. Value filters are handled
+    via ``[=pattern]`` and ``[key=pattern]`` bracket operations inside the path.
+    """
+    segments = _parse_path(part)
+    return _resolve_path(obj, segments)
+
+
+def resolve_expression(obj: Any, expression: str) -> Any:
+    """Evaluate a full extraction expression with ``|``, ``&``, and ``=`` support.
+
+    Expression syntax:
+    - ``path``                  — single path
+    - ``path=pattern``          — single path with value filter
+    - ``path1 | path2 | ...``   — OR: combine all results
+    - ``path1 & path2 & ...``   — AND: output only if ALL parts match
+
+    Cannot mix ``|`` and ``&`` in one expression.
+    """
+    has_or = " | " in expression
+    has_and = " & " in expression
+
+    if has_or and has_and:
+        click.echo(
+            "Error: Cannot mix | and & in one expression. Use one or the other.",
+            err=True,
+        )
+        return None
+
+    if has_or:
+        parts = [p.strip() for p in expression.split(" | ")]
+        combined: list[Any] = []
+        for part in parts:
+            result = _resolve_single_part(obj, part)
+            if result is not None:
+                if isinstance(result, list):
+                    combined.extend(result)
+                else:
+                    combined.append(result)
+        return combined if combined else None
+
+    if has_and:
+        parts = [p.strip() for p in expression.split(" & ")]
+        all_results: list[tuple[str, Any]] = []
+        for part in parts:
+            result = _resolve_single_part(obj, part)
+            if result is None:
+                return None  # AND fails — one part didn't match
+            all_results.append((part, result))
+        # All matched — combine all results
+        combined = []
+        for _, result in all_results:
+            if isinstance(result, list):
+                combined.extend(result)
+            else:
+                combined.append(result)
+        return combined if combined else None
+
+    # Single expression (no | or &)
+    return _resolve_single_part(obj, expression)
+
+
 def _extract_field_values(data: bytes, path: str) -> bytes:
-    """Extract values from JSON data using a dot-path expression.
+    """Extract values from JSON data using the path expression language.
 
-    Supports arbitrary nesting depth: ``key``, ``key.subkey``,
-    ``key.subkey.deeper``, etc.  When a segment resolves to a list, the
-    remaining path is applied to every dict item in that list (one output
-    value per item).
+    Supports the full syntax: dot notation, brackets, recursive search,
+    glob patterns, context expansion, ``|`` OR, ``&`` AND, and ``=`` value filter.
 
-    Returns newline-separated UTF-8 bytes, suitable for use as ``--input-file``.
-    Returns *data* unchanged if parsing fails or the path is not found.
+    Returns newline-separated UTF-8 bytes for scalar/list results,
+    or JSON bytes for dict results. Returns empty bytes if not found.
     """
     try:
         obj = json.loads(data.decode("utf-8", errors="replace"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return data
 
-    keys = path.split(".")
-    result = _resolve_dotpath(obj, keys)
+    result = resolve_expression(obj, path)
 
     if result is None:
-        paths = _collect_dotpaths(obj)
+        hints = _collect_dotpaths(obj)
         hint = ""
-        if paths:
-            hint = "\n  Available paths:\n    " + "\n    ".join(paths)
+        if hints:
+            hint = "\n  Available paths:\n    " + "\n    ".join(hints)
         click.echo(
             f"Warning: --extract-field '{path}' did not match any data.{hint}",
             err=True,
         )
         return b""
+
+    def _serialize(v: Any) -> str:
+        if isinstance(v, (dict, list)):
+            return json.dumps(v, ensure_ascii=False)
+        return str(v)
+
     if isinstance(result, list):
-        values = [str(v) for v in result if v is not None]
+        values = [_serialize(v) for v in result if v is not None]
     else:
-        values = [str(result)]
+        values = [_serialize(result)]
 
     return ("\n".join(values) + "\n").encode("utf-8") if values else b""
 
 
 def _filter_fields(data: bytes, fields: str) -> bytes:
-    """Filter JSON output to the specified comma-separated top-level keys.
+    """Filter JSON output using the path language.
 
-    Returns filtered JSON bytes.  Returns *data* unchanged if parsing fails.
+    Supports two formats:
+
+    New ``{name:path}`` block syntax (full path language)::
+
+        '{endpoints:paths[keys]},{title:info.title}'
+
+    Backward-compatible plain comma-separated fields::
+
+        'title,price'
+
+    For list inputs (e.g. batch results), each item is filtered independently.
+    Returns filtered JSON bytes. Returns *data* unchanged if parsing fails.
     """
-    keys = [k.strip() for k in fields.split(",") if k.strip()]
-    if not keys:
+    blocks = _parse_field_blocks(fields)
+    if not blocks:
         return data
     try:
         obj = json.loads(data.decode("utf-8", errors="replace"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return data
-    if isinstance(obj, dict):
-        filtered: Any = {k: obj[k] for k in keys if k in obj}
-    elif isinstance(obj, list):
-        filtered = [
-            {k: item[k] for k in keys if k in item} if isinstance(item, dict) else item
-            for item in obj
-        ]
+
+    def _apply_blocks(target: Any) -> Any:
+        """Resolve all field blocks against *target*, return a named dict."""
+        result: dict = {}
+        for name, path_str in blocks:
+            segments = _parse_path(path_str)
+            val = _resolve_path(target, segments)
+            if val is not None:
+                result[name] = val
+        return result
+
+    if isinstance(obj, list):
+        filtered = [_apply_blocks(item) for item in obj]
     else:
-        return data
+        filtered = _apply_blocks(obj)
+
+    # Warn about blocks that didn't match any data
+    if isinstance(filtered, dict):
+        for name, path_str in blocks:
+            if name not in filtered:
+                available = _collect_dotpaths(obj)
+                hint = ""
+                if available:
+                    hint = "\n  Available paths:\n    " + "\n    ".join(available)
+                click.echo(
+                    f"Warning: --fields '{path_str}' did not match any data.{hint}",
+                    err=True,
+                )
+                break  # Only warn once
+
     return (json.dumps(filtered, ensure_ascii=False) + "\n").encode("utf-8")
 
 
@@ -601,13 +1385,15 @@ def run_on_complete(
     cmd: str | None,
     *,
     output_dir: str = "",
+    output_file: str = "",
     succeeded: int = 0,
     failed: int = 0,
 ) -> None:
     """Run the ``--on-complete`` shell command if set.
 
-    Injects ``SCRAPINGBEE_OUTPUT_DIR``, ``SCRAPINGBEE_SUCCEEDED``, and
-    ``SCRAPINGBEE_FAILED`` environment variables.
+    Injects ``SCRAPINGBEE_OUTPUT_DIR`` (individual files mode),
+    ``SCRAPINGBEE_OUTPUT_FILE`` (csv/ndjson/update-csv mode),
+    ``SCRAPINGBEE_SUCCEEDED``, and ``SCRAPINGBEE_FAILED`` environment variables.
     """
     if not cmd:
         return
@@ -618,11 +1404,12 @@ def run_on_complete(
     from .exec_gate import require_exec
 
     require_exec("--on-complete", cmd)
-    log_exec("on-complete", cmd, output_dir=output_dir)
+    log_exec("on-complete", cmd, output_dir=output_dir or output_file)
     click.echo(f"⚠ Executing: {cmd.split()[0] if cmd.split() else cmd} (whitelisted)", err=True)
 
     env = os.environ.copy()
     env["SCRAPINGBEE_OUTPUT_DIR"] = output_dir
+    env["SCRAPINGBEE_OUTPUT_FILE"] = output_file
     env["SCRAPINGBEE_SUCCEEDED"] = str(succeeded)
     env["SCRAPINGBEE_FAILED"] = str(failed)
     result = subprocess.run(cmd, shell=True, env=env)  # noqa: S602
@@ -637,6 +1424,7 @@ def write_output(
     output_path: str | None,
     verbose: bool,
     *,
+    smart_extract: str | None = None,
     extract_field: str | None = None,
     fields: str | None = None,
     command: str | None = None,
@@ -644,13 +1432,10 @@ def write_output(
 ) -> None:
     """Write response data to file or stdout; optionally print verbose headers.
 
-    When *extract_field* is set, extract values from JSON using a path expression
-    (e.g. ``organic_results.url``) and output one value per line.
-    When *fields* is set, filter JSON output to the specified comma-separated
-    top-level keys (e.g. ``title,price,rating``).
-    *extract_field* takes precedence over *fields*.
-    When *command* is set and verbose mode is on, estimated credit cost is shown
-    if the ``spb-cost`` header is absent (SERP endpoints omit this header).
+    When *smart_extract* is set, auto-detect format and extract using the path
+    language. When *extract_field* is set, extract from JSON using a path
+    expression. When *fields* is set, filter JSON to specified fields.
+    Precedence: *smart_extract* > *extract_field* > *fields*.
     """
     if verbose:
         click.echo(f"HTTP Status: {status_code}", err=True)
@@ -676,13 +1461,22 @@ def write_output(
                 if command in ESTIMATED_CREDITS:
                     click.echo(f"Credit Cost (estimated): {ESTIMATED_CREDITS[command]}", err=True)
         click.echo("---", err=True)
-    if extract_field:
+    if smart_extract:
+        from .extract import smart_extract as _smart_extract_fn
+
+        data = _smart_extract_fn(data, smart_extract)
+    elif extract_field:
         data = _extract_field_values(data, extract_field)
     elif fields:
         data = _filter_fields(data, fields)
     if output_path:
-        with open(output_path, "wb") as f:
-            f.write(data)
+        try:
+            fh = open(output_path, "wb")
+        except OSError as e:
+            click.echo(f"Cannot write to '{output_path}': {e.strerror}", err=True)
+            raise SystemExit(1)
+        with fh:
+            fh.write(data)
     else:
         sys.stdout.buffer.write(data)
         # Only add a trailing newline for text-like content; binary data (PNG, PDF, etc.)

@@ -19,6 +19,7 @@ from ..cli_utils import (
 from ..config import get_api_key
 from ..crawl import (
     _fetch_sitemap_urls,
+    _requires_discovery_phase,
     default_crawl_output_dir,
     run_project_spider,
     run_urls_spider,
@@ -318,6 +319,12 @@ def _crawl_build_params(
     "--resume", is_flag=True, default=False, help="Skip already-crawled URLs from previous run."
 )
 @click.option(
+    "--confirm",
+    type=click.Choice(["yes", "y", "true"], case_sensitive=False),
+    default=None,
+    help="Auto-confirm prompts — pass 'yes' to skip (e.g. --confirm yes).",
+)
+@click.option(
     "--on-complete",
     "on_complete",
     type=str,
@@ -377,6 +384,7 @@ def crawl_cmd(
     output_dir: str | None,
     concurrency: int,
     resume: bool,
+    confirm: str | None,
     on_complete: str | None,
     **kwargs,
 ) -> None:
@@ -427,19 +435,35 @@ def crawl_cmd(
         usage_info = get_batch_usage(None)
         concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, 1)
         from_concurrency = obj["concurrency"] > 0
+        plan_concurrency = usage_info.get("max_concurrency") or 0
     except Exception:
-        concurrency = 16
+        click.echo(
+            "Warning: could not check plan concurrency. Defaulting to 1 concurrent request. "
+            "Use --concurrency to set explicitly.",
+            err=True,
+        )
+        concurrency = 1
         from_concurrency = False
+        plan_concurrency = 0
     from ..cli_utils import ensure_url_scheme
 
     first = target[0]
-    if first.startswith("http://") or first.startswith("https://") or "." in first:
+    is_url = not project and (
+        first.startswith("http://") or first.startswith("https://") or "." in first
+    )
+    if is_url:
         urls = [ensure_url_scheme(t) for t in target]
         display_concurrency = min(concurrency, max_pages) if max_pages > 0 else min(concurrency, 50)
+        capped_by_max_pages = max_pages > 0 and display_concurrency < concurrency
         if from_concurrency:
-            click.echo(f"Crawl: concurrency {display_concurrency} (from --concurrency)", err=True)
+            source = "--concurrency"
+        elif not plan_concurrency:
+            source = "default (plan concurrency not in usage response)"
+        elif capped_by_max_pages:
+            source = f"usage API, capped by --max-pages {max_pages}"
         else:
-            click.echo(f"Crawl: concurrency {display_concurrency} (from usage API)", err=True)
+            source = "usage API"
+        click.echo(f"Crawl: concurrency {display_concurrency} ({source})", err=True)
         try:
             _validate_json_option("--js-scenario", js_scenario)
             _validate_json_option("--extract-rules", extract_rules)
@@ -481,6 +505,23 @@ def crawl_cmd(
         except ValueError as e:
             click.echo(str(e), err=True)
             raise SystemExit(1)
+        if _requires_discovery_phase(scrape_params) and not confirm:
+            click.echo(
+                "\n  Note: Your scraping settings (--extract-rules, --ai-query,\n"
+                "  --return-page-text, or screenshot without --json-response) return\n"
+                "  non-HTML responses. To find links for crawling, each page will need\n"
+                "  an extra HTML-only discovery request — approximately doubling credits.\n\n"
+                "  Tip: Use --save-pattern '.*' to crawl with HTML (cheap, finds all links)\n"
+                "  and apply your full settings only to pages that match the pattern.\n"
+                "  Pass --yes to skip this prompt in scripts.\n",
+                err=True,
+            )
+            try:
+                if not click.confirm("  Continue?", default=True, err=True):
+                    raise SystemExit(0)
+            except click.Abort:
+                raise SystemExit(0)
+            click.echo(err=True)
         _validate_range("session_id", session_id, 0, 10_000_000)
         _validate_range("timeout", timeout, 1000, 140_000, "ms")
         _validate_range("wait", wait, 0, 35_000, "ms")
@@ -525,6 +566,54 @@ def crawl_cmd(
 
             run_on_complete(on_complete, output_dir=out_dir)
     else:
+        # Project spider mode only supports infrastructure flags (concurrency, throttling).
+        # All API params are handled by the spider's own ScrapingBeeRequest params.
+        api_flags = {
+            "--scraping-config": scraping_config,
+            "--render-js": render_js,
+            "--js-scenario": js_scenario,
+            "--wait": wait,
+            "--wait-for": wait_for,
+            "--wait-browser": wait_browser,
+            "--block-ads": block_ads,
+            "--block-resources": block_resources,
+            "--window-width": window_width,
+            "--window-height": window_height,
+            "--premium-proxy": premium_proxy,
+            "--stealth-proxy": stealth_proxy,
+            "--country-code": country_code,
+            "--own-proxy": own_proxy,
+            "--forward-headers": forward_headers,
+            "--forward-headers-pure": forward_headers_pure,
+            "--json-response": json_response,
+            "--screenshot": screenshot,
+            "--screenshot-selector": screenshot_selector,
+            "--screenshot-full-page": screenshot_full_page,
+            "--return-page-source": return_page_source,
+            "--return-page-markdown": return_page_markdown,
+            "--return-page-text": return_page_text,
+            "--extract-rules": extract_rules,
+            "--ai-query": ai_query,
+            "--ai-selector": ai_selector,
+            "--ai-extract-rules": ai_extract_rules,
+            "--session-id": session_id,
+            "--timeout": timeout,
+            "--cookies": cookies,
+            "--device": device,
+            "--custom-google": custom_google,
+            "--transparent-status-code": transparent_status_code,
+        }
+        used = [flag for flag, val in api_flags.items() if val is not None]
+        if headers:
+            used.append("-H/--header")
+        if used:
+            click.echo(
+                f"API options not supported in project spider mode: {', '.join(used)}\n"
+                "In project spider mode, set API params in your ScrapingBeeRequest directly:\n"
+                '  ScrapingBeeRequest(url, params={"render_js": True, "premium_proxy": True})',
+                err=True,
+            )
+            raise SystemExit(1)
         if len(target) > 1:
             click.echo(
                 "Spider name must be a single argument. For multiple URLs use: "

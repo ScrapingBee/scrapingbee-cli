@@ -19,6 +19,7 @@ scrapingbee youtube-search --output-file yt-search.json "tutorial python"
 | `--duration` | choice | Duration filter: `short` (<4 min), `medium` (4-20 min), `long` (>20 min). Raw values `"<4"`, `"4-20"`, `">20"` also accepted. |
 | `--sort-by` | string | `relevance`, `rating`, `view-count`, `upload-date`. |
 | `--hd` / `--4k` / `--subtitles` / `--creative-commons` / `--live` / `--360` / `--3d` / `--hdr` / `--location` / `--vr180` | true/false | Filters. |
+| `--purchased` | true/false | Filter to purchased videos only. |
 
 ## Pipeline: search → metadata batch
 

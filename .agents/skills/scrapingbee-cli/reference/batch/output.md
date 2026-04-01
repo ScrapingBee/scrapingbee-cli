@@ -1,8 +1,8 @@
 # Batch output layout
 
-Output format is controlled by **`--output-format`** (default: `files`).
+Output format is controlled by **`--output-format`**. Default (no flag): individual files in `--output-dir`.
 
-## files (default)
+## individual files (default)
 
 One file per input line (N = line number). Use with `--output-dir`.
 
@@ -17,7 +17,7 @@ One file per input line (N = line number). Use with `--output-dir`.
 `--output-format csv` writes all results to a single CSV (to `--output-dir` path or stdout). Columns: `index`, `input`, `status_code`, `body`, `error`.
 
 ```bash
-scrapingbee --output-format csv --input-file urls.txt scrape > results.csv
+scrapingbee scrape --input-file urls.txt --output-format csv --output-file results.csv
 ```
 
 ## ndjson
@@ -25,7 +25,7 @@ scrapingbee --output-format csv --input-file urls.txt scrape > results.csv
 `--output-format ndjson` streams each result as a JSON line to stdout as it arrives. Each line: `{"index":1, "input":"...", "status_code":200, "body":{...}, "error":null, "fetched_at":"...", "latency_ms":123}`.
 
 ```bash
-scrapingbee --output-format ndjson --input-file urls.txt google "query" > results.ndjson
+scrapingbee google --input-file queries.txt --output-format ndjson --output-file results.ndjson
 ```
 
 Completion: stdout prints `Batch complete: N succeeded, M failed. Output: <path>`.
@@ -41,7 +41,8 @@ Every batch run writes a `manifest.json` to the output folder:
     "fetched_at": "2025-01-15T10:30:00",
     "http_status": 200,
     "credits_used": 5,
-    "latency_ms": 1234
+    "latency_ms": 1234,
+    "content_md5": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "https://example2.com": {
     "file": "2.html",
@@ -49,6 +50,7 @@ Every batch run writes a `manifest.json` to the output folder:
     "http_status": 200,
     "credits_used": 5,
     "latency_ms": 876,
+    "content_md5": "7215ee9c7d9dc229d2921a40e899ec5f"
   }
 }
 ```
@@ -60,5 +62,6 @@ Every batch run writes a `manifest.json` to the output folder:
 | `http_status` | HTTP status code returned by the target site |
 | `credits_used` | Credits consumed (from `Spb-Cost` response header) |
 | `latency_ms` | Round-trip latency in milliseconds |
+| `content_md5` | MD5 hash of the raw response body — use to detect duplicate content or page changes across runs |
 
 The manifest is used by `--resume` to skip already-completed items.

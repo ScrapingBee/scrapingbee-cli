@@ -10,7 +10,7 @@ from typing import Any
 import aiohttp
 import certifi
 
-from . import user_agent
+from . import user_agent_headers
 from .config import BASE_URL
 
 
@@ -46,7 +46,7 @@ class Client:
         self._session = aiohttp.ClientSession(
             connector=connector,
             timeout=timeout,
-            headers={"User-Agent": user_agent()},
+            headers=user_agent_headers(),
         )
         return self
 

@@ -5,6 +5,60 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-04-01
+
+### Added
+
+- **`tutorial` command** — interactive step-by-step guide to CLI features (`--chapter N`, `--reset`, `--list`, `--output-dir`).
+- **`--confirm` flag for `crawl`** — pass `--confirm yes` to skip the interactive discovery-phase prompt in scripts.
+- **Discovery-phase warning for `crawl`** — when `--extract-rules`, `--ai-query`, `--ai-extract-rules`, `--return-page-text`, or bare screenshot is active, crawl warns that each page will cost two requests and prompts to confirm.
+- **Binary URL skip in crawl discovery** — crawl skips the HTML discovery re-request for URLs with known binary extensions (`.jpg`, `.png`, `.pdf`, `.css`, `.js`, etc.) that can never contain links.
+- **`scrapingbee --scraping-config`** auto-routes to scrape command. URL is optional when using a saved config.
+- **`scrapingbee --resume`** (bare) discovers incomplete batches in the current directory and shows resume commands.
+- **`--extract-field` and `--fields` in batch mode** — extract-field works with individual files; `--fields` filters JSON output keys and supports dot notation across all output formats.
+- **`--flatten-depth`** for export CSV to control nesting depth (default 5).
+- **`--overwrite`** flag to skip file overwrite prompts.
+- **Batch metadata** saved to `.batch_meta.json` for resume discovery.
+- **Structured user-agent headers** (`User-Agent-Client`, `User-Agent-Environment`, `User-Agent-OS`).
+- **`scripts/sync-skills.sh`** — syncs the canonical `.agents/skills/` tree to all AI platform directories.
+- **`--smart-extract`** — client-side extraction with path language; auto-detects JSON, HTML, XML, CSV, Markdown, and plain text.
+- **Path language** for `--smart-extract`: `.key`, `(escaped key)`, `[0]`, `[0:5]` slicing, `[0,3]` multi-index, `[keys]`/`[values]`, `...key` recursive search, `~N` context expansion, `[=filter]`/`[key=filter]` value filters, `[=/pattern/]` regex filters, `| OR`, `& AND`.
+- **JSON schema mode** for `--smart-extract` — accepts the same format as `--extract-rules` for structured extraction.
+- **Full path language support** in `--extract-field` and `--fields`.
+- **Auto-parse JSON strings** during dot-path traversal so nested stringified JSON is traversed transparently.
+
+### Fixed
+
+- **`or N` falsy-value bug** — `--retries 0`, `--backoff 0`, and similar zero-value numeric options now work correctly across all commands (37 occurrences).
+- **Crawl extension priority** — `--extract-rules`, `--ai-extract-rules`, and `--ai-query` now correctly produce `.json` output files instead of `.html`.
+- **Back navigation at first step** — pressing ← at the first tutorial step now shows "Already at the first step." instead of silently re-running it.
+- **Tutorial sort option text** — CH13-S01 (Amazon) and CH14-S01 (Walmart) `what_to_notice` text now lists the correct valid sort values.
+- **Tutorial CH16-S01** now saves ChatGPT response to file with inline preview.
+- **Tutorial CH02-S01 and CH03-S01** now save output to file with inline preview.
+- **Output routing** — CSV and NDJSON batch output now correctly uses `--output-file`. Individual files use `--output-dir`.
+- **Flag validation** — conflicting flags now produce clear errors instead of being silently ignored.
+- **`TextIOWrapper` leak** in CSV stdout output no longer closes stdout.
+- **File write errors** now show clean messages instead of Python tracebacks.
+- **Network errors** caught globally with human-friendly messages.
+- **Dropped batch results** from async exceptions now counted as failures.
+- **`--update-csv`** requires CSV input file.
+- **`--resume`** requires `--output-dir`.
+- **Negative `--concurrency`** rejected.
+- **`--every`** warns when seconds are rounded to minutes.
+- **Auth** distinguishes network errors from invalid API keys.
+- **Crawl project spider mode** rejects API params with a helpful error showing `ScrapingBeeRequest` usage.
+- **Spider name detection** fixed when `--project` is set (dots in spider names no longer misidentified as URLs).
+- **Export `--columns`** errors with available column names when no columns match.
+- **"global --input-file"** wording removed from all error messages.
+
+### Changed
+
+- **`--output-format`** choices simplified to `csv` and `ndjson`. Default (no flag) writes individual files.
+- **Crawl concurrency** defaults to 1 (with warning) when usage API fails, instead of silent 16.
+- **Fast-search credit cost** corrected to 10 in all skill reference files (was incorrectly documented as 5).
+- **Skill reference docs** updated: `--purchased` (YouTube), `--save-pattern` (crawl), `--flatten-depth` (export), `content_md5` (batch output manifest).
+- **AI platform agent files** synced across `.agents/`, `.github/`, `.kiro/`, `.opencode/`, `plugins/`; `.github/` agent renamed from `.agent.md` to `.md`.
+
 ## [1.3.1] - 2026-03-30
 
 ### Added
@@ -14,22 +68,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`--device` for `walmart-product`** to select device type (desktop, mobile, tablet).
 - **`--purchased` filter for `youtube-search`** to filter by purchased content.
 - **Parameter value flexibility.** Choice parameters now accept both hyphens and underscores interchangeably (e.g. `--sort-by price-low` and `--sort-by price_low` both work).
-- **Improved command whitelist validation.**
-- **Improved security rules in skill files.**
+- **Improved internal validation.**
 
 ## [1.3.0] - 2026-03-27
 
 ### Added
 
-- **Security hardening for shell execution features.** `--post-process`, `--on-complete`, and `schedule` are now disabled by default and require explicit human setup to enable. See CLI documentation for setup instructions.
 - **`scrapingbee unsafe` command** for managing advanced feature status.
 - **Audit logging.**
-- **Guard skill** for AI agent environments.
-- **Security rules in skill files.**
 
 ### Changed
 
-- **`--post-process`, `--on-complete`, and `schedule`** help text now indicates these require advanced setup.
 - **`scrapingbee logout`** resets all advanced feature settings.
 
 ## [1.2.3] - 2026-03-25
@@ -164,8 +213,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Sitemap ingestion:** `crawl --from-sitemap <url>` fetches a sitemap (or sitemap index) and crawls all discovered URLs. Handles `<sitemapindex>` recursively (depth limit 2) and both namespaced and bare XML.
 - **Export command:** `scrapingbee export --input-dir <dir> [--format ndjson|txt]` merges numbered batch/crawl output files into a single stream. NDJSON mode enriches each record with `_url` when a `manifest.json` is present; TXT mode emits `# URL` headers followed by page text. Output respects `--output-file`.
 - **CI:** GitHub Actions workflow (`.github/workflows/ci.yml`) runs unit tests across Python 3.10–3.13 on every push and pull request.
-- **Tests:** Unit tests for `validate_batch_run` (credit guard, concurrency guard).
-- **Tests:** Unit tests for `_find_main_list`, `_flatten_value`, and `export --format csv` (17 tests covering flat objects, list expansion, non-JSON skipping, manifest URL injection, and empty-input error).
+- **Tests:** Unit tests for `validate_batch_run` (credit and concurrency checks).
+- **Tests:** Unit tests for `_find_main_list`, `_flatten_value`, and `export --format csv` (17 tests covering flat objects, list expansion, non-JSON skipping, manifest URL enrichment, and empty-input error).
 - **Tests:** Unit tests for `_find_completed_n` (nonexistent dir, numbered files, ignores `.err`, ignores non-numeric stems, finds files in subdirectories).
 - **Tests:** Unit tests for `run_batch_async` skip-n (resume) behaviour: skipped items are marked `skipped=True` with empty body; empty `skip_n` processes all items.
 - **Tests:** Unit tests for the crawl double-fetch discovery mechanism (`parse()` triggers discovery when no links; `_parse_discovery_links_only()` follows links without saving).

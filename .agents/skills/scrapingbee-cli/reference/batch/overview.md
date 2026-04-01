@@ -10,7 +10,7 @@ Commands with **single input** (URL, query, ASIN, video ID, prompt) support batc
 - **Concurrency:** Default = plan limit from usage API. Override with **`--concurrency N`**. CLI caps at plan limit and a safe maximum (~100).
 - **Retries:** Global **`--retries`** and **`--backoff`** apply to batch API calls.
 - **Credits:** CLI checks usage API; if credits are below 100, batch **not run**. Run `scrapingbee usage` first.
-- **Output format:** **`--output-format files`** (default) writes individual files. **`--output-format csv`** writes a single CSV. **`--output-format ndjson`** streams JSON lines to stdout.
+- **Output format:** Default (no flag) writes individual files to `--output-dir`. **`--output-format csv`** writes a single CSV (use with `--output-file` or stdout). **`--output-format ndjson`** streams JSON lines (use with `--output-file` or stdout). Use **`--overwrite`** to skip the file-exists prompt.
 - **Output folder:** Use **`--output-dir path`** for a specific directory; default is **`batch_<YYYYMMDD_HHMMSS>`**.
 - **Deduplication:** **`--deduplicate`** normalizes URLs (lowercase domain, strip fragment/trailing slash) and removes duplicates before processing.
 - **Sampling:** **`--sample N`** processes only N random items from input — useful for testing configurations.
@@ -52,13 +52,21 @@ Run a shell command after the batch finishes. The command has access to these en
 
 | Variable | Description |
 |----------|-------------|
-| `SCRAPINGBEE_OUTPUT_DIR` | Absolute path to the output directory. |
+| `SCRAPINGBEE_OUTPUT_DIR` | Absolute path to the output directory (individual files mode). |
+| `SCRAPINGBEE_OUTPUT_FILE` | Absolute path to the output file (csv/ndjson mode). |
 | `SCRAPINGBEE_SUCCEEDED` | Number of successful requests. |
 | `SCRAPINGBEE_FAILED` | Number of failed requests. |
 
 ```bash
 scrapingbee scrape --output-dir out --input-file urls.txt --on-complete "echo Done: \$SCRAPINGBEE_SUCCEEDED succeeded, \$SCRAPINGBEE_FAILED failed"
+scrapingbee scrape --input-file urls.txt --output-format ndjson --output-file results.ndjson --on-complete "wc -l \$SCRAPINGBEE_OUTPUT_FILE"
 ```
+
+## Resume (--resume)
+
+`--resume --output-dir DIR` skips items already saved in the output directory (uses `manifest.json`).
+
+Bare `scrapingbee --resume` (no other arguments) scans the current directory for incomplete `batch_*` / `crawl_*` directories and prints copy-paste resume commands for each.
 
 ## Examples
 
