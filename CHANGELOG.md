@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **JSON schema mode** for `--smart-extract` — accepts the same format as `--extract-rules` for structured extraction.
 - **Full path language support** in `--extract-field` and `--fields`.
 - **Auto-parse JSON strings** during dot-path traversal so nested stringified JSON is traversed transparently.
+- **Chainable `~N` context expansion** — works anywhere in the path and can be chained: `...text[=*$49*]~2.h3` finds a value, goes up N levels, then continues traversal.
+- **`[!=pattern]` negation filter** — exclude values or dicts matching a pattern: `...div[class!=sidebar]`.
+- **`[*=pattern]` glob key filter** — find dicts where any key's value matches: `...*[*=faq]`.
+- **Scalar-only value matching** — filters only match strings/numbers/booleans, not dicts or lists (prevents false positives).
+- **List flattening in recursive search** — `...section[id=faq]` now correctly finds individual elements, not nested lists.
 
 ### Fixed
 

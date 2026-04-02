@@ -379,3 +379,343 @@ class TestSmartExtract:
         data = json.dumps({"a": 1}).encode()
         result = smart_extract(data, "nonexistent")
         assert result == b""
+
+
+# ── TestChaining ────────────────────────────────────────────────────────────
+
+
+# Complex test data simulating an e-commerce page
+_SHOP = {
+    "body": {
+        "nav": {
+            "class": "sidebar",
+            "a": [
+                {"href": "/home", "text": "Home"},
+                {"href": "/about", "text": "About"},
+            ],
+        },
+        "main": {
+            "id": "products",
+            "section": [
+                {
+                    "class": "product",
+                    "h2": "Widget",
+                    "span": {"class": "price", "text": "$49.99"},
+                    "ul": {
+                        "li": [
+                            {"class": "tag", "text": "sale"},
+                            {"class": "tag", "text": "popular"},
+                        ]
+                    },
+                },
+                {
+                    "class": "product",
+                    "h2": "Gadget",
+                    "span": {"class": "price", "text": "$99.50"},
+                    "ul": {
+                        "li": [
+                            {"class": "tag", "text": "new"},
+                        ]
+                    },
+                },
+                {
+                    "class": "featured",
+                    "h2": "Deluxe",
+                    "span": {"class": "price", "text": "$249.00"},
+                    "ul": {
+                        "li": [
+                            {"class": "tag", "text": "premium"},
+                            {"class": "tag", "text": "sale"},
+                        ]
+                    },
+                },
+            ],
+        },
+        "footer": {
+            "text": "Copyright 2024",
+            "a": {"href": "mailto:shop@example.com", "text": "shop@example.com"},
+        },
+    },
+}
+
+# Nested JSON string data (simulates --json-response xhr)
+_XHR = {
+    "xhr": [
+        {
+            "url": "https://api.example.com/data.json",
+            "body": json.dumps(
+                {
+                    "info": {"title": "Shop API", "version": "2.0"},
+                    "endpoints": {
+                        "/products": {
+                            "get": {"summary": "List products"},
+                            "post": {"summary": "Create product"},
+                        },
+                        "/orders": {"get": {"summary": "List orders"}},
+                        "/users": {
+                            "get": {"summary": "List users"},
+                            "delete": {"summary": "Remove user"},
+                        },
+                    },
+                }
+            ),
+        }
+    ],
+}
+
+
+class TestChaining:
+    """Complex chaining scenarios covering every operation combination."""
+
+    # ── Navigate + Select ────────────────────────────────────────────────
+
+    def test_key_then_index(self):
+        r = _resolve_path(_SHOP, _parse_path("body.main.section[0].h2"))
+        assert r == "Widget"
+
+    def test_key_then_slice(self):
+        r = _resolve_path(_SHOP, _parse_path("body.main.section[0:2].h2"))
+        assert r == ["Widget", "Gadget"]
+
+    def test_key_then_multi_index(self):
+        r = _resolve_path(_SHOP, _parse_path("body.main.section[0,2].h2"))
+        assert r == ["Widget", "Deluxe"]
+
+    def test_key_then_negative_index(self):
+        r = _resolve_path(_SHOP, _parse_path("body.main.section[-1].h2"))
+        assert r == "Deluxe"
+
+    # ── Navigate + [keys] / [values] ─────────────────────────────────────
+
+    def test_keys_on_nested_dict(self):
+        r = _resolve_path(_SHOP, _parse_path("body[keys]"))
+        assert r == ["nav", "main", "footer"]
+
+    def test_values_then_keys(self):
+        r = _resolve_path(_XHR, _parse_path("xhr.body.endpoints[values][keys]"))
+        assert "get" in r
+        assert "post" in r
+        assert "delete" in r
+
+    def test_keys_then_slice(self):
+        r = _resolve_path(_XHR, _parse_path("xhr.body.endpoints[keys][0:2]"))
+        assert r == ["/products", "/orders"]
+
+    def test_keys_then_multi_index(self):
+        r = _resolve_path(_XHR, _parse_path("xhr.body.endpoints[keys][0,-1]"))
+        assert r == ["/products", "/users"]
+
+    # ── Recursive search + chaining ──────────────────────────────────────
+
+    def test_recursive_then_key(self):
+        r = _resolve_path(_SHOP, _parse_path("...section.h2"))
+        assert "Widget" in r
+        assert "Gadget" in r
+        assert "Deluxe" in r
+
+    def test_recursive_then_index(self):
+        r = _resolve_path(_SHOP, _parse_path("...section[0].h2"))
+        assert r == "Widget"  # [0] selects single item, .h2 returns scalar
+
+    def test_recursive_then_keys(self):
+        r = _resolve_path(_XHR, _parse_path("...endpoints[keys]"))
+        assert "/products" in r
+        assert "/orders" in r
+
+    def test_recursive_then_values_then_keys(self):
+        r = _resolve_path(_XHR, _parse_path("...endpoints[values][keys]"))
+        assert "get" in r
+        assert "post" in r
+
+    def test_recursive_glob_then_key(self):
+        # *price* matches the key "class" with value "price" — not a key named *price*
+        # The span dicts have class="price", so ...*price* finds nothing (class value, not key name)
+        # Use ...span.text instead to get price text
+        r = _resolve_path(_SHOP, _parse_path("...span.text"))
+        assert "$49.99" in r
+        assert "$99.50" in r
+
+    # ── [=filter] chaining ───────────────────────────────────────────────
+
+    def test_value_filter_then_nothing(self):
+        r = _resolve_path(_SHOP, _parse_path("...text[=*$*]"))
+        assert "$49.99" in r
+        assert "$99.50" in r
+        assert "$249.00" in r
+        assert "Home" not in r
+
+    def test_value_filter_regex(self):
+        r = _resolve_path(_SHOP, _parse_path("...text[=/^\\$\\d+\\.\\d{2}$/]"))
+        assert "$49.99" in r
+        assert "$99.50" in r
+
+    def test_value_filter_negation(self):
+        r = _resolve_path(_SHOP, _parse_path("...h2[!=Widget]"))
+        assert "Widget" not in r
+        assert "Gadget" in r
+        assert "Deluxe" in r
+
+    # ── [key=filter] chaining ────────────────────────────────────────────
+
+    def test_key_filter_then_key(self):
+        r = _resolve_path(_SHOP, _parse_path("...section[class=product].h2"))
+        assert r == ["Widget", "Gadget"]
+
+    def test_key_filter_negation_then_key(self):
+        r = _resolve_path(_SHOP, _parse_path("...section[class!=product].h2"))
+        assert r == ["Deluxe"]
+
+    def test_key_filter_glob(self):
+        r = _resolve_path(_SHOP, _parse_path("...section[class=*pro*].h2"))
+        assert "Widget" in r
+        assert "Gadget" in r
+
+    def test_glob_key_filter(self):
+        r = _resolve_path(_SHOP, _parse_path("...*[*=sidebar]"))
+        assert len(r) >= 1
+        assert r[0].get("class") == "sidebar"
+
+    def test_key_filter_regex(self):
+        r = _resolve_path(_SHOP, _parse_path("...section[class=/^prod/].h2"))
+        assert r == ["Widget", "Gadget"]
+
+    # ── ~N context expansion chaining ────────────────────────────────────
+
+    def test_tilde_after_filter(self):
+        r = _resolve_path(_SHOP, _parse_path("...text[=*$49*]~1"))
+        assert len(r) == 1
+        assert r[0].get("class") == "price"
+
+    def test_tilde_after_filter_then_key(self):
+        r = _resolve_path(_SHOP, _parse_path("...text[=*$49*]~1.class"))
+        assert r == ["price"]
+
+    def test_tilde_then_keys(self):
+        r = _resolve_path(_SHOP, _parse_path("...text[=*$49*]~2[keys]"))
+        assert "h2" in r
+        assert "span" in r
+
+    def test_tilde_then_sibling(self):
+        """CSS h3 + p equivalent: find value, go up, navigate to sibling."""
+        r = _resolve_path(_SHOP, _parse_path("...text[=*$49*]~2.h2"))
+        assert r == ["Widget"]
+
+    def test_tilde_then_recursive(self):
+        r = _resolve_path(_SHOP, _parse_path("...text[=*$49*]~2...text"))
+        assert "$49.99" in r
+        assert "sale" in r
+
+    def test_deep_tilde(self):
+        r = _resolve_path(_SHOP, _parse_path("...text[=*$49*]~3[keys]"))
+        # ~3 from "$49.99" text goes up: span→section→main dict
+        assert "id" in r or "class" in r or "section" in r
+
+    # ── JSON string auto-parse chaining ──────────────────────────────────
+
+    def test_json_autoparse_then_keys(self):
+        r = _resolve_path(_XHR, _parse_path("xhr.body.endpoints[keys]"))
+        assert "/products" in r
+
+    def test_json_autoparse_deep_chain(self):
+        r = _resolve_path(_XHR, _parse_path("xhr.body.endpoints[values][values]...summary"))
+        assert "List products" in r
+        assert "Create product" in r
+        assert "Remove user" in r
+
+    def test_json_autoparse_then_filter(self):
+        r = _resolve_path(_XHR, _parse_path("xhr.body.endpoints[keys][=*/products*]"))
+        assert r == ["/products"]
+
+    # ── OR / AND with complex paths ──────────────────────────────────────
+
+    def test_or_with_filters(self):
+        r = resolve_expression(_SHOP, "...h2[=Widget] | ...h2[=Deluxe]")
+        assert "Widget" in r
+        assert "Deluxe" in r
+        assert "Gadget" not in r
+
+    def test_and_both_present(self):
+        r = resolve_expression(_SHOP, "...h2 & ...span.text")
+        assert "Widget" in r
+        assert "$49.99" in r
+
+    def test_and_one_missing(self):
+        r = resolve_expression(_SHOP, "...h2 & ...nonexistent")
+        assert r is None
+
+    def test_or_with_tilde(self):
+        r = resolve_expression(_SHOP, "...text[=*$49*]~2.h2 | ...text[=*$249*]~2.h2")
+        assert "Widget" in r
+        assert "Deluxe" in r
+
+    # ── Escaped keys ─────────────────────────────────────────────────────
+
+    def test_escaped_key_with_dots(self):
+        obj = {"a.b": {"c": 42}}
+        assert _resolve_path(obj, _parse_path("(a.b).c")) == 42
+
+    def test_recursive_escaped_key(self):
+        obj = {"nested": {"a.b": 99}}
+        r = _resolve_path(obj, _parse_path("...(a.b)"))
+        assert r == [99]
+
+    # ── Per-item mapping edge cases ──────────────────────────────────────
+
+    def test_map_then_filter(self):
+        r = _resolve_path(_SHOP, _parse_path("...section.h2[!=Gadget]"))
+        assert "Widget" in r
+        assert "Deluxe" in r
+        assert "Gadget" not in r
+
+    def test_map_nested_lists(self):
+        r = _resolve_path(_SHOP, _parse_path("...li.text"))
+        assert "sale" in r
+        assert "popular" in r
+        assert "new" in r
+        assert "premium" in r
+
+    def test_map_then_slice(self):
+        r = _resolve_path(_SHOP, _parse_path("...section[0:2].span.text"))
+        assert r == ["$49.99", "$99.50"]
+
+    # ── Matcher edge cases ───────────────────────────────────────────────
+
+    def test_matcher_skips_dicts(self):
+        m = _build_matcher("test")
+        assert m({"test": 1}) is False  # dict should not match
+
+    def test_matcher_skips_lists(self):
+        m = _build_matcher("test")
+        assert m(["test"]) is False  # list should not match
+
+    def test_matcher_matches_numbers(self):
+        m = _build_matcher("42")
+        assert m(42) is True
+        assert m(43) is False
+
+    def test_matcher_skips_none(self):
+        m = _build_matcher("test")
+        assert m(None) is False
+
+    # ── HTML-like structure with [id=] ───────────────────────────────────
+
+    def test_find_by_id(self):
+        r = _resolve_path(_SHOP, _parse_path("...*[id=products]"))
+        assert len(r) >= 1
+        assert "section" in r[0]
+
+    def test_find_by_id_then_drill(self):
+        r = _resolve_path(_SHOP, _parse_path("...*[id=products]...h2"))
+        assert "Widget" in r
+        assert "Gadget" in r
+        assert "Deluxe" in r
+
+    # ── mailto extraction pattern ────────────────────────────────────────
+
+    def test_mailto_extraction(self):
+        r = _resolve_path(_SHOP, _parse_path("...a[href=*mailto*].text"))
+        assert r == ["shop@example.com"]
+
+    def test_mailto_href(self):
+        r = _resolve_path(_SHOP, _parse_path("...a[href=*mailto*].href"))
+        assert r == ["mailto:shop@example.com"]

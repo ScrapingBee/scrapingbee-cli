@@ -28,7 +28,9 @@ Stop feeding entire web pages into your context window. `--smart-extract` lets y
 | `[values]` | Select all values at current level | `[values]` |
 | `...key` | Recursive search — find `key` at any depth | `...price` |
 | `[=filter]` | Filter nodes by value or attribute | `[=in-stock]` |
-| `~N` | Context expansion — include N surrounding siblings/lines | `...price~2` |
+| `[!=pattern]` | Negation filter — exclude values/dicts matching a pattern | `...div[class!=sidebar]` |
+| `[*=pattern]` | Glob key filter — match dicts where any key's value matches | `...*[*=faq]` |
+| `~N` | Context expansion — include N surrounding siblings/lines; chainable anywhere in path | `...text[=*$49*]~2.h3` |
 
 **JSON schema mode:** Pass a JSON object to map field names to path expressions — returns structured output matching your schema:
 ```

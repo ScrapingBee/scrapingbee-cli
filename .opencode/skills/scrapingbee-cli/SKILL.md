@@ -31,7 +31,9 @@ Use `--smart-extract` to provide your LLM just the data it needs from any web pa
 | `[values]` | Select all values at current level | `[values]` |
 | `...key` | Recursive search — find `key` at any depth | `...price` |
 | `[=filter]` | Filter nodes by value or attribute | `[=in-stock]` |
-| `~N` | Context expansion — include N surrounding siblings/lines | `...price~2` |
+| `[!=pattern]` | Negation filter — exclude values/dicts matching a pattern | `...div[class!=sidebar]` |
+| `[*=pattern]` | Glob key filter — match dicts where any key's value matches | `...*[*=faq]` |
+| `~N` | Context expansion — include N surrounding siblings/lines; chainable anywhere in path | `...text[=*$49*]~2.h3` |
 
 **JSON schema mode:** Pass a JSON object where each value is a path expression. Returns structured output matching your schema exactly:
 ```

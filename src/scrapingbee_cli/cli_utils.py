@@ -467,9 +467,16 @@ def _parse_path(path: str) -> list[tuple[str, Any]]:
                 segments.append(("keys", None))
             elif inner == "values":
                 segments.append(("values", None))
+            elif inner.startswith("!="):
+                # Negated value filter: [!=pattern]
+                segments.append(("filter_value_not", inner[2:]))
             elif inner.startswith("="):
                 # Value filter: [=*pattern*]
                 segments.append(("filter_value", inner[1:]))
+            elif "!=" in inner and not inner.lstrip("-").isdigit():
+                # Negated key filter: [key!=pattern]
+                eq = inner.index("!=")
+                segments.append(("filter_key_not", (inner[:eq].strip(), inner[eq + 2 :].strip())))
             elif "=" in inner and not inner.lstrip("-").isdigit():
                 # Key filter: [key=*pattern*]
                 eq = inner.index("=")
@@ -490,10 +497,19 @@ def _parse_path(path: str) -> list[tuple[str, Any]]:
                 segments.append(("key", inner))
             i = j + 1
 
+        # --- Context expansion: ~N (standalone, chainable) ---
+        elif path[i] == "~" and i + 1 < n and path[i + 1].isdigit():
+            i += 1
+            j = i
+            while j < n and path[j].isdigit():
+                j += 1
+            segments.append(("context", int(path[i:j])))
+            i = j
+
         # --- Plain key name ---
         else:
             j = i
-            while j < n and path[j] not in ".[(":
+            while j < n and path[j] not in ".[(~":
                 j += 1
             segments.append(("key", path[i:j]))
             i = j
@@ -501,11 +517,11 @@ def _parse_path(path: str) -> list[tuple[str, Any]]:
     return segments
 
 
-def _map_over_list(cur: list, segments: list[tuple[str, Any]]) -> Any:
+def _map_over_list(cur: list, segments: list[tuple[str, Any]], _root: Any = None) -> Any:
     """Apply *segments* to each item in *cur*, collecting and flattening results."""
     collected: list[Any] = []
     for item in cur:
-        v = _resolve_path(item, segments)
+        v = _resolve_path(item, segments, _root=_root)
         if v is None:
             continue
         if isinstance(v, list):
@@ -547,8 +563,11 @@ def _recursive_walk_simple(obj: Any, match: Any, results: list[Any]) -> None:
     """Fast recursive walk — collects matched values without ancestry tracking."""
     if isinstance(obj, dict):
         for k, v in obj.items():
-            if match(k):
-                results.append(v)
+            if isinstance(k, str) and match(k):
+                if isinstance(v, list):
+                    results.extend(v)  # flatten list values
+                else:
+                    results.append(v)
             _recursive_walk_simple(v, match, results)
     elif isinstance(obj, list):
         for item in obj:
@@ -570,7 +589,7 @@ def _recursive_walk_ctx(
     """
     if isinstance(obj, dict):
         for k, v in obj.items():
-            if match(k):
+            if isinstance(k, str) and match(k):
                 if context <= 1:
                     results.append(obj)  # ~1 = the parent dict
                 else:
@@ -596,6 +615,36 @@ def _recursive_walk_ctx(
             pass
 
 
+def _find_value_ancestors(root: Any, targets: Any, n: int) -> list[Any]:
+    """Find the ancestor N levels above each *target* value in the *root* tree.
+
+    Uses identity (``id()``) to match target objects, so values must be the
+    same Python objects as in the tree (not copies).
+    """
+    target_ids = {id(t) for t in (targets if isinstance(targets, list) else [targets])}
+    results: list[Any] = []
+
+    def _walk(obj: Any, ancestry: list[Any]) -> None:
+        if id(obj) in target_ids:
+            idx = max(0, len(ancestry) - n)
+            results.append(
+                ancestry[idx] if idx < len(ancestry) else ancestry[0] if ancestry else obj
+            )
+        if isinstance(obj, dict):
+            for v in obj.values():
+                ancestry.append(obj)
+                _walk(v, ancestry)
+                ancestry.pop()
+        elif isinstance(obj, list):
+            for item in obj:
+                ancestry.append(obj)
+                _walk(item, ancestry)
+                ancestry.pop()
+
+    _walk(root, [])
+    return results
+
+
 def _build_matcher(pattern: str):
     """Build a value matcher from a pattern string.
 
@@ -603,20 +652,31 @@ def _build_matcher(pattern: str):
     - ``/regex/``    — regex search (``re.search``)
     - ``*glob*``     — glob matching (``fnmatch``)
     - ``text``       — substring matching (``in``)
+
+    Only matches scalar values (str, int, float, bool). Dicts and lists
+    are skipped to avoid false positives from stringifying entire subtrees.
     """
+
+    def _to_str(v: Any) -> str | None:
+        if isinstance(v, str):
+            return v
+        if isinstance(v, (int, float, bool)):
+            return str(v)
+        return None  # skip dicts, lists, None
+
     if pattern.startswith("/") and pattern.endswith("/") and len(pattern) > 1:
         try:
             rx = re.compile(pattern[1:-1])
         except re.error as e:
             click.echo(f"Warning: invalid regex '{pattern}': {e}", err=True)
             return lambda v: False
-        return lambda v: rx.search(str(v)) is not None
+        return lambda v: (s := _to_str(v)) is not None and rx.search(s) is not None
     if "*" in pattern:
-        return lambda v: fnmatch.fnmatchcase(str(v), pattern)
-    return lambda v: pattern in str(v)
+        return lambda v: (s := _to_str(v)) is not None and fnmatch.fnmatchcase(s, pattern)
+    return lambda v: (s := _to_str(v)) is not None and pattern in s
 
 
-def _resolve_path(obj: Any, segments: list[tuple[str, Any]]) -> Any:
+def _resolve_path(obj: Any, segments: list[tuple[str, Any]], _root: Any = None) -> Any:
     """Walk *obj* using parsed path segments.
 
     Segment types and their behavior:
@@ -632,10 +692,14 @@ def _resolve_path(obj: Any, segments: list[tuple[str, Any]]) -> Any:
     - ``("multi_index", [..])``— multiple elements by position
     - ``("slice", (a, b))``   — contiguous range
 
+    **Context** (go up in the tree):
+    - ``("context", n)``       — find ancestor N levels above current values
+
     JSON strings starting with ``{`` or ``[`` are auto-parsed before
     any operation, allowing traversal through embedded JSON
     (e.g. ``xhr.body.paths`` where body is a stringified JSON response).
     """
+    root: Any = _root or obj  # preserve original root across recursive calls
     cur: Any = obj
     for i, (stype, sval) in enumerate(segments):
         # --- Auto-parse JSON strings before any operation ---
@@ -653,7 +717,7 @@ def _resolve_path(obj: Any, segments: list[tuple[str, Any]]) -> Any:
                 if cur is None:
                     return None
             elif isinstance(cur, list):
-                return _map_over_list(cur, segments[i:])
+                return _map_over_list(cur, segments[i:], _root=root)
             else:
                 return None
 
@@ -661,7 +725,7 @@ def _resolve_path(obj: Any, segments: list[tuple[str, Any]]) -> Any:
             if isinstance(cur, dict):
                 cur = list(cur.keys())
             elif isinstance(cur, list):
-                return _map_over_list(cur, segments[i:])
+                return _map_over_list(cur, segments[i:], _root=root)
             else:
                 return None
 
@@ -669,7 +733,7 @@ def _resolve_path(obj: Any, segments: list[tuple[str, Any]]) -> Any:
             if isinstance(cur, dict):
                 cur = list(cur.values())
             elif isinstance(cur, list):
-                return _map_over_list(cur, segments[i:])
+                return _map_over_list(cur, segments[i:], _root=root)
             else:
                 return None
 
@@ -680,7 +744,7 @@ def _resolve_path(obj: Any, segments: list[tuple[str, Any]]) -> Any:
                 return None
             rest = segments[i + 1 :]
             if rest:
-                return _resolve_path(found, rest)
+                return _resolve_path(found, rest, _root=root)
             cur = found
 
         # ── Select operations (pick from container) ──────────────────────
@@ -748,22 +812,65 @@ def _resolve_path(obj: Any, segments: list[tuple[str, Any]]) -> Any:
 
         elif stype == "filter_key":
             # [key=text], [key=*glob*], or [key=/regex/] — filter dicts
+            # Key name supports glob: [*=faq] matches any key with value "faq"
             fkey, pattern = sval
             _fmatch = _build_matcher(pattern)
+            _kmatch = _build_matcher(fkey) if "*" in fkey else None
+
+            def _dict_matches(d: dict) -> bool:
+                if _kmatch:
+                    return any(_fmatch(v) for k, v in d.items() if _kmatch(k))
+                return fkey in d and _fmatch(d[fkey])
+
             if isinstance(cur, list):
-                filtered = []
-                for item in cur:
-                    if isinstance(item, dict) and fkey in item and _fmatch(item[fkey]):
-                        filtered.append(item)
+                filtered = [item for item in cur if isinstance(item, dict) and _dict_matches(item)]
                 cur = filtered if filtered else None
                 if cur is None:
                     return None
             elif isinstance(cur, dict):
-                if fkey in cur and _fmatch(cur[fkey]):
-                    pass  # keep cur as-is
-                else:
+                if not _dict_matches(cur):
                     return None
             else:
+                return None
+
+        elif stype == "filter_value_not":
+            # [!=pattern] — keep values NOT matching
+            _fmatch = _build_matcher(sval)
+            if isinstance(cur, list):
+                cur = [v for v in cur if v is not None and not _fmatch(v)]
+                if not cur:
+                    return None
+            elif cur is not None and _fmatch(cur):
+                return None
+
+        elif stype == "filter_key_not":
+            # [key!=pattern] — keep dicts where key does NOT match
+            fkey, pattern = sval
+            _fmatch = _build_matcher(pattern)
+            _kmatch = _build_matcher(fkey) if "*" in fkey else None
+
+            def _dict_excludes(d: dict) -> bool:
+                if _kmatch:
+                    return not any(_fmatch(v) for k, v in d.items() if _kmatch(k))
+                return fkey not in d or not _fmatch(d[fkey])
+
+            if isinstance(cur, list):
+                filtered = [item for item in cur if isinstance(item, dict) and _dict_excludes(item)]
+                cur = filtered if filtered else None
+                if cur is None:
+                    return None
+            elif isinstance(cur, dict):
+                if not _dict_excludes(cur):
+                    return None
+            else:
+                return None
+
+        # ── Context expansion (go up in the tree) ────────────────────────
+
+        elif stype == "context":
+            ancestors = _find_value_ancestors(root, cur, sval)
+            cur = ancestors if ancestors else None
+            if cur is None:
                 return None
 
     # Final auto-parse: if the result is a JSON string, parse it
