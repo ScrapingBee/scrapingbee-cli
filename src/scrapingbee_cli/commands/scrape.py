@@ -88,7 +88,7 @@ SCRAPE_PRESETS = (
     "--scraping-config",
     type=str,
     default=None,
-    help="Apply a pre-saved scraping configuration by name. Create configs in the ScrapingBee dashboard. Inline options override config settings.",
+    help="Apply a pre-saved scraping configuration by name. Create configs in the ScrapingBee dashboard. Inline options and --preset override config settings.",
 )
 @click.option(
     "--force-extension",
@@ -359,7 +359,7 @@ def scrape_cmd(
     """Scrape a web page using the HTML API.
 
     Usage: scrapingbee scrape [URL] [OPTIONS].     Use --output-file FILE (before or after command) to save output. For batch,
-    use global --input-file with one URL per line (before or after command). Use --preset for common option sets
+    use --input-file with one URL per line (before or after command). Use --preset for common option sets
     (e.g. screenshot-and-html, fetch, extract-links, scroll-page). Default response
     is raw HTML (or image if screenshot).
     Use --json-response true to wrap body, headers, and cost in JSON (required when
@@ -367,8 +367,11 @@ def scrape_cmd(
     """
     store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
-    if not input_file and not url:
-        click.echo("expected one URL argument, or use global --input-file for batch", err=True)
+    if not input_file and not url and not scraping_config:
+        click.echo(
+            "expected one URL argument, --scraping-config, or --input-file for batch",
+            err=True,
+        )
         raise SystemExit(1)
 
     if url:
@@ -480,8 +483,8 @@ def scrape_cmd(
         click.echo(str(e), err=True)
         raise SystemExit(1)
 
-    scrape_kwargs["retries"] = obj.get("retries", 3) or 3
-    scrape_kwargs["backoff"] = obj.get("backoff", 2.0) or 2.0
+    scrape_kwargs["retries"] = obj.get("retries") if obj.get("retries") is not None else 3
+    scrape_kwargs["backoff"] = obj.get("backoff") if obj.get("backoff") is not None else 2.0
 
     _validate_range("session_id", session_id, 0, 10_000_000)
     _validate_range("timeout", timeout, 1000, 140_000, "ms")
@@ -495,7 +498,7 @@ def scrape_cmd(
 
     if input_file:
         if url:
-            click.echo("cannot use both global --input-file and positional URL", err=True)
+            click.echo("cannot use both --input-file and positional URL", err=True)
             raise SystemExit(1)
         try:
             inputs = read_input_file(input_file, input_column=obj.get("input_column"))
@@ -511,6 +514,13 @@ def scrape_cmd(
             raise SystemExit(1)
         concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
 
+        if obj.get("resume") and not obj.get("output_dir"):
+            click.echo(
+                "--resume requires --output-dir to find previously completed items. "
+                "Run `scrapingbee --resume` to discover incomplete batches.",
+                err=True,
+            )
+            raise SystemExit(1)
         skip_n = (
             _find_completed_n(obj.get("output_dir") or "") if obj.get("resume") else frozenset()
         )
@@ -544,14 +554,26 @@ def scrape_cmd(
                         if chunk_size > 0:
                             data = _apply_chunking(u, data, chunk_size, chunk_overlap)
                             return data, resp_headers, status_code, None, "ndjson"
+                        # extract-rules always returns JSON — force .json extension so
+                        # URL path (e.g. index.html) doesn't override the file name.
+                        if extract_rules or ai_extract_rules:
+                            return data, resp_headers, status_code, None, "json"
                         return data, resp_headers, status_code, None, None
                     except Exception as e:
                         return b"", {}, 0, e, None
 
-                output_format = obj.get("output_format", "files")
+                output_format = obj.get("output_format")
                 post_process = obj.get("post_process")
+                output_file = obj.get("output_file")
 
                 ndjson_pp = post_process if output_format == "ndjson" else None
+                ndjson_fh = None
+                if output_format == "ndjson" and output_file:
+                    try:
+                        ndjson_fh = open(output_file, "w", encoding="utf-8")
+                    except OSError as e:
+                        click.echo(f"Cannot write to '{output_file}': {e.strerror}", err=True)
+                        raise SystemExit(1)
 
                 def _ndjson_cb(result):
                     from ..batch import apply_post_process, write_ndjson_line
@@ -572,23 +594,60 @@ def scrape_cmd(
                             fetched_at=result.fetched_at,
                             latency_ms=result.latency_ms,
                         )
-                    write_ndjson_line(result)
+                    write_ndjson_line(result, fh=ndjson_fh, fields=obj.get("fields"))
 
                 on_result_cb = _ndjson_cb if output_format == "ndjson" else None
-                results = await run_batch_async(
-                    inputs,
-                    concurrency,
-                    do_one,
-                    from_user=obj["concurrency"] > 0,
-                    skip_n=skip_n,
-                    show_progress=obj.get("progress", True),
-                    on_result=on_result_cb,
-                )
+                try:
+                    results = await run_batch_async(
+                        inputs,
+                        concurrency,
+                        do_one,
+                        from_user=obj["concurrency"] > 0,
+                        skip_n=skip_n,
+                        show_progress=obj.get("progress", True),
+                        on_result=on_result_cb,
+                    )
+                except BaseException:
+                    if ndjson_fh:
+                        ndjson_fh.close()
+                    raise
 
+            # Apply smart-extract / extract-field / fields to batch results
+            smart_ext = obj.get("smart_extract")
+            extract_field = obj.get("extract_field")
+            fields = obj.get("fields")
+            if smart_ext:
+                from ..extract import smart_extract as _smart_extract_fn
+
+                for r in results:
+                    if r.body and not r.error and not r.skipped:
+                        r.body = _smart_extract_fn(r.body, smart_ext)
+            elif extract_field:
+                from ..cli_utils import _extract_field_values
+
+                for r in results:
+                    if r.body and not r.error and not r.skipped:
+                        r.body = _extract_field_values(r.body, extract_field)
+            elif fields:
+                from ..cli_utils import _filter_fields
+
+                for r in results:
+                    if r.body and not r.error and not r.skipped:
+                        r.body = _filter_fields(r.body, fields)
+
+            out_dir = ""
+            out_file = ""
             if output_format == "ndjson":
+                if ndjson_fh:
+                    ndjson_fh.close()
                 succeeded = sum(1 for r in results if not r.error and not r.skipped)
                 failed = sum(1 for r in results if r.error and not r.skipped)
-                click.echo(f"Batch complete: {succeeded} succeeded, {failed} failed.", err=True)
+                out_file = output_file or ""
+                out_label = out_file or "<stdout>"
+                click.echo(
+                    f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_label}",
+                    err=True,
+                )
             elif output_format == "csv":
                 from ..batch import apply_post_process, write_batch_output_csv
 
@@ -596,24 +655,27 @@ def scrape_cmd(
                     for r in results:
                         if r.body and not r.error and not r.skipped:
                             r.body = apply_post_process(r.body, post_process)
-                out_path, succeeded, failed = write_batch_output_csv(
+                out_file, succeeded, failed = write_batch_output_csv(
                     results,
-                    obj.get("output_dir") or None,
+                    obj.get("output_file") or None,
+                    fields=obj.get("fields") or None,
                 )
                 click.echo(
-                    f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_path}",
+                    f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_file}",
+                    err=True,
                 )
             elif obj.get("update_csv") and input_file:
                 from ..batch import update_csv_with_results
 
-                out_path, succeeded, failed = update_csv_with_results(
+                out_file, succeeded, failed = update_csv_with_results(
                     input_file,
                     obj.get("input_column"),
                     results,
-                    obj.get("output_dir") or None,
+                    obj.get("output_file") or None,
                 )
                 click.echo(
-                    f"CSV updated: {succeeded} succeeded, {failed} failed. Output: {out_path}",
+                    f"CSV updated: {succeeded} succeeded, {failed} failed. Output: {out_file}",
+                    err=True,
                 )
             else:
                 out_dir, succeeded, failed = write_batch_output_to_dir(
@@ -624,35 +686,45 @@ def scrape_cmd(
                 )
                 click.echo(
                     f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_dir}",
+                    err=True,
                 )
-                on_complete = obj.get("on_complete")
-                if on_complete:
-                    from ..cli_utils import run_on_complete
 
-                    run_on_complete(
-                        on_complete, output_dir=out_dir, succeeded=succeeded, failed=failed
-                    )
+            on_complete = obj.get("on_complete")
+            if on_complete:
+                from ..cli_utils import run_on_complete
+
+                run_on_complete(
+                    on_complete,
+                    output_dir=out_dir,
+                    output_file=out_file,
+                    succeeded=succeeded,
+                    failed=failed,
+                )
             if failed:
                 raise SystemExit(1)
 
         asyncio.run(_batch())
         return
 
-    if not url:
-        click.echo("expected one URL argument, or use global --input-file for batch", err=True)
+    if not url and not scraping_config:
+        click.echo(
+            "expected one URL argument, --scraping-config, or --input-file for batch",
+            err=True,
+        )
         raise SystemExit(1)
 
     async def _single() -> None:
+        scrape_url = url or ""  # empty when using --scraping-config (API uses config's URL)
         async with Client(key, BASE_URL, timeout=client_timeout) as client:
             if escalate_proxy:
                 data, resp_headers, status_code = await scrape_with_escalation(
                     client,
-                    url,
+                    scrape_url,
                     scrape_kwargs,
                     verbose=obj["verbose"],
                 )
             else:
-                data, resp_headers, status_code = await client.scrape(url, **scrape_kwargs)
+                data, resp_headers, status_code = await client.scrape(scrape_url, **scrape_kwargs)
         if not scrape_kwargs.get("transparent_status_code") and status_code >= 400:
             click.echo(f"Error: HTTP {status_code}", err=True)
             try:
@@ -660,8 +732,31 @@ def scrape_cmd(
             except Exception:
                 click.echo(data.decode("utf-8", errors="replace"), err=True)
             raise SystemExit(1)
+        # Apply smart-extract / extract-field / fields before chunking or output
+        if obj.get("smart_extract"):
+            from ..extract import smart_extract
+
+            data = smart_extract(data, obj["smart_extract"])
+        elif obj.get("extract_field"):
+            from ..cli_utils import _extract_field_values
+
+            data = _extract_field_values(data, obj["extract_field"])
+        elif obj.get("fields"):
+            from ..cli_utils import _filter_fields
+
+            data = _filter_fields(data, obj["fields"])
         if chunk_size > 0:
-            data = _apply_chunking(url, data, chunk_size, chunk_overlap)
+            from ..batch import BINARY_FILE_EXTENSIONS, SCREENSHOT_EXTENSIONS, extension_for_scrape
+
+            ext = extension_for_scrape(resp_headers, data)
+            if ext in SCREENSHOT_EXTENSIONS | BINARY_FILE_EXTENSIONS | {"bin"}:
+                click.echo(
+                    f"Cannot chunk binary content (detected: {ext}). "
+                    "Use --return-page-markdown or --return-page-text for text output.",
+                    err=True,
+                )
+                raise SystemExit(1)
+            data = _apply_chunking(url or "", data, chunk_size, chunk_overlap)
             # Force .ndjson extension when chunking
             output_path = obj["output_file"]
             if output_path and "." not in os.path.basename(output_path):
@@ -675,7 +770,7 @@ def scrape_cmd(
                     output_path = output_path.rstrip("/") + "." + force_extension.lstrip(".")
             else:
                 preferred = _preferred_extension_from_scrape_params(scrape_kwargs)
-                ext = extension_for_crawl(url, resp_headers, data, preferred)
+                ext = extension_for_crawl(url or "", resp_headers, data, preferred)
                 if "." not in os.path.basename(output_path):
                     output_path = output_path.rstrip("/") + "." + ext
         write_output(
@@ -684,8 +779,6 @@ def scrape_cmd(
             status_code,
             output_path,
             obj["verbose"],
-            extract_field=obj.get("extract_field"),
-            fields=obj.get("fields"),
         )
 
     asyncio.run(_single())

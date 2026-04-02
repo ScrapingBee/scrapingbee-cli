@@ -6,8 +6,9 @@ import asyncio
 
 import click
 
+from ..batch import write_usage_file_cache
 from ..cli_utils import _output_options, store_common_options
-from ..client import Client, pretty_json
+from ..client import Client, parse_usage, pretty_json
 from ..config import BASE_URL, get_api_key
 
 
@@ -22,8 +23,8 @@ def usage_cmd(obj: dict, **kwargs) -> None:
     except ValueError as e:
         click.echo(str(e), err=True)
         raise SystemExit(1)
-    retries = obj.get("retries", 3) or 3
-    backoff = obj.get("backoff", 2.0) or 2.0
+    retries = int(obj.get("retries") or 3)
+    backoff = float(obj.get("backoff") or 2.0)
 
     async def _run() -> None:
         async with Client(key, BASE_URL) as client:
@@ -34,6 +35,8 @@ def usage_cmd(obj: dict, **kwargs) -> None:
                     err=True,
                 )
                 raise SystemExit(1)
+            # Warm the shared file cache so concurrent batch subprocesses skip the API call.
+            write_usage_file_cache(key, parse_usage(data))
             output_file = obj.get("output_file")
             if output_file:
                 with open(output_file, "w", encoding="utf-8") as f:

@@ -343,6 +343,12 @@ def create_fixtures() -> dict[str, str]:
         ("crawl_cc_dir", "/tmp/sb_crawl_cc"),
         ("crawl_allowed_dir", "/tmp/sb_crawl_allowed"),
         ("noprog_dir", "/tmp/sb_noprog"),
+        ("crawl_include_dir", "/tmp/sb_crawl_include"),
+        ("crawl_exclude_dir", "/tmp/sb_crawl_exclude"),
+        ("crawl_save_dir", "/tmp/sb_crawl_save"),
+        ("crawl_sitemap_dir", "/tmp/sb_crawl_sitemap"),
+        ("crawl_delay_dir", "/tmp/sb_crawl_delay"),
+        ("crawl_external_dir", "/tmp/sb_crawl_external"),
     ]:
         f[name] = path
         Path(path).mkdir(parents=True, exist_ok=True)
@@ -1807,6 +1813,7 @@ def build_tests(fx: dict[str, str]) -> list[Test]:
                 "true",
                 "--output-file",
                 "/tmp/sb_fx_fullpage.png",
+                "--overwrite",
             ],
             combined_checks(exit_ok()),
         ),
@@ -1833,6 +1840,122 @@ def build_tests(fx: dict[str, str]) -> list[Test]:
             "google --verbose shows exact Credit Cost",
             ["google", "test", "--verbose"],
             combined_checks(exit_ok(), stderr_contains("Credit Cost: 10")),
+        ),
+    ]
+
+    # ── MX: previously missing coverage ───────────────────────────────────────
+    tests += [
+        # scrape --escalate-proxy (200 response → no escalation needed, just passes through)
+        Test(
+            "MX-01",
+            "scrape --escalate-proxy (no error on clean response)",
+            ["scrape", "https://httpbin.org/json", "--escalate-proxy"],
+            combined_checks(exit_ok(), stdout_contains("slideshow")),
+        ),
+        # crawl --include-pattern (only save pages matching pattern)
+        Test(
+            "MX-02",
+            "crawl --include-pattern",
+            [
+                "crawl",
+                "https://books.toscrape.com",
+                "--output-dir",
+                fx["crawl_include_dir"],
+                "--max-pages",
+                "3",
+                "--include-pattern",
+                r"books\.toscrape\.com",
+            ],
+            manifest_in(fx["crawl_include_dir"], 1),
+            timeout=120,
+        ),
+        # crawl --exclude-pattern (skip pages matching pattern)
+        Test(
+            "MX-03",
+            "crawl --exclude-pattern",
+            [
+                "crawl",
+                "https://books.toscrape.com",
+                "--output-dir",
+                fx["crawl_exclude_dir"],
+                "--max-pages",
+                "3",
+                "--exclude-pattern",
+                r"catalogue/category",
+            ],
+            combined_checks(exit_ok()),
+            timeout=120,
+        ),
+        # crawl --save-pattern (only save pages whose URL matches)
+        Test(
+            "MX-04",
+            "crawl --save-pattern",
+            [
+                "crawl",
+                "https://books.toscrape.com",
+                "--output-dir",
+                fx["crawl_save_dir"],
+                "--max-pages",
+                "4",
+                "--save-pattern",
+                r"books\.toscrape\.com/$",
+            ],
+            combined_checks(exit_ok()),
+            timeout=120,
+        ),
+        # crawl --download-delay (just verify no error)
+        Test(
+            "MX-05",
+            "crawl --download-delay",
+            [
+                "crawl",
+                "https://books.toscrape.com",
+                "--output-dir",
+                fx["crawl_delay_dir"],
+                "--max-pages",
+                "2",
+                "--download-delay",
+                "1.0",
+            ],
+            combined_checks(exit_ok()),
+            timeout=120,
+        ),
+        # crawl --allow-external-domains (follow links outside seed domain)
+        Test(
+            "MX-06",
+            "crawl --allow-external-domains (no error)",
+            [
+                "crawl",
+                "https://books.toscrape.com",
+                "--output-dir",
+                fx["crawl_external_dir"],
+                "--max-pages",
+                "2",
+                "--allow-external-domains",
+            ],
+            combined_checks(exit_ok()),
+            timeout=120,
+        ),
+        # youtube-search --type movie
+        Test(
+            "MX-07",
+            "youtube-search --type movie",
+            ["youtube-search", "classic film", "--type", "movie"],
+            combined_checks(exit_ok(), json_key_either("organic_results", "results")),
+        ),
+        # amazon-search --autoselect-variant true
+        Test(
+            "MX-08",
+            "amazon-search --autoselect-variant true",
+            ["amazon-search", "laptop", "--autoselect-variant", "true"],
+            combined_checks(exit_ok(), json_key_either("organic_results", "results", "products")),
+        ),
+        # schedule --list (no schedules active, should print empty list)
+        Test(
+            "MX-09",
+            "schedule --list",
+            ["schedule", "--list"],
+            combined_checks(exit_ok()),
         ),
     ]
 

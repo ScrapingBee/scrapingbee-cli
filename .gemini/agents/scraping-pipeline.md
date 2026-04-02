@@ -120,5 +120,4 @@ scrapingbee schedule --every 1d --name my-tracker \
 
 ## Full command reference
 
-See the full ScrapingBee CLI skill at `SKILL.md` (two levels up) for all options and
-parameter details.
+See `AGENTS.md` at the project root for full options, parameters, and reference details.

@@ -29,6 +29,9 @@ test_failures/
 # CLI output (regenerated on every run)
 batch_*/
 crawl_*/
+tutorial-out/
+usage_cache.json
+TEST_RESULTS.md
 
 # IDE
 .idea/

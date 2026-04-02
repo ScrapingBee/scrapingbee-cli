@@ -29,7 +29,13 @@ import click
     "--flatten",
     is_flag=True,
     default=False,
-    help="CSV: recursively flatten nested dicts to dot-notation columns (e.g. buybox.price).",
+    help="CSV: recursively flatten nested dicts to dot-notation columns (e.g. buybox.price). Max depth 5 by default.",
+)
+@click.option(
+    "--flatten-depth",
+    type=int,
+    default=None,
+    help="CSV: max nesting depth for --flatten (default: 5). Use higher values for deeply nested data.",
 )
 @click.option(
     "--deduplicate",
@@ -51,15 +57,23 @@ import click
     default=None,
     help="Write output to file instead of stdout.",
 )
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    default=False,
+    help="Overwrite output file without prompting.",
+)
 @click.pass_obj
 def export_cmd(
     obj: dict,
     input_dir: str,
     fmt: str,
     flatten: bool,
+    flatten_depth: int | None,
     deduplicate_rows: bool,
     columns: str | None,
     output_file: str | None,
+    overwrite: bool,
 ) -> None:
     """Merge numbered output files from a batch or crawl into a single stream.
 
@@ -78,6 +92,11 @@ def export_cmd(
         obj["output_file"] = output_file
     input_path = Path(input_dir).resolve()
     output_file = obj.get("output_file")
+
+    # Check if output file already exists
+    from ..cli_utils import confirm_overwrite
+
+    confirm_overwrite(output_file, overwrite)
 
     # Load manifest for URL → relative-path mapping (optional)
     # Supports both old format (string values) and new format (dict values with "file" key).
@@ -121,6 +140,7 @@ def export_cmd(
             file_to_url,
             output_file,
             flatten=flatten,
+            flatten_depth=flatten_depth,
             deduplicate_rows=deduplicate_rows,
             columns=columns,
         )
@@ -162,8 +182,13 @@ def export_cmd(
         output = output.rstrip("\n")
 
     if output_file:
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(output + "\n")
+        try:
+            fh = open(output_file, "w", encoding="utf-8")
+        except OSError as e:
+            click.echo(f"Cannot write to '{output_file}': {e.strerror}", err=True)
+            raise SystemExit(1)
+        with fh:
+            fh.write(output + "\n")
         click.echo(f"Exported {len(entries)} files to {output_file}", err=True)
     else:
         click.echo(output)
@@ -206,31 +231,60 @@ def _flatten_value(v: object) -> str:
     return str(v)
 
 
-def _flatten_dict(d: dict, prefix: str = "", sep: str = ".") -> dict[str, str]:
+def _max_nesting_depth(d: dict, current: int = 0) -> int:
+    """Return the maximum nesting depth of a dict/list structure."""
+    max_d = current
+    for v in d.values():
+        if isinstance(v, dict):
+            max_d = max(max_d, _max_nesting_depth(v, current + 1))
+        elif isinstance(v, list):
+            for item in v:
+                if isinstance(item, dict):
+                    max_d = max(max_d, _max_nesting_depth(item, current + 1))
+    return max_d
+
+
+_DEFAULT_FLATTEN_DEPTH = 5
+
+
+def _flatten_dict(
+    d: dict,
+    prefix: str = "",
+    sep: str = ".",
+    max_depth: int = _DEFAULT_FLATTEN_DEPTH,
+    _depth: int = 0,
+) -> dict[str, str]:
     """Recursively flatten a nested dict into dot-notation keys with scalar string values.
     Lists of scalars are joined with ' | '. Lists of dicts are indexed:
-    buybox.0.price, buybox.0.seller_name, buybox.1.price, etc."""
+    buybox.0.price, buybox.0.seller_name, buybox.1.price, etc.
+    Stops at max_depth — remaining nested values are JSON-encoded."""
     result: dict[str, str] = {}
     for k, v in d.items():
         key = f"{prefix}{sep}{k}" if prefix else k
         if isinstance(v, dict):
-            result.update(_flatten_dict(v, key, sep))
+            if _depth >= max_depth:
+                result[key] = json.dumps(v, ensure_ascii=False)
+            else:
+                result.update(_flatten_dict(v, key, sep, max_depth, _depth + 1))
         elif isinstance(v, list):
             if not v:
                 result[key] = ""
             elif any(isinstance(x, (dict, list)) for x in v):
-                # List contains dicts or nested lists — index-expand
-                for i, item in enumerate(v):
-                    if isinstance(item, dict):
-                        result.update(_flatten_dict(item, f"{key}.{i}", sep))
-                    elif isinstance(item, list):
-                        result[f"{key}.{i}"] = json.dumps(item, ensure_ascii=False)
-                    elif item is None:
-                        result[f"{key}.{i}"] = ""
-                    else:
-                        result[f"{key}.{i}"] = str(item)
+                if _depth >= max_depth:
+                    result[key] = json.dumps(v, ensure_ascii=False)
+                else:
+                    for i, item in enumerate(v):
+                        if isinstance(item, dict):
+                            result.update(
+                                _flatten_dict(item, f"{key}.{i}", sep, max_depth, _depth + 1)
+                            )
+                        elif isinstance(item, list):
+                            result[f"{key}.{i}"] = json.dumps(item, ensure_ascii=False)
+                        elif item is None:
+                            result[f"{key}.{i}"] = ""
+                        else:
+                            result[f"{key}.{i}"] = str(item)
             else:
-                # Plain list of scalars — keep as-is
                 result[key] = str(v)
         elif v is None:
             result[key] = ""
@@ -245,6 +299,7 @@ def _export_csv(
     output_file: str | None,
     *,
     flatten: bool = False,
+    flatten_depth: int | None = None,
     deduplicate_rows: bool = False,
     columns: str | None = None,
 ) -> None:
@@ -271,7 +326,19 @@ def _export_csv(
 
         for row in file_rows:
             if flatten:
-                flat = _flatten_dict(row)
+                depth = flatten_depth if flatten_depth is not None else _DEFAULT_FLATTEN_DEPTH
+                if flatten_depth is None:
+                    # Auto-detect: error if data exceeds default depth
+                    actual_depth = _max_nesting_depth(row)
+                    if actual_depth > _DEFAULT_FLATTEN_DEPTH:
+                        click.echo(
+                            f"Data nesting depth ({actual_depth}) exceeds default limit ({_DEFAULT_FLATTEN_DEPTH}). "
+                            f"Use --flatten-depth {actual_depth} to process all levels, "
+                            f"or a lower value to limit columns.",
+                            err=True,
+                        )
+                        raise SystemExit(1)
+                flat = _flatten_dict(row, max_depth=depth)
             else:
                 flat = {k: _flatten_value(v) for k, v in row.items()}
             if url:
@@ -298,6 +365,20 @@ def _export_csv(
     # Apply --columns filter
     if columns:
         selected = [c.strip() for c in columns.split(",") if c.strip()]
+        # Collect all available columns for error message
+        all_available: dict[str, None] = {}
+        for row in rows:
+            all_available.update({k: None for k in row if k != "_url"})
+        # Check if any selected columns exist in the data
+        valid_cols = [c for c in selected if c in all_available]
+        if not valid_cols:
+            available_list = ", ".join(all_available) if all_available else "(none)"
+            click.echo(
+                f"None of the specified columns exist: {', '.join(selected)}\n"
+                f"Available columns: {available_list}",
+                err=True,
+            )
+            raise SystemExit(1)
         # Drop rows that have none of the selected columns populated
         filtered = []
         for row in rows:
@@ -306,6 +387,12 @@ def _export_csv(
         dropped = len(rows) - len(filtered)
         if dropped:
             click.echo(f"Dropped {dropped} row(s) missing all selected columns.", err=True)
+        if not filtered:
+            click.echo(
+                "All rows were dropped — no rows contain the selected columns.",
+                err=True,
+            )
+            raise SystemExit(1)
         rows = filtered
         fieldnames = (["_url"] if any("_url" in r for r in rows) else []) + selected
     else:
@@ -322,8 +409,13 @@ def _export_csv(
     output = buf.getvalue()
 
     if output_file:
-        with open(output_file, "w", encoding="utf-8", newline="") as f:
-            f.write(output)
+        try:
+            fh = open(output_file, "w", encoding="utf-8", newline="")
+        except OSError as e:
+            click.echo(f"Cannot write to '{output_file}': {e.strerror}", err=True)
+            raise SystemExit(1)
+        with fh:
+            fh.write(output)
         click.echo(f"Exported {len(rows)} rows to {output_file}", err=True)
     else:
         click.echo(output, nl=False)

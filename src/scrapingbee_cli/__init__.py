@@ -3,14 +3,27 @@
 import platform
 import sys
 
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 
 
-def user_agent() -> str:
-    """Build a descriptive User-Agent string for API requests.
+def user_agent_headers() -> dict[str, str]:
+    """Build structured User-Agent headers for API requests.
 
-    Format: scrapingbee-cli/1.2.3 Python/3.12.0 (Darwin arm64)
+    Returns a dict of headers:
+        User-Agent: ScrapingBee/CLI
+        User-Agent-Client: scrapingbee-cli
+        User-Agent-Client-Version: 1.4.0
+        User-Agent-Environment: python
+        User-Agent-Environment-Version: 3.14.2
+        User-Agent-OS: Darwin arm64
     """
     py = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     os_info = f"{platform.system()} {platform.machine()}"
-    return f"scrapingbee-cli/{__version__} Python/{py} ({os_info})"
+    return {
+        "User-Agent": "ScrapingBee/CLI",
+        "User-Agent-Client": "scrapingbee-cli",
+        "User-Agent-Client-Version": __version__,
+        "User-Agent-Environment": "python",
+        "User-Agent-Environment-Version": py,
+        "User-Agent-OS": os_info,
+    }

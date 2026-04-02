@@ -16,6 +16,7 @@ scrapingbee export --output-file results.csv --input-dir products/ --format csv 
 | `--input-dir` | (Required) Batch or crawl output directory. |
 | `--format` | `ndjson` (default), `txt`, or `csv`. |
 | `--flatten` | CSV: recursively flatten nested dicts to dot-notation columns. |
+| `--flatten-depth` | int | CSV: max nesting depth for `--flatten` (default: 5). Use higher values for deeply nested data. |
 | `--columns` | CSV: comma-separated column names to include. Rows missing all selected columns are dropped. |
 | `--deduplicate` | CSV: remove duplicate rows. |
 | `--output-file` | Write to file instead of stdout. |
@@ -26,7 +27,7 @@ scrapingbee export --output-file results.csv --input-dir products/ --format csv 
 
 **csv output:** Flattens JSON files into tabular rows. For API responses that contain a list (e.g. `organic_results`, `products`, `results`), each list item becomes a row. For single-object responses (e.g. a product page), the object itself is one row. Use `--flatten` to expand nested dicts into dot-notation columns. Use `--columns` to select specific fields and drop incomplete rows. `_url` column is added when `manifest.json` is present.
 
-**manifest.json (batch and crawl):** Both `scrape` batch runs and `crawl` write `manifest.json` to the output directory. Format: `{"<input>": {"file": "N.ext", "fetched_at": "<ISO-8601 UTC>", "http_status": 200, "credits_used": 5, "latency_ms": 1234, "content_md5": "<md5>"}}`. Useful for audit trails and monitoring workflows. The `export` command reads both old (plain string values) and new (dict values) manifest formats.
+**manifest.json (batch and crawl):** Both `scrape` batch runs and `crawl` write `manifest.json` to the output directory. Format: `{"<input>": {"file": "N.ext", "fetched_at": "<ISO-8601 UTC>", "http_status": 200, "credits_used": 5, "latency_ms": 1234, "content_sha256": "<sha256>"}}`. Useful for audit trails and monitoring workflows. The `export` command reads both old (plain string values) and new (dict values) manifest formats.
 
 ## Resume an interrupted batch
 

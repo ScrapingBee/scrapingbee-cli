@@ -444,6 +444,9 @@ class TestCommandHelpOutput:
             "--hdr",
             "--location",
             "--vr180",
+            "--360",
+            "--3d",
+            "--purchased",
         ):
             assert flag in out, f"{flag} should appear in youtube-search --help"
         # Option groups
@@ -469,6 +472,8 @@ class TestCommandHelpOutput:
             "--device",
             "--domain",
             "--delivery-zip",
+            "--fulfillment-type",
+            "--store-id",
         ):
             assert param in out, f"{param} should appear in walmart-search --help"
         assert "best-match" in out
@@ -510,6 +515,8 @@ class TestCommandHelpOutput:
             "--device",
             "--domain",
             "--category-id",
+            "--merchant-id",
+            "--autoselect-variant",
         ):
             assert param in out, f"{param} should appear in amazon-search --help"
         assert "price-low-to-high" in out
@@ -543,6 +550,12 @@ class TestCommandHelpOutput:
             "--ai-query",
             "--return-page-markdown",
             "--allowed-domains",
+            "--include-pattern",
+            "--exclude-pattern",
+            "--save-pattern",
+            "--autothrottle",
+            "--download-delay",
+            "--allow-external-domains",
         ):
             assert param in out, f"{param} should appear in crawl --help"
 
@@ -561,7 +574,8 @@ class TestCommandHelpOutput:
 
         code, out, _ = cli_run(["schedule", "--help"])
         assert code == 0
-        assert "--every" in out, "--every should appear in schedule --help"
+        for param in ("--every", "--name", "--stop", "--list"):
+            assert param in out, f"{param} should appear in schedule --help"
 
     def test_usage_help(self):
         from tests.conftest import cli_run
@@ -592,6 +606,7 @@ class TestCommandHelpOutput:
             "--method",
             "--data",
             "--session-id",
+            "--escalate-proxy",
         ):
             assert param in out, f"{param} should appear in scrape --help"
 
@@ -636,3 +651,69 @@ class TestCommandHelpOutput:
             "docs",
         ):
             assert cmd in out, f"command {cmd!r} should appear in global --help"
+
+    def test_docs_help(self):
+        from tests.conftest import cli_run
+
+        code, out, _ = cli_run(["docs", "--help"])
+        assert code == 0
+        assert "--open" in out, "--open should appear in docs --help"
+
+    def test_auth_help_includes_unsafe(self):
+        from tests.conftest import cli_run
+
+        code, out, err = cli_run(["auth", "--help"])
+        assert code == 0
+        assert "--api-key" in out, "--api-key should appear in auth --help"
+        assert "--show" in out, "--show should appear in auth --help"
+
+    def test_youtube_search_type_includes_movie(self):
+        assert "movie" in YOUTUBE_TYPE
+
+    def test_youtube_search_purchased_flag_in_help(self):
+        from tests.conftest import cli_run
+
+        code, out, _ = cli_run(["youtube-search", "--help"])
+        assert code == 0
+        assert "--purchased" in out
+
+
+class TestDocsCommand:
+    """Tests for the docs command."""
+
+    def test_docs_prints_url(self):
+
+        from click.testing import CliRunner
+
+        from scrapingbee_cli.commands.auth import docs_cmd
+
+        runner = CliRunner()
+        result = runner.invoke(docs_cmd, [])
+        assert result.exit_code == 0
+        assert "scrapingbee.com" in result.output
+
+    def test_docs_open_calls_webbrowser(self):
+        from unittest.mock import patch
+
+        from click.testing import CliRunner
+
+        from scrapingbee_cli.commands.auth import DOCS_URL, docs_cmd
+
+        runner = CliRunner()
+        with patch("webbrowser.open") as mock_open:
+            result = runner.invoke(docs_cmd, ["--open"])
+        assert result.exit_code == 0
+        mock_open.assert_called_once_with(DOCS_URL)
+
+    def test_docs_no_open_skips_webbrowser(self):
+        from unittest.mock import patch
+
+        from click.testing import CliRunner
+
+        from scrapingbee_cli.commands.auth import docs_cmd
+
+        runner = CliRunner()
+        with patch("webbrowser.open") as mock_open:
+            result = runner.invoke(docs_cmd, [])
+        assert result.exit_code == 0
+        mock_open.assert_not_called()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from scrapingbee_cli.crawl import (
+    _NON_HTML_URL_EXTENSIONS,
     _body_from_json_response,
     _extract_hrefs_from_body,
     _extract_hrefs_from_response,
@@ -10,6 +11,7 @@ from scrapingbee_cli.crawl import (
     _param_truthy,
     _params_for_discovery,
     _preferred_extension_from_scrape_params,
+    _requires_discovery_phase,
     default_crawl_output_dir,
 )
 
@@ -331,6 +333,166 @@ class TestSpiderSaveResponse:
         entry = spider._url_file_map["https://example.com/page"]
         for field in ("file", "fetched_at", "http_status", "credits_used", "latency_ms"):
             assert field in entry, f"Missing field {field!r}"
+
+
+class TestRequiresDiscoveryPhase:
+    """Tests for _requires_discovery_phase()."""
+
+    def test_extract_rules_requires_discovery(self):
+        assert _requires_discovery_phase({"extract_rules": '{"price": ".price"}'}) is True
+
+    def test_ai_extract_rules_requires_discovery(self):
+        assert _requires_discovery_phase({"ai_extract_rules": '{"title": "h1"}'}) is True
+
+    def test_ai_query_requires_discovery(self):
+        assert _requires_discovery_phase({"ai_query": "What is the main heading?"}) is True
+
+    def test_return_page_text_requires_discovery(self):
+        assert _requires_discovery_phase({"return_page_text": "true"}) is True
+
+    def test_screenshot_without_json_response_requires_discovery(self):
+        assert _requires_discovery_phase({"screenshot": "true"}) is True
+
+    def test_screenshot_with_json_response_does_not_require_discovery(self):
+        # json_response wraps the HTML body — links can be extracted from it
+        assert _requires_discovery_phase({"screenshot": "true", "json_response": "true"}) is False
+
+    def test_plain_render_js_does_not_require_discovery(self):
+        assert _requires_discovery_phase({"render_js": "true"}) is False
+
+    def test_json_response_alone_does_not_require_discovery(self):
+        # json_response wraps HTML body field — still linkable
+        assert _requires_discovery_phase({"json_response": "true"}) is False
+
+    def test_empty_params_does_not_require_discovery(self):
+        assert _requires_discovery_phase({}) is False
+
+    def test_return_page_markdown_does_not_require_discovery(self):
+        # Markdown responses are handled by _MARKDOWN_LINK_RE — no discovery needed if links present
+        assert _requires_discovery_phase({"return_page_markdown": "true"}) is False
+
+
+class TestNonHtmlUrlExtensions:
+    """Tests for the _NON_HTML_URL_EXTENSIONS set and its use in parse()."""
+
+    def test_image_extensions_are_binary(self):
+        for ext in ("jpg", "jpeg", "png", "gif", "webp", "svg", "ico"):
+            assert ext in _NON_HTML_URL_EXTENSIONS, f"{ext!r} should be in _NON_HTML_URL_EXTENSIONS"
+
+    def test_download_extensions_are_binary(self):
+        for ext in ("pdf", "zip"):
+            assert ext in _NON_HTML_URL_EXTENSIONS
+
+    def test_web_asset_extensions_are_binary(self):
+        for ext in ("css", "js"):
+            assert ext in _NON_HTML_URL_EXTENSIONS
+
+    def test_html_like_extensions_not_in_set(self):
+        # These can contain <a href> links and must NOT be skipped
+        for ext in ("html", "htm", "asp", "aspx", "php", "xml", "md", "txt", "json"):
+            assert ext not in _NON_HTML_URL_EXTENSIONS, (
+                f"{ext!r} must not be in _NON_HTML_URL_EXTENSIONS"
+            )
+
+    def _make_response(self, url: str, body: bytes, depth: int = 0):
+        from scrapy.http import HtmlResponse, Request
+
+        response = HtmlResponse(url, body=body, encoding="utf-8")
+        response.request = Request(url, meta={"depth": depth})
+        return response
+
+    def test_parse_skips_discovery_for_image_url(self):
+        """parse() must NOT yield a discovery request when the URL is a known binary type."""
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        spider = GenericScrapingBeeSpider(
+            start_urls=["https://example.com"],
+            scrape_params={"extract_rules": '{"price": ".price"}'},
+            output_dir=None,
+        )
+        # Simulate fetching a JPEG URL that returns no links (binary body)
+        response = self._make_response(
+            "https://example.com/hero.jpg",
+            b"\xff\xd8\xff\xe0",  # JPEG magic bytes
+        )
+        requests = list(spider.parse(response))
+        # Must yield nothing — no discovery re-request for binary URLs
+        assert requests == [], f"Expected no requests for binary URL, got {requests}"
+
+    def test_parse_still_fires_discovery_for_html_url_with_no_links(self):
+        """parse() must still yield a discovery request for HTML-like URLs with no links."""
+        from scrapy_scrapingbee import ScrapingBeeRequest
+
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        spider = GenericScrapingBeeSpider(
+            start_urls=["https://example.com"],
+            scrape_params={"extract_rules": '{"price": ".price"}'},
+            output_dir=None,
+        )
+        # JSON response body (from extract_rules) has no links
+        response = self._make_response(
+            "https://example.com/product",  # no binary extension → should fire discovery
+            b'{"price": "$9.99"}',
+        )
+        requests = list(spider.parse(response))
+        assert len(requests) == 1
+        assert isinstance(requests[0], ScrapingBeeRequest)
+        assert requests[0].callback == spider._parse_discovery_links_only
+
+    def test_parse_skips_discovery_for_css_url(self):
+        """CSS files never contain HTML links — discovery must be skipped."""
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        spider = GenericScrapingBeeSpider(
+            start_urls=["https://example.com"],
+            scrape_params={},
+            output_dir=None,
+        )
+        response = self._make_response(
+            "https://example.com/styles/main.css",
+            b"body { color: red; }",
+        )
+        requests = list(spider.parse(response))
+        assert requests == []
+
+
+class TestExtractHrefsExceptionHandling:
+    """Tests that _extract_hrefs_from_response handles non-HTML gracefully."""
+
+    def _make_response(self, url: str, body: bytes):
+        from scrapy.http import HtmlResponse, Request
+
+        response = HtmlResponse(url, body=body, encoding="utf-8")
+        response.request = Request(url, meta={"depth": 0})
+        return response
+
+    def test_binary_body_returns_empty_list(self):
+        """Binary bodies (images, PDFs) must return [] without raising."""
+        response = self._make_response(
+            "https://example.com/photo.jpg",
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",  # PNG magic bytes
+        )
+        result = _extract_hrefs_from_response(response)
+        assert isinstance(result, list)
+
+    def test_json_extract_rules_body_returns_empty_list(self):
+        """JSON from extract_rules has no HTML links — must return []."""
+        response = self._make_response(
+            "https://example.com/product",
+            b'{"price": "$9.99", "title": "Widget"}',
+        )
+        result = _extract_hrefs_from_response(response)
+        assert result == []
+
+    def test_plain_text_body_returns_empty_list(self):
+        """Plain text from return_page_text has no links — must return []."""
+        response = self._make_response(
+            "https://example.com/page",
+            b"This is just plain text with no links.",
+        )
+        result = _extract_hrefs_from_response(response)
+        assert result == []
 
 
 class TestDefaultCrawlOutputDir:

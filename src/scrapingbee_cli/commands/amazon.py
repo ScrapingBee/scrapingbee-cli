@@ -93,7 +93,7 @@ def amazon_product_cmd(
 
     if input_file:
         if asin:
-            click.echo("cannot use both global --input-file and positional ASIN", err=True)
+            click.echo("cannot use both --input-file and positional ASIN", err=True)
             raise SystemExit(1)
         try:
             inputs = read_input_file(input_file, input_column=obj.get("input_column"))
@@ -125,8 +125,8 @@ def amazon_product_cmd(
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
-                retries=obj.get("retries", 3) or 3,
-                backoff=obj.get("backoff", 2.0) or 2.0,
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
             )
 
         run_api_batch(
@@ -140,15 +140,18 @@ def amazon_product_cmd(
             show_progress=obj.get("progress", True),
             api_call=api_call,
             on_complete=obj.get("on_complete"),
-            output_format=obj.get("output_format", "files"),
+            output_format=obj.get("output_format"),
             post_process=obj.get("post_process"),
             update_csv_path=input_file if obj.get("update_csv") else None,
             input_column=obj.get("input_column"),
+            output_file=obj.get("output_file") or None,
+            extract_field=obj.get("extract_field"),
+            fields=obj.get("fields"),
         )
         return
 
     if not asin:
-        click.echo("expected one ASIN, or use global --input-file for batch", err=True)
+        click.echo("expected one ASIN, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
     async def _single() -> None:
@@ -164,8 +167,8 @@ def amazon_product_cmd(
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
-                retries=obj.get("retries", 3) or 3,
-                backoff=obj.get("backoff", 2.0) or 2.0,
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
             )
         check_api_response(data, status_code)
         from ..credits import amazon_credits
@@ -176,6 +179,7 @@ def amazon_product_cmd(
             status_code,
             obj["output_file"],
             obj["verbose"],
+            smart_extract=obj.get("smart_extract"),
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
             command="amazon-product",
@@ -255,7 +259,7 @@ def amazon_search_cmd(
 
     if input_file:
         if query:
-            click.echo("cannot use both global --input-file and positional query", err=True)
+            click.echo("cannot use both --input-file and positional query", err=True)
             raise SystemExit(1)
         try:
             inputs = read_input_file(input_file, input_column=obj.get("input_column"))
@@ -293,8 +297,8 @@ def amazon_search_cmd(
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
-                retries=obj.get("retries", 3) or 3,
-                backoff=obj.get("backoff", 2.0) or 2.0,
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
             )
 
         run_api_batch(
@@ -308,15 +312,18 @@ def amazon_search_cmd(
             show_progress=obj.get("progress", True),
             api_call=api_call,
             on_complete=obj.get("on_complete"),
-            output_format=obj.get("output_format", "files"),
+            output_format=obj.get("output_format"),
             post_process=obj.get("post_process"),
             update_csv_path=input_file if obj.get("update_csv") else None,
             input_column=obj.get("input_column"),
+            output_file=obj.get("output_file") or None,
+            extract_field=obj.get("extract_field"),
+            fields=obj.get("fields"),
         )
         return
 
     if not query:
-        click.echo("expected one search query, or use global --input-file for batch", err=True)
+        click.echo("expected one search query, or use --input-file for batch", err=True)
         raise SystemExit(1)
 
     async def _single() -> None:
@@ -338,8 +345,8 @@ def amazon_search_cmd(
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
-                retries=obj.get("retries", 3) or 3,
-                backoff=obj.get("backoff", 2.0) or 2.0,
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
             )
         check_api_response(data, status_code)
         from ..credits import amazon_credits
@@ -350,6 +357,7 @@ def amazon_search_cmd(
             status_code,
             obj["output_file"],
             obj["verbose"],
+            smart_extract=obj.get("smart_extract"),
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
             command="amazon-search",

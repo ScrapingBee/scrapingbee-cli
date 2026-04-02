@@ -82,9 +82,92 @@ def cli(ctx: click.Context) -> None:
 register_commands(cli)
 
 
+def _handle_resume() -> bool:
+    """Handle `scrapingbee --resume` — list incomplete batches. Returns True if handled."""
+    import sys
+
+    if "--resume" not in sys.argv or len(sys.argv) > 2:
+        return False
+    # Only handle bare `scrapingbee --resume`
+    if sys.argv[1:] != ["--resume"]:
+        return False
+
+    from .batch import find_incomplete_batches
+
+    batches = find_incomplete_batches()
+    if not batches:
+        click.echo("No incomplete batches found in current directory.", err=True)
+        return True
+
+    click.echo(f"Found {len(batches)} incomplete batch(es):\n", err=True)
+    for i, b in enumerate(batches, 1):
+        remaining = b["total"] - b["succeeded"]
+        click.echo(
+            f"  [{i}] {b['dir']}/  —  {b['succeeded']}/{b['total']} complete, "
+            f"{remaining} remaining",
+            err=True,
+        )
+        import shlex
+
+        cmd = b["command"]
+        if cmd and "--resume" not in cmd:
+            cmd += " --resume"
+        if cmd and "--output-dir" not in cmd:
+            cmd += f" --output-dir {shlex.quote(b['dir'])}"
+        if cmd:
+            click.echo(f"      {cmd}", err=True)
+        click.echo("", err=True)
+    return True
+
+
+def _handle_scraping_config() -> None:
+    """Handle `scrapingbee --scraping-config NAME [...]` — auto-route to scrape command."""
+    import sys
+
+    if "--scraping-config" not in sys.argv:
+        return
+    args = sys.argv[1:]
+    if not args:
+        return
+    # Check if a subcommand is already specified before --scraping-config
+    # Known subcommands that could appear first
+    commands = {
+        "scrape",
+        "crawl",
+        "google",
+        "fast-search",
+        "amazon-product",
+        "amazon-search",
+        "walmart-search",
+        "walmart-product",
+        "youtube-search",
+        "youtube-metadata",
+        "chatgpt",
+        "usage",
+        "auth",
+        "logout",
+        "docs",
+        "schedule",
+        "export",
+        "unsafe",
+    }
+    for a in args:
+        if a in commands:
+            return  # Subcommand already specified, let Click handle it
+        if a == "--scraping-config":
+            break  # --scraping-config comes before any subcommand
+    # No subcommand — inject "scrape" before the args
+    sys.argv = [sys.argv[0], "scrape"] + args
+
+
 def main() -> None:
     """Entry point for scrapingbee console script."""
+    import asyncio
     import sys
+
+    if _handle_resume():
+        sys.exit(0)
+    _handle_scraping_config()
 
     try:
         cli.main(standalone_mode=False)
@@ -93,6 +176,21 @@ def main() -> None:
         sys.exit(e.exit_code)
     except SystemExit as e:
         sys.exit(e.code if e.code is not None else 0)
+    except KeyboardInterrupt:
+        click.echo("\nInterrupted.", err=True)
+        sys.exit(130)
+    except OSError as e:
+        # Network errors, DNS failures, connection refused, etc.
+        click.echo(f"Connection error: {e}", err=True)
+        sys.exit(1)
+    except asyncio.TimeoutError:
+        click.echo("Request timed out. Check your internet connection or try again.", err=True)
+        sys.exit(1)
+    except Exception as e:
+        # Catch-all for unexpected errors — show a clean message, not a traceback
+        err_type = type(e).__name__
+        click.echo(f"Error: {err_type}: {e}", err=True)
+        sys.exit(1)
     else:
         sys.exit(0)
 

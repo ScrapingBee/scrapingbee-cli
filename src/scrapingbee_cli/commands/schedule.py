@@ -38,8 +38,14 @@ def _duration_to_cron(s: str) -> str:
                 "Cron does not support intervals shorter than 1 minute. Use 1m or higher.",
                 param_hint="'--every'",
             )
-        # Convert seconds to minutes
-        n = n // 60
+        minutes = n // 60
+        if n % 60 != 0:
+            click.echo(
+                f"Warning: cron only supports whole minutes. "
+                f"Rounding {n}s down to {minutes}m ({minutes * 60}s).",
+                err=True,
+            )
+        n = minutes
         unit = "m"
     if unit == "m":
         if n <= 0:
@@ -107,11 +113,33 @@ def _save_registry(registry: dict[str, dict]) -> None:
     _REGISTRY_FILE.write_text(json.dumps(registry, indent=2), encoding="utf-8")
 
 
+_SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+
+
+def _validate_schedule_name(name: str) -> None:
+    """Validate schedule name — alphanumeric, hyphens, underscores only."""
+    if not name or len(name) > 60:
+        click.echo(
+            "Schedule name must be 1-60 characters.",
+            err=True,
+        )
+        raise SystemExit(1)
+    if not _SAFE_NAME_RE.match(name):
+        click.echo(
+            f"Invalid schedule name: '{name}'. "
+            "Use only letters, numbers, hyphens, and underscores. Must start with a letter or number.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+
 def _auto_name(cmd_args: tuple[str, ...]) -> str:
     """Generate a schedule name from the command args."""
     parts = [a for a in cmd_args if not a.startswith("-")]
     if parts:
-        return "-".join(parts[:2])[:30]
+        raw = "-".join(parts[:2])[:30]
+        # Sanitize to safe characters
+        return re.sub(r"[^a-zA-Z0-9_-]", "-", raw).strip("-") or f"schedule-{os.getpid()}"
     return f"schedule-{os.getpid()}"
 
 
@@ -153,6 +181,8 @@ def _print_schedules(registry: dict[str, dict]) -> None:
 
 def _add_schedule(name: str, every: str, cmd_args: tuple[str, ...]) -> None:
     """Add a cron job for the schedule."""
+    _validate_schedule_name(name)
+
     from ..audit import log_exec
     from ..exec_gate import require_exec
 
@@ -160,7 +190,9 @@ def _add_schedule(name: str, every: str, cmd_args: tuple[str, ...]) -> None:
     exe = _find_scrapingbee()
 
     # Build the command (without schedule --every --name)
-    full_cmd = f"{exe} {' '.join(cmd_args)}"
+    import shlex
+
+    full_cmd = f"{exe} {' '.join(shlex.quote(a) for a in cmd_args)}"
 
     require_exec("schedule", full_cmd)
     log_exec("schedule", full_cmd)

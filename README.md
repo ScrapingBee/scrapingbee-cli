@@ -44,7 +44,7 @@ scrapingbee [command] [arguments] [options]
 - **`scrapingbee --help`** – List all commands.
 - **`scrapingbee [command] --help`** – Options and parameters for that command.
 
-**Options are per-command.** Each command has its own set of options — run `scrapingbee [command] --help` to see them. Common options across batch-capable commands include `--output-file`, `--output-dir`, `--input-file`, `--input-column`, `--concurrency`, `--output-format`, `--retries`, `--backoff`, `--resume`, `--update-csv`, `--no-progress`, `--extract-field`, `--fields`, `--deduplicate`, `--sample`, `--post-process`, `--on-complete`, `--scraping-config`, and `--verbose`. For details, see the [documentation](https://www.scrapingbee.com/documentation/).
+**Options are per-command.** Each command has its own set of options — run `scrapingbee [command] --help` to see them. Common options across batch-capable commands include `--output-file`, `--output-dir`, `--input-file`, `--input-column`, `--concurrency`, `--output-format`, `--overwrite`, `--retries`, `--backoff`, `--resume`, `--update-csv`, `--no-progress`, `--extract-field`, `--fields`, `--smart-extract`, `--deduplicate`, `--sample`, `--post-process`, `--on-complete`, `--scraping-config`, and `--verbose`. For details, see the [documentation](https://www.scrapingbee.com/documentation/).
 
 **Parameter values:** Choice parameters accept both hyphens and underscores interchangeably (e.g. `--sort-by price-low` and `--sort-by price_low` both work).
 
@@ -64,8 +64,9 @@ scrapingbee [command] [arguments] [options]
 | `chatgpt` | ChatGPT API (`--search true` for web-enhanced responses) |
 | `export` | Merge batch/crawl output to ndjson, txt, or csv (with --flatten, --columns) |
 | `schedule` | Schedule commands via cron (--name, --list, --stop) |
+| `tutorial` | Interactive step-by-step guide to CLI features (`--chapter N`, `--reset`, `--list`, `--output-dir`) |
 
-**Batch mode:** Commands that take a single input support `--input-file` (one line per input, or `.csv` with `--input-column`) and `--output-dir`. Use `--output-format` to choose between `files` (default), `csv`, or `ndjson` streaming. Add `--deduplicate` to remove duplicate URLs, `--sample N` to test on a subset, or `--post-process 'jq .title'` to transform each result. Use `--resume` to skip already-completed items after interruption.
+**Batch mode:** Commands that take a single input support `--input-file` (one line per input, or `.csv` with `--input-column`) and `--output-dir`. Use `--output-format csv` or `--output-format ndjson` to stream all results to a single file (or stdout) instead of individual files. Add `--deduplicate` to remove duplicate URLs, `--sample N` to test on a subset, or `--post-process 'jq .title'` to transform each result. Use `--resume` to skip already-completed items after interruption. Run bare `scrapingbee --resume` to discover incomplete batches in the current directory.
 
 **Parameters and options:** Use space-separated values (e.g. `--render-js false`), not `--option=value`. For full parameter lists, response formats, and credit costs, see **`scrapingbee [command] --help`** and the [ScrapingBee API documentation](https://www.scrapingbee.com/documentation/).
 
@@ -73,16 +74,17 @@ scrapingbee [command] [arguments] [options]
 
 - **AI extraction:** `--ai-extract-rules '{"price": "product price", "title": "product name"}'` pulls structured data from any page using natural language — no CSS selectors needed. Works with `scrape`, `crawl`, and batch mode.
 - **CSS/XPath extraction:** `--extract-rules '{"title": "h1", "price": ".price"}'` for consistent, cheaper production scraping. Find selectors in browser DevTools.
-- **Pipelines:** Chain commands with `--extract-field` — e.g. `google QUERY --extract-field organic_results.url > urls.txt` then `scrape --input-file urls.txt`.
+- **Pipelines:** Chain commands with `--extract-field` — e.g. `google QUERY --extract-field organic_results.url > urls.txt` then `scrape --input-file urls.txt`. Use `--fields` to filter JSON output keys; supports dot notation (e.g. `--fields product.title,product.price`).
+- **Smart Extract:** `--smart-extract` extracts data from any format (JSON, HTML, XML, CSV, Markdown) using a path expression. Auto-detects format. Supports slicing, regex filtering, and JSON schema output.
 - **Update CSV:** `--update-csv` fetches fresh data and updates the input CSV in-place. Ideal for daily price tracking, inventory monitoring, or any dataset that needs periodic refresh.
 - **Crawl with filtering:** `--include-pattern`, `--exclude-pattern` control which links to follow. `--save-pattern` only saves pages matching a regex (others are visited for link discovery but not saved).
-- **Output formats:** `--output-format ndjson` streams results as JSON lines; `--output-format csv` writes a single CSV. Default `files` writes individual files.
+- **Output formats:** `--output-format` accepts `ndjson` (streams results as JSON lines) or `csv` (writes a single CSV) — these are the only valid values. Default (no flag) writes individual files per item into `--output-dir`.
 - **CSV input:** `--input-file products.csv --input-column url` reads URLs from a CSV column.
 - **Export:** `scrapingbee export --input-dir batch/ --format csv --flatten --columns "title,price"` merges batch output with nested JSON flattening and column selection.
 - **Scheduling:** `scrapingbee schedule --every 1d --name prices scrape --input-file products.csv --update-csv` registers a cron job. Use `--list`, `--stop NAME`, or `--stop all`.
 - **Deduplication & sampling:** `--deduplicate` removes duplicate URLs; `--sample 100` processes only 100 random items.
 - **RAG chunking:** `scrape --chunk-size 500 --chunk-overlap 50 --return-page-markdown true` outputs NDJSON chunks ready for vector DB ingestion.
-- **Scraping configurations:** `--scraping-config "My-Config"` applies a pre-saved configuration from your ScrapingBee dashboard. Inline options override config settings. Create configurations in the [request builder](https://app.scrapingbee.com/).
+- **Scraping configurations:** `--scraping-config "My-Config"` applies a pre-saved configuration from your ScrapingBee dashboard. Inline options override config settings. Create configurations in the [request builder](https://app.scrapingbee.com/). Running `scrapingbee --scraping-config NAME` (without a subcommand) auto-routes to `scrape`.
 
 ### Examples
 
@@ -97,6 +99,11 @@ scrapingbee export --input-dir products --format csv --flatten --columns "name,p
 scrapingbee scrape --input-file products.csv --input-column url --update-csv --ai-extract-rules '{"price": "current price"}'
 scrapingbee schedule --every 1d --name price-tracker scrape --input-file products.csv --input-column url --update-csv --ai-extract-rules '{"price": "price"}'
 scrapingbee schedule --list
+
+# Smart Extract — pull fields from any format with a path expression
+scrapingbee google "pizza new york" --smart-extract 'organic_results[0:3].title'
+scrapingbee scrape "https://example.com" --smart-extract '...a[href=/mailto/].text'
+scrapingbee scrape "https://example.com" --smart-extract '{"titles": "...h1", "links": "...href[0:5]"}'
 ```
 
 ## Security
@@ -112,7 +119,7 @@ For advanced features setup, see the Security section in our [CLI documentation]
 - **[CLI Documentation](https://www.scrapingbee.com/documentation/cli/)** – Full CLI reference with pipelines, parameters, and examples.
 - **[Advanced usage examples](docs/advanced-usage.md)** – Shell piping, command chaining, batch workflows, monitoring scripts, NDJSON streaming, screenshots, Google search patterns, LLM chunking, and more.
 - **[ScrapingBee API documentation](https://www.scrapingbee.com/documentation/)** – Parameters, response formats, credit costs, and best practices.
-- **Claude / AI agents:** This repo includes a [Claude Skill](https://github.com/ScrapingBee/scrapingbee-cli/tree/main/skills/scrapingbee-cli) and [Claude Plugin](.claude-plugin/) for agent use with file-based output and security rules.
+- **Claude / AI agents:** This repo includes a [Claude Skill](https://github.com/ScrapingBee/scrapingbee-cli/tree/main/plugins/scrapingbee-cli/skills/scrapingbee-cli) and [Claude Plugin](plugins/scrapingbee-cli/.claude-plugin/) for agent use with file-based output and security rules.
 
 ## Testing
 

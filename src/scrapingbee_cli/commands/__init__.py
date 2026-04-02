@@ -16,6 +16,7 @@ def register_commands(cli: click.Group) -> None:
         fast_search,
         google,
         schedule,
+        tutorial,
         usage,
         walmart,
         youtube,
@@ -34,6 +35,7 @@ def register_commands(cli: click.Group) -> None:
     youtube.register(cli)
     chatgpt.register(cli)
     export.register(cli)
+    tutorial.register(cli)
     schedule.register(cli)
     from . import unsafe
 

@@ -93,8 +93,8 @@ def chatgpt_cmd(
                 search=parse_bool(search),
                 add_html=parse_bool(add_html),
                 country_code=country_code,
-                retries=obj.get("retries", 3) or 3,
-                backoff=obj.get("backoff", 2.0) or 2.0,
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
             )
 
         run_api_batch(
@@ -108,10 +108,13 @@ def chatgpt_cmd(
             show_progress=obj.get("progress", True),
             api_call=api_call,
             on_complete=obj.get("on_complete"),
-            output_format=obj.get("output_format", "files"),
+            output_format=obj.get("output_format"),
             post_process=obj.get("post_process"),
             update_csv_path=input_file if obj.get("update_csv") else None,
             input_column=obj.get("input_column"),
+            output_file=obj.get("output_file") or None,
+            extract_field=obj.get("extract_field"),
+            fields=obj.get("fields"),
         )
         return
 
@@ -128,8 +131,8 @@ def chatgpt_cmd(
                 search=parse_bool(search),
                 add_html=parse_bool(add_html),
                 country_code=country_code,
-                retries=obj.get("retries", 3) or 3,
-                backoff=obj.get("backoff", 2.0) or 2.0,
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
             )
         check_api_response(data, status_code)
         write_output(
@@ -138,6 +141,7 @@ def chatgpt_cmd(
             status_code,
             obj["output_file"],
             obj["verbose"],
+            smart_extract=obj.get("smart_extract"),
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
             command="chatgpt",
