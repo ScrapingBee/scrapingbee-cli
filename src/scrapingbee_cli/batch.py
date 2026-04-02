@@ -630,7 +630,7 @@ def write_batch_output_to_dir(
     Writes failures.txt at the end listing each failed item (index, input, error). Each N.err
     is a JSON object with ``error``, ``status_code``, ``body``, and ``input`` keys.
     Writes manifest.json mapping each input to its file path plus fetched_at, http_status,
-    credits_used, latency_ms, and content_md5.
+    credits_used, latency_ms, and content_sha256.
     """
     import json as _json
 
@@ -682,7 +682,7 @@ def write_batch_output_to_dir(
             click.echo(f"Item {n}: HTTP {result.status_code}", err=True)
 
         credits_used = _credits_used_from_headers(result.headers)
-        content_md5 = hashlib.md5(result.body).hexdigest()
+        content_sha256 = hashlib.sha256(result.body).hexdigest()
 
         ext = extension_for_crawl(
             result.input,
@@ -708,7 +708,7 @@ def write_batch_output_to_dir(
             "http_status": result.status_code,
             "credits_used": credits_used,
             "latency_ms": result.latency_ms,
-            "content_md5": content_md5,
+            "content_sha256": content_sha256,
         }
     if failures:
         failures_path = os.path.join(abs_dir, "failures.txt")

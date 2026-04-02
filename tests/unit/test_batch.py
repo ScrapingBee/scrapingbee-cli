@@ -273,7 +273,7 @@ class TestWriteBatchOutputToDir:
 
 
 class TestWriteBatchOutputToDirManifestFields:
-    """Tests that manifest.json contains credits_used, latency_ms, content_md5 (T-04)."""
+    """Tests that manifest.json contains credits_used, latency_ms, content_sha256 (T-04)."""
 
     def _make_result(self, index, input_, body, headers=None, latency_ms=None):
         return BatchResult(
@@ -318,13 +318,13 @@ class TestWriteBatchOutputToDirManifestFields:
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         assert manifest["https://example.com/a"]["latency_ms"] is None
 
-    def test_manifest_has_content_md5(self, tmp_path):
+    def test_manifest_has_content_sha256(self, tmp_path):
         body = b'{"x":1}'
-        expected_md5 = hashlib.md5(body).hexdigest()
+        expected_sha256 = hashlib.sha256(body).hexdigest()
         result = self._make_result(0, "https://example.com/a", body)
         write_batch_output_to_dir([result], str(tmp_path), verbose=False)
         manifest = json.loads((tmp_path / "manifest.json").read_text())
-        assert manifest["https://example.com/a"]["content_md5"] == expected_md5
+        assert manifest["https://example.com/a"]["content_sha256"] == expected_sha256
 
     def test_credits_used_int_parsed_correctly(self, tmp_path):
         result = self._make_result(

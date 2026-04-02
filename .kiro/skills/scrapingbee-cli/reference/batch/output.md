@@ -42,7 +42,7 @@ Every batch run writes a `manifest.json` to the output folder:
     "http_status": 200,
     "credits_used": 5,
     "latency_ms": 1234,
-    "content_md5": "d41d8cd98f00b204e9800998ecf8427e"
+    "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   "https://example2.com": {
     "file": "2.html",
@@ -50,7 +50,7 @@ Every batch run writes a `manifest.json` to the output folder:
     "http_status": 200,
     "credits_used": 5,
     "latency_ms": 876,
-    "content_md5": "7215ee9c7d9dc229d2921a40e899ec5f"
+    "content_sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
   }
 }
 ```
@@ -62,6 +62,6 @@ Every batch run writes a `manifest.json` to the output folder:
 | `http_status` | HTTP status code returned by the target site |
 | `credits_used` | Credits consumed (from `Spb-Cost` response header) |
 | `latency_ms` | Round-trip latency in milliseconds |
-| `content_md5` | MD5 hash of the raw response body — use to detect duplicate content or page changes across runs |
+| `content_sha256` | SHA-256 hash of the raw response body — use to detect duplicate content or page changes across runs |
 
 The manifest is used by `--resume` to skip already-completed items.
