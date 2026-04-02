@@ -559,8 +559,13 @@ def _recursive_find(obj: Any, key: str, context: int = 0) -> list[Any]:
     return results
 
 
-def _recursive_walk_simple(obj: Any, match: Any, results: list[Any]) -> None:
+_MAX_RECURSION_DEPTH = 100
+
+
+def _recursive_walk_simple(obj: Any, match: Any, results: list[Any], depth: int = 0) -> None:
     """Fast recursive walk — collects matched values without ancestry tracking."""
+    if depth > _MAX_RECURSION_DEPTH:
+        return
     if isinstance(obj, dict):
         for k, v in obj.items():
             if isinstance(k, str) and match(k):
@@ -568,25 +573,32 @@ def _recursive_walk_simple(obj: Any, match: Any, results: list[Any]) -> None:
                     results.extend(v)  # flatten list values
                 else:
                     results.append(v)
-            _recursive_walk_simple(v, match, results)
+            _recursive_walk_simple(v, match, results, depth=depth + 1)
     elif isinstance(obj, list):
         for item in obj:
-            _recursive_walk_simple(item, match, results)
+            _recursive_walk_simple(item, match, results, depth=depth + 1)
     elif isinstance(obj, str) and obj.startswith(("{", "[")):
         try:
-            _recursive_walk_simple(json.loads(obj), match, results)
+            _recursive_walk_simple(json.loads(obj), match, results, depth=depth + 1)
         except (json.JSONDecodeError, ValueError):
             pass
 
 
 def _recursive_walk_ctx(
-    obj: Any, match: Any, context: int, ancestry: list[Any], results: list[Any]
+    obj: Any,
+    match: Any,
+    context: int,
+    ancestry: list[Any],
+    results: list[Any],
+    depth: int = 0,
 ) -> None:
     """Recursive walk with ancestry tracking for ``~N`` context expansion.
 
     ~1 = parent dict, ~2 = grandparent, ~3 = great-grandparent, etc.
     When the ancestor level exceeds the tree depth, returns the root.
     """
+    if depth > _MAX_RECURSION_DEPTH:
+        return
     if isinstance(obj, dict):
         for k, v in obj.items():
             if isinstance(k, str) and match(k):
@@ -598,19 +610,19 @@ def _recursive_walk_ctx(
                     results.append(ancestry[idx] if idx < len(ancestry) else obj)
             ancestry.append(obj)
             try:
-                _recursive_walk_ctx(v, match, context, ancestry, results)
+                _recursive_walk_ctx(v, match, context, ancestry, results, depth=depth + 1)
             finally:
                 ancestry.pop()
     elif isinstance(obj, list):
         for item in obj:
             ancestry.append(obj)
             try:
-                _recursive_walk_ctx(item, match, context, ancestry, results)
+                _recursive_walk_ctx(item, match, context, ancestry, results, depth=depth + 1)
             finally:
                 ancestry.pop()
     elif isinstance(obj, str) and obj.startswith(("{", "[")):
         try:
-            _recursive_walk_ctx(json.loads(obj), match, context, ancestry, results)
+            _recursive_walk_ctx(json.loads(obj), match, context, ancestry, results, depth=depth + 1)
         except (json.JSONDecodeError, ValueError):
             pass
 
