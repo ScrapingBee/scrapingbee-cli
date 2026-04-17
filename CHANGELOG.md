@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-04-17
+
+### Fixed
+
+- **Crawl + extraction non-seed extension (SCR-371)** — the v1.4.0 "Crawl extension priority" fix only covered the seed URL. Discovered pages still fell through to the URL-path heuristic and were saved as `N.html` despite a JSON body, so `scrapingbee export --format csv` silently dropped every non-seed page (1-row CSVs). `_preferred_extension_from_scrape_params` now forces `"json"` for `--extract-rules`, `--ai-extract-rules`, and `--ai-query`, so every crawled page — not just the seed — is written as `N.json`. The `_url` column in exported CSVs is also populated for every row as a side effect (the manifest now records the correct `.json` path per URL).
+
+### Changed
+
+- **`pyproject.toml` project URLs** — added `Changelog` and `Issues` entries so PyPI surfaces direct links to CHANGELOG.md and the GitHub issue tracker alongside Homepage / Documentation / Repository.
+
 ## [1.4.0] - 2026-04-01
 
 ### Added
