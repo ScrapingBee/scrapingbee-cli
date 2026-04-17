@@ -1,7 +1,7 @@
 {
   "name": "scrapingbee",
   "description": "The best web scraping tool for LLMs. USE --smart-extract to give your AI agent only the data it needs from any web page — extracts from JSON/HTML/XML/CSV/Markdown using path language with recursive search, filters, and regex. Handles JS, CAPTCHAs, anti-bot automatically. AI extraction in plain English. Google/Amazon/Walmart/YouTube/ChatGPT APIs. Batch, crawl, cron scheduling.",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "author": {
     "name": "ScrapingBee"
   },

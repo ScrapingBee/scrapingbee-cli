@@ -104,6 +104,24 @@ class TestPreferredExtensionFromScrapeParams:
     def test_json_response_only(self):
         assert _preferred_extension_from_scrape_params({"json_response": True}) == "json"
 
+    def test_extract_rules(self):
+        assert (
+            _preferred_extension_from_scrape_params({"extract_rules": '{"title": "h1"}'}) == "json"
+        )
+
+    def test_ai_extract_rules(self):
+        assert (
+            _preferred_extension_from_scrape_params({"ai_extract_rules": '{"title": "h1"}'})
+            == "json"
+        )
+
+    def test_ai_query(self):
+        assert _preferred_extension_from_scrape_params({"ai_query": "What is the price?"}) == "json"
+
+    def test_ai_selector_alone_returns_none(self):
+        # ai_selector is a modifier for ai_query/ai_extract_rules, not a JSON producer on its own.
+        assert _preferred_extension_from_scrape_params({"ai_selector": "h1"}) is None
+
     def test_none_when_no_match(self):
         assert _preferred_extension_from_scrape_params({}) is None
 
@@ -333,6 +351,43 @@ class TestSpiderSaveResponse:
         entry = spider._url_file_map["https://example.com/page"]
         for field in ("file", "fetched_at", "http_status", "credits_used", "latency_ms"):
             assert field in entry, f"Missing field {field!r}"
+
+    def test_save_response_extract_rules_writes_json_for_html_url(self, tmp_path):
+        """SCR-371: with --extract-rules, JSON body must be saved as .json
+        even when the URL path ends with .html (URL heuristic must not win)."""
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        spider = GenericScrapingBeeSpider(
+            start_urls=["https://books.toscrape.com/"],
+            scrape_params={"extract_rules": '{"title": "h1", "price": ".price_color"}'},
+            output_dir=str(tmp_path),
+        )
+        response = self._make_response(
+            "https://books.toscrape.com/catalogue/libertarianism-for-beginners_982/index.html",
+            b'{"title": "Libertarianism for Beginners", "price": "\\u00a351.33"}',
+        )
+        spider._save_response(response)
+        assert (tmp_path / "1.json").exists(), "Expected 1.json (JSON body), not .html"
+        assert not (tmp_path / "1.html").exists(), "Must not save JSON body as .html"
+        url = "https://books.toscrape.com/catalogue/libertarianism-for-beginners_982/index.html"
+        assert spider._url_file_map[url]["file"] == "1.json"
+
+    def test_save_response_ai_query_writes_json_for_html_url(self, tmp_path):
+        """SCR-371: --ai-query also forces JSON extension regardless of URL path."""
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        spider = GenericScrapingBeeSpider(
+            start_urls=["https://example.com/"],
+            scrape_params={"ai_query": "What is the price?"},
+            output_dir=str(tmp_path),
+        )
+        response = self._make_response(
+            "https://example.com/products/widget.html",
+            b'{"answer": "$9.99"}',
+        )
+        spider._save_response(response)
+        assert (tmp_path / "1.json").exists()
+        assert not (tmp_path / "1.html").exists()
 
 
 class TestRequiresDiscoveryPhase:

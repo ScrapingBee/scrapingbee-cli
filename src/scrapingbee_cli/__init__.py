@@ -3,7 +3,7 @@
 import platform
 import sys
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 
 def user_agent_headers() -> dict[str, str]:
@@ -12,7 +12,7 @@ def user_agent_headers() -> dict[str, str]:
     Returns a dict of headers:
         User-Agent: ScrapingBee/CLI
         User-Agent-Client: scrapingbee-cli
-        User-Agent-Client-Version: 1.4.0
+        User-Agent-Client-Version: 1.4.1
         User-Agent-Environment: python
         User-Agent-Environment-Version: 3.14.2
         User-Agent-OS: Darwin arm64

@@ -90,7 +90,8 @@ def _params_for_discovery(params: dict[str, Any]) -> dict[str, Any]:
 def _preferred_extension_from_scrape_params(params: dict[str, Any]) -> str | None:
     """Return extension when scrape params force a response type (skip detection).
     Priority: screenshot+json_response -> json; screenshot -> png;
-    return_page_markdown -> md; return_page_text -> txt; json_response -> json.
+    return_page_markdown -> md; return_page_text -> txt;
+    json_response / extract_rules / ai_extract_rules / ai_query -> json.
     """
     if _param_truthy(params, "screenshot") and _param_truthy(params, "json_response"):
         return "json"
@@ -101,6 +102,11 @@ def _preferred_extension_from_scrape_params(params: dict[str, Any]) -> str | Non
     if _param_truthy(params, "return_page_text"):
         return "txt"
     if _param_truthy(params, "json_response"):
+        return "json"
+    # extract_rules, ai_extract_rules, ai_query always return JSON regardless of URL.
+    # Without this, URLs ending in .html would be saved as .html despite JSON body
+    # (the URL-path heuristic in extension_for_crawl wins before body sniff).
+    if params.get("extract_rules") or params.get("ai_extract_rules") or params.get("ai_query"):
         return "json"
     return None
 
