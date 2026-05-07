@@ -124,168 +124,39 @@ def _render_inline_bee(frame_idx: int) -> Text:
     return text
 
 
-# -- Contextual status messages per command ----------------------------------
-
-_BEE_FACTS = [
-    "Did you know? Bees can fly up to 15 mph",
-    "Did you know? A bee visits 50-100 flowers per trip",
-    "Did you know? Bees have 5 eyes",
-    "Did you know? Honey never spoils",
-    "Did you know? Bees communicate by dancing",
-    "Did you know? A hive can have 60,000 bees",
-    "Did you know? Bees flap 200 times per second",
-    "Did you know? Bees can recognize human faces",
-    "Did you know? One bee makes 1/12 tsp of honey in its life",
-    "Did you know? Bees navigate using the sun",
-]
-
-MESSAGES: dict[str, list[str]] = {
-    "scrape": [
-        "Scraping",
-        "Extracting honey",
-        "Buzzing through HTML",
-        "Parsing the nectar",
-        "Dodging bot traps",
-        *_BEE_FACTS[:3],
-    ],
-    "google": [
-        "Googling",
-        "Searching the hive",
-        "Pollinating results",
-        "Crawling the web",
-        "Fetching SERPs",
-        *_BEE_FACTS[3:6],
-    ],
-    "fast-search": [
-        "Searching",
-        "Speed-buzzing",
-        "Zipping through results",
-        "Lightning fast",
-        *_BEE_FACTS[6:8],
-    ],
-    "crawl": [
-        "Crawling",
-        "Following the trail",
-        "Exploring links",
-        "Mapping the web",
-        "Discovering pages",
-        *_BEE_FACTS[1:4],
-    ],
-    "usage": [
-        "Checking the honeypot",
-        "Counting credits",
-        "Buzzing to the API",
-        *_BEE_FACTS[4:6],
-    ],
-    "amazon-product": [
-        "Fetching product",
-        "Browsing the jungle",
-        "Hunting for deals",
-        "Reading reviews",
-        *_BEE_FACTS[7:9],
-    ],
-    "amazon-search": [
-        "Searching Amazon",
-        "Flying through the jungle",
-        "Comparing prices",
-        "Scanning listings",
-        *_BEE_FACTS[0:2],
-    ],
-    "walmart-search": [
-        "Searching Walmart",
-        "Rolling back prices",
-        "Scanning the shelves",
-        *_BEE_FACTS[5:7],
-    ],
-    "walmart-product": [
-        "Fetching product",
-        "Checking the aisle",
-        "Reading the label",
-        *_BEE_FACTS[8:10],
-    ],
-    "youtube-search": [
-        "Searching YouTube",
-        "Streaming honey",
-        "Tuning in",
-        "Browsing videos",
-        *_BEE_FACTS[2:4],
-    ],
-    "youtube-metadata": [
-        "Fetching metadata",
-        "Reading the description",
-        "Counting views",
-        *_BEE_FACTS[9:10],
-    ],
-    "chatgpt": [
-        "Querying ChatGPT",
-        "Consulting the hive mind",
-        "Thinking bee thoughts",
-        "Processing prompt",
-        *_BEE_FACTS[4:6],
-    ],
-    "sitemap": [
-        "Fetching sitemap",
-        "Reading the map",
-        "Charting the course",
-        *_BEE_FACTS[6:8],
-    ],
-    "_default": [
-        "Working",
-        "Buzzing",
-        "zZZzzzZZ",
-        "Bee patient",
-        "Almost done",
-        *_BEE_FACTS[:5],
-    ],
-}
-
-# How many spinner ticks before rotating to the next message.
-_MSG_ROTATE_TICKS = 18  # ~0.9s at 50ms per tick
+# -- Spinner -----------------------------------------------------------------
 
 
-# -- Flapping-bee spinner (single-line) --------------------------------------
+_DOT_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 
 class MiniBeeSpinner:
-    """Single-line flapping-bee spinner with rotating contextual messages.
+    """Single-line dot spinner with the command name as the label.
 
     Usage::
 
         with MiniBeeSpinner("scrape"):
             await do_request()
 
-    The *message* argument is a command key into ``MESSAGES``.  If the key is
-    not found it is used as a literal first message with ``_default`` extras.
+    Output is one steady line: a rotating braille-dot frame followed by the
+    command name. No emoticons, no rotating fun facts, no time-of-day
+    flavour — just a clean status indicator.
     """
 
-    def __init__(self, message: str = "scrape") -> None:
-        # Resolve message list.
-        if message in MESSAGES:
-            self._messages = MESSAGES[message]
-        else:
-            self._messages = [message] + MESSAGES["_default"]
-        self._messages = self._messages + _time_flavor()
+    def __init__(self, message: str = "") -> None:
+        self._label = message
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def _animate(self) -> None:
         idx = 0
-        msg_idx = 0
         while not self._stop.is_set():
-            # Rotate message every N ticks.
-            if idx > 0 and idx % _MSG_ROTATE_TICKS == 0:
-                msg_idx = (msg_idx + 1) % len(self._messages)
-
-            bee = _render_inline_bee(idx)
-            msg = self._messages[msg_idx]
-            dots = "." * ((idx % 3) + 1)
-
+            frame = _DOT_FRAMES[idx % len(_DOT_FRAMES)]
             line = Text()
             line.append(" ")
-            line.append_text(bee)
-            line.append("  ")
-            line.append(msg, style=f"bold {BEE_YELLOW}")
-            line.append(dots.ljust(4), style="dim")
+            line.append(frame, style=f"bold {BEE_YELLOW}")
+            if self._label:
+                line.append(f"  {self._label}", style="dim")
 
             with err_console.capture() as capture:
                 err_console.print(line, end="")
@@ -293,7 +164,7 @@ class MiniBeeSpinner:
             sys.stderr.flush()
 
             idx += 1
-            self._stop.wait(0.05)
+            self._stop.wait(0.08)
 
         # Clear the spinner line.
         sys.stderr.write("\r\033[K")
@@ -794,32 +665,3 @@ def echo_bee_error(status_code: int, fallback_msg: str = "") -> None:
         echo_error(fallback_msg or f"Error: HTTP {status_code}")
 
 
-# -- Time-aware messages -----------------------------------------------------
-
-
-def _time_flavor() -> list[str]:
-    """Return extra messages based on time of day."""
-    from datetime import datetime
-
-    hour = datetime.now().hour
-    day = datetime.now().weekday()
-
-    extras: list[str] = []
-    if 0 <= hour < 6:
-        extras = ["The web never sleeps", "Late night data hunt", "Nocturnal bee mode"]
-    elif 6 <= hour < 12:
-        extras = [
-            "Rise and scrape!",
-            "Fresh morning data",
-            "Early bird gets the data",
-        ]
-    elif 12 <= hour < 18:
-        extras = ["Afternoon buzz", "Peak pollination hours"]
-    else:
-        extras = ["Evening crawl session", "Burning the midnight nectar"]
-
-    if day == 0:
-        extras.append("Monday motivation: fresh data!")
-    elif day == 4:
-        extras.append("TGIF — last scrape of the week?")
-    return extras
