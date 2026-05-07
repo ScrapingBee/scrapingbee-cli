@@ -124,12 +124,14 @@ _COMMANDS = [
     "youtube-search",
     "youtube-metadata",
     "chatgpt",
+    "tutorial",
     "auth",
     "logout",
     "usage",
     "schedule",
     "export",
     "docs",
+    "unsafe",
 ]
 
 _COMMAND_HELP: dict[str, str] = {
@@ -144,12 +146,14 @@ _COMMAND_HELP: dict[str, str] = {
     "youtube-search": "Search YouTube videos",
     "youtube-metadata": "YouTube video metadata",
     "chatgpt": "Query ChatGPT API",
+    "tutorial": "Interactive tutorial walkthrough",
     "auth": "Save your API key",
     "logout": "Remove stored API key",
     "usage": "Check credits and concurrency",
     "schedule": "Schedule recurring scrapes",
     "export": "Merge batch output files",
     "docs": "Open ScrapingBee documentation",
+    "unsafe": "Run an arbitrary scrapingbee URL",
     "help": "Show this command list",
     "clear": "Clear the screen",
     "exit": "Quit the REPL",
@@ -192,7 +196,8 @@ def _print_repl_help() -> None:
         ],
         "Media": ["youtube-search", "youtube-metadata"],
         "AI": ["chatgpt"],
-        "Account": ["auth", "logout", "usage", "schedule", "export", "docs"],
+        "Learn": ["tutorial"],
+        "Account": ["auth", "logout", "usage", "schedule", "export", "docs", "unsafe"],
     }
     for group_name, cmds in groups.items():
         err_console.print(f"  [{BEE_DIM}]{group_name}[/]")
@@ -232,18 +237,40 @@ _STYLE_DICT = {
     "prompt.hint": "#665500 italic",
 }
 
-_POWERLINE_ARROW = "\ue0b0"
+def _build_static_prompt() -> list[tuple[str, str]]:
+    """Build the prompt segments.
 
-_STATIC_PROMPT = [
-    (
+    Default: a single unified yellow tag \u2014 ` ScrapingBee \u276f ` \u2014 with the
+    chevron rendered *inside* the tag. Identical in every terminal/font:
+    no protruding shape, no Private Use Area glyphs.
+
+    Set SCRAPINGBEE_POWERLINE=1 to use the classic Powerline arrow that
+    *protrudes* from the tag (requires a patched font like a Nerd Font).
+    """
+    import os
+
+    hint = (
         "class:prompt.hint",
         "  Tab complete  \u2502  \u2191\u2193 history  \u2502  \u2192 accept  \u2502  Ctrl+C exit\n",
-    ),
-    ("", "\n"),
-    ("class:prompt.tag", " ScrapingBee "),
-    ("class:prompt.arrow", _POWERLINE_ARROW),
-    ("class:prompt.space", " "),
-]
+    )
+    blank = ("", "\n")
+    space = ("class:prompt.space", " ")
+
+    if os.environ.get("SCRAPINGBEE_POWERLINE", "").lower() in ("1", "true", "yes"):
+        return [
+            hint,
+            blank,
+            ("class:prompt.tag", " ScrapingBee "),
+            ("class:prompt.arrow", "\ue0b0"),
+            space,
+        ]
+
+    return [
+        hint,
+        blank,
+        ("class:prompt.tag", " ScrapingBee \u276f "),
+        space,
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +433,7 @@ def run_repl(cli_group: object, version: str) -> None:
 
     import click
 
-    from .theme import MiniBeeSpinner, set_repl_mode
+    from .theme import set_repl_mode
 
     set_repl_mode(True)
 
@@ -417,10 +444,11 @@ def run_repl(cli_group: object, version: str) -> None:
     Path(history_path).parent.mkdir(parents=True, exist_ok=True)
 
     session = _build_session(history_path)
+    static_prompt = _build_static_prompt()
 
     while True:
         try:
-            line = session.prompt(_STATIC_PROMPT).strip()
+            line = session.prompt(static_prompt).strip()
         except KeyboardInterrupt:
             err_console.print()
             err_console.print(f"  [bold {BEE_YELLOW}]Buzz off! See you next time.[/]")
@@ -467,9 +495,9 @@ def run_repl(cli_group: object, version: str) -> None:
         # Gap between prompt and command output
         sys.stderr.write("\n")
 
-        # Run command with bee spinner
-        spinner = MiniBeeSpinner(args[0])
-        spinner.start()
+        # No outer spinner: commands that benefit show their own MiniBeeSpinner
+        # via is_repl_mode() (network calls). An outer spinner here would also
+        # block interactive commands like `tutorial` / `auth` from prompting.
         try:
             cli_group.main(args, standalone_mode=False)  # type: ignore[union-attr]
         except click.ClickException as e:
@@ -478,5 +506,3 @@ def run_repl(cli_group: object, version: str) -> None:
             pass
         except Exception as e:
             err_console.print(f"  [bold {BEE_RED}]Error: {e}[/]")
-        finally:
-            spinner.stop()
