@@ -127,36 +127,125 @@ def _render_inline_bee(frame_idx: int) -> Text:
 # -- Spinner -----------------------------------------------------------------
 
 
-_DOT_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+# Hex bloom — a "honey crystallising" cycle expressed as a 3-cell-wide
+# animation that radiates from the centre outward. Pure geometry, no
+# mascot: dot grows into a honeycomb cell, peaks at a four-pointed
+# sparkle (the moment crystals form), then drains back.
+#
+# The middle cell is the focal point and stays anchored; "halo" cells
+# appear and disappear symmetrically so the bloom feels like it's growing
+# in all directions, not rightward.
+#
+# Each frame pairs a 3-character composition with a colour from a
+# dim→bright→warm gradient so the eye reads a glowing, breathing shape.
+#
+# Frames (centre + halo, always 3 cells wide):
+#   " · "  dust        (dim grey)
+#   " • "  speck       (dim amber)
+#   "·⬡·"  outline + halo  (amber)
+#   "·⬢·"  honeycomb + halo (bright yellow)
+#   "⬡✦⬡"  sparkle + halo   (warm yellow-orange — PEAK / crystallised)
+#   "·⬢·"  descending
+#   "·⬡·"
+#   " • "
+_HEX_BLOOM_FRAMES: list[tuple[str, str]] = [
+    (" · ", "#555555"),
+    (" • ", "#886600"),
+    ("·⬡·", "#BAA000"),
+    ("·⬢·", "#FFCD23"),
+    ("⬡✦⬡", "#FFB13D"),
+    ("·⬢·", "#FFCD23"),
+    ("·⬡·", "#BAA000"),
+    (" • ", "#886600"),
+]
+
+# Per-command verbs that rotate during the pulse — keep them short and active.
+_PHRASES: dict[str, list[str]] = {
+    "scrape":           ["Fetching", "Rendering", "Extracting"],
+    "crawl":            ["Crawling", "Following links", "Discovering"],
+    "google":           ["Searching", "Querying"],
+    "fast-search":      ["Searching"],
+    "amazon-product":   ["Fetching product"],
+    "amazon-search":    ["Searching Amazon"],
+    "walmart-product":  ["Fetching product"],
+    "walmart-search":   ["Searching Walmart"],
+    "youtube-search":   ["Searching"],
+    "youtube-metadata": ["Fetching metadata"],
+    "chatgpt":          ["Querying", "Thinking"],
+    "usage":            ["Checking credits"],
+    "sitemap":          ["Fetching sitemap"],
+}
+
+_FRAME_INTERVAL = 0.08          # seconds per frame ⇒ ~12 fps, smooth bloom
+_PHRASE_DURATION_FRAMES = 30    # rotate verb every ~2.4s
+_SHIMMER_DIVISOR = 2            # shimmer advances every N bloom frames
+
+# Shimmer palette — one bright "peak" cell sweeps across the verb, with two
+# flank cells receiving softer highlights so the glim feels like a wave
+# instead of a hard cursor.
+_SHIMMER_PEAK  = "#FFFFFF"
+_SHIMMER_FLANK = "#FFE780"
+
+
+def _shimmer_text(text: str, position: int, base_color: str) -> Text:
+    """Render `text` with a glimmer of light at `position`.
+
+    The character at `position` is bright white; characters at ±1 are warm
+    light yellow; everything else uses `base_color`. Combined with a position
+    that advances each frame, this reads as a glow sweeping across the word.
+    """
+    out = Text()
+    for i, ch in enumerate(text):
+        distance = abs(i - position)
+        if distance == 0:
+            style = f"bold {_SHIMMER_PEAK}"
+        elif distance == 1:
+            style = f"bold {_SHIMMER_FLANK}"
+        else:
+            style = f"bold {base_color}"
+        out.append(ch, style=style)
+    return out
 
 
 class MiniBeeSpinner:
-    """Single-line dot spinner with the command name as the label.
+    """Single-line pulsing-asterisk spinner with a rotating command verb.
 
     Usage::
 
         with MiniBeeSpinner("scrape"):
             await do_request()
 
-    Output is one steady line: a rotating braille-dot frame followed by the
-    command name. No emoticons, no rotating fun facts, no time-of-day
-    flavour — just a clean status indicator.
+    Renders one line: a Claude-style asterisk that blooms (· → ✻ → ·), a
+    short verb that rotates every ~2.4s ("Fetching" / "Rendering" / ...),
+    and an elapsed-time counter once the operation passes 0.5s.
     """
 
     def __init__(self, message: str = "") -> None:
         self._label = message
+        # Resolve the verb cycle: per-command phrases if known, else just the
+        # label as a single static verb.
+        self._phrases = _PHRASES.get(message, [message] if message else ["Working"])
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def _animate(self) -> None:
+        import time
+
+        start = time.monotonic()
         idx = 0
         while not self._stop.is_set():
-            frame = _DOT_FRAMES[idx % len(_DOT_FRAMES)]
+            glyph, color = _HEX_BLOOM_FRAMES[idx % len(_HEX_BLOOM_FRAMES)]
+            phrase = self._phrases[(idx // _PHRASE_DURATION_FRAMES) % len(self._phrases)]
+            shimmer_pos = (idx // _SHIMMER_DIVISOR) % max(1, len(phrase))
+            elapsed = time.monotonic() - start
+
             line = Text()
             line.append(" ")
-            line.append(frame, style=f"bold {BEE_YELLOW}")
-            if self._label:
-                line.append(f"  {self._label}", style="dim")
+            line.append(glyph, style=f"bold {color}")
+            line.append("  ")
+            line.append_text(_shimmer_text(phrase, shimmer_pos, BEE_YELLOW))
+            if elapsed >= 0.5:
+                line.append(f"  · {elapsed:.1f}s", style="dim")
 
             with err_console.capture() as capture:
                 err_console.print(line, end="")
@@ -164,7 +253,7 @@ class MiniBeeSpinner:
             sys.stderr.flush()
 
             idx += 1
-            self._stop.wait(0.08)
+            self._stop.wait(_FRAME_INTERVAL)
 
         # Clear the spinner line.
         sys.stderr.write("\r\033[K")

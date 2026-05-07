@@ -21,6 +21,89 @@ from .theme import (
 )
 
 
+_REPL_PREVIEW_MAX_LINES = 30
+_REPL_PREVIEW_MAX_BYTES = 4000
+
+
+def _format_bytes(n: int) -> str:
+    if n >= 1_048_576:
+        return f"{n / 1_048_576:.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n} B"
+
+
+def _maybe_repl_preview(data: bytes) -> tuple[bytes, str | None, str | None]:
+    """If we're in REPL mode and `data` is a large text payload, shrink it
+    down to a preview and save the full payload to a fixed cache path.
+
+    Triggers truncation on EITHER too many lines OR too many bytes — single-
+    line minified HTML often hits the byte cap without ever wrapping, so a
+    line-only check would let it through unchanged.
+
+    Returns ``(bytes_to_print, summary_or_none, saved_path_or_none)``. Outside
+    REPL mode (or for binary data, or short outputs), returns ``(data, None,
+    None)`` unchanged so piped/redirected use is unaffected.
+    """
+    if not data:
+        return data, None, None
+    if not is_repl_mode():
+        return data, None, None
+
+    # Skip binary data (screenshots, PDFs, etc.) — keep the original behaviour.
+    is_text = data[:1] in (b"{", b"[", b"<", b"#") or b"\x00" not in data[:512]
+    if not is_text:
+        return data, None, None
+
+    line_count = data.count(b"\n") + 1
+    if (
+        len(data) <= _REPL_PREVIEW_MAX_BYTES
+        and line_count <= _REPL_PREVIEW_MAX_LINES
+    ):
+        return data, None, None
+
+    # Save the full payload to a fixed cache file the user can scroll through
+    # via :view (or `less` directly).
+    full_path: str | None = None
+    try:
+        from pathlib import Path
+
+        cache_dir = Path.home() / ".cache" / "scrapingbee-cli"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / "last-output"
+        cache_path.write_bytes(data)
+        full_path = str(cache_path)
+    except Exception:
+        full_path = None
+
+    text = data.decode("utf-8", errors="replace")
+    lines = text.split("\n")
+    line_preview = "\n".join(lines[: _REPL_PREVIEW_MAX_LINES])
+
+    # Decide whether to truncate by lines or by chars. Single-line minified
+    # HTML/JSON would have line_preview == text but len > byte cap; truncate by
+    # chars there so the preview really does stay small on screen.
+    if len(line_preview.encode("utf-8")) > _REPL_PREVIEW_MAX_BYTES:
+        preview = text[:_REPL_PREVIEW_MAX_BYTES]
+        more_chars = len(text) - len(preview)
+        truncation_note = (
+            f"showing first {_REPL_PREVIEW_MAX_BYTES:,} chars  ·  "
+            f"+{more_chars:,} more chars"
+        )
+    else:
+        preview = line_preview
+        more_lines = max(0, len(lines) - _REPL_PREVIEW_MAX_LINES)
+        shown = min(_REPL_PREVIEW_MAX_LINES, len(lines))
+        truncation_note = (
+            f"showing {shown}/{len(lines):,} lines  ·  +{more_lines:,} more lines"
+        )
+
+    summary = (
+        f"… preview truncated  ·  {_format_bytes(len(data))}  ·  {truncation_note}"
+    )
+    return preview.encode("utf-8"), summary, full_path
+
+
 class NormalizedChoice(click.Choice):
     """Choice type that accepts both hyphens and underscores.
 
@@ -1648,10 +1731,27 @@ def write_output(
         with fh:
             fh.write(data)
     else:
-        sys.stdout.buffer.write(data)
+        # In REPL mode, truncate large text dumps to a tidy preview and surface
+        # a path to the full output. Non-REPL invocations (`scrapingbee scrape ...`)
+        # keep the original behaviour so pipes and redirects work unchanged.
+        preview_data, repl_summary, repl_full_path = _maybe_repl_preview(data)
+        sys.stdout.buffer.write(preview_data)
         # Only add a trailing newline for text-like content; binary data (PNG, PDF, etc.)
         # must not have extra bytes appended.
-        if data and not data.endswith(b"\n"):
-            is_text = data[:1] in (b"{", b"[", b"<", b"#") or b"\x00" not in data[:512]
+        if preview_data and not preview_data.endswith(b"\n"):
+            is_text = (
+                preview_data[:1] in (b"{", b"[", b"<", b"#")
+                or b"\x00" not in preview_data[:512]
+            )
             if is_text:
                 click.echo()
+        if repl_summary:
+            from .theme import BEE_DIM, BEE_YELLOW, err_console
+
+            err_console.print(f"  [{BEE_DIM}]{repl_summary}[/]")
+            if repl_full_path:
+                err_console.print(
+                    f"  [bold {BEE_YELLOW}]:view[/] "
+                    f"[{BEE_DIM}]to scroll the full output  ·  or pass[/] "
+                    f"[bold {BEE_YELLOW}]--output-file FILE[/]"
+                )
