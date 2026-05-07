@@ -24,6 +24,7 @@ from ..crawl import (
     run_project_spider,
     run_urls_spider,
 )
+from ..theme import LiveCreditTracker
 
 
 def _crawl_build_params(
@@ -537,25 +538,30 @@ def crawl_cmd(
         allowed_list: list[str] | None = None
         if allowed_domains:
             allowed_list = [d.strip() for d in allowed_domains.split(",") if d.strip()]
+        _initial_remaining = usage_info.get("credits") if usage_info else None
+        _initial_total = usage_info.get("max_api_credit") if usage_info else None
         try:
-            run_urls_spider(
-                urls,
-                key,
-                scrape_params=scrape_params or None,
-                custom_headers=custom_headers or None,
-                max_depth=max_depth,
-                max_pages=max_pages,
-                concurrency=concurrency,
-                output_dir=out_dir,
-                allowed_domains=allowed_list,
-                allow_external_domains=allow_external_domains,
-                download_delay=download_delay,
-                autothrottle_enabled=autothrottle or None,
-                resume=obj.get("resume", False),
-                include_pattern=include_pattern,
-                exclude_pattern=exclude_pattern,
-                save_pattern=save_pattern,
-            )
+            with LiveCreditTracker(
+                key, initial_remaining=_initial_remaining, total=_initial_total
+            ):
+                run_urls_spider(
+                    urls,
+                    key,
+                    scrape_params=scrape_params or None,
+                    custom_headers=custom_headers or None,
+                    max_depth=max_depth,
+                    max_pages=max_pages,
+                    concurrency=concurrency,
+                    output_dir=out_dir,
+                    allowed_domains=allowed_list,
+                    allow_external_domains=allow_external_domains,
+                    download_delay=download_delay,
+                    autothrottle_enabled=autothrottle or None,
+                    resume=obj.get("resume", False),
+                    include_pattern=include_pattern,
+                    exclude_pattern=exclude_pattern,
+                    save_pattern=save_pattern,
+                )
         except ValueError as e:
             click.echo(str(e), err=True)
             raise SystemExit(1)

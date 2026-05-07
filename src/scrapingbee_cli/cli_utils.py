@@ -10,6 +10,16 @@ from typing import Any
 
 import click
 
+from .theme import (
+    echo_bee_error,
+    echo_error,
+    echo_key_value,
+    echo_separator,
+    echo_warning,
+    is_repl_mode,
+    styled_echo,
+)
+
 
 class NormalizedChoice(click.Choice):
     """Choice type that accepts both hyphens and underscores.
@@ -1220,7 +1230,10 @@ def _validate_range(
         return
     if value < min_val or value > max_val:
         u = f" {unit}" if unit else ""
-        click.echo(f"{name} must be between {min_val} and {max_val}{u}", err=True)
+        if is_repl_mode():
+            echo_error(f"{name} must be between {min_val} and {max_val}{u}")
+        else:
+            click.echo(f"{name} must be between {min_val} and {max_val}{u}", err=True)
         raise SystemExit(1)
 
 
@@ -1372,7 +1385,10 @@ def check_api_response(data: bytes, status_code: int, err_prefix: str = "Error")
     from .client import pretty_json
 
     if status_code >= 400:
-        click.echo(f"{err_prefix}: HTTP {status_code}", err=True)
+        if is_repl_mode():
+            echo_bee_error(status_code, f"{err_prefix}: HTTP {status_code}")
+        else:
+            click.echo(f"{err_prefix}: HTTP {status_code}", err=True)
         try:
             click.echo(pretty_json(data), err=True)
         except Exception:
@@ -1459,7 +1475,12 @@ async def scrape_with_escalation(
         already = any(scrape_kwargs.get(k) for k in tier_overrides)
         if already:
             continue
-        click.echo(f"[escalate-proxy] {url}: blocked, retrying with {tier_name} proxy", err=True)
+        if is_repl_mode():
+            echo_warning(f"[escalate-proxy] {url}: blocked, retrying with {tier_name} proxy")
+        else:
+            click.echo(
+                f"[escalate-proxy] {url}: blocked, retrying with {tier_name} proxy", err=True
+            )
         escalated = {**scrape_kwargs, **tier_overrides}
         data, headers, status_code = await client.scrape(url, **escalated)
         if verbose:
@@ -1557,29 +1578,59 @@ def write_output(
     Precedence: *smart_extract* > *extract_field* > *fields*.
     """
     if verbose:
-        click.echo(f"HTTP Status: {status_code}", err=True)
-        headers_lower = {k.lower(): (k, v) for k, v in headers.items()}
-        spb_cost_present = False
-        for key, label in [
-            ("spb-cost", "Credit Cost"),
-            ("spb-resolved-url", "Resolved URL"),
-            ("spb-initial-status-code", "Initial Status Code"),
-        ]:
-            if key in headers_lower:
-                _, val = headers_lower[key]
-                if val:
-                    click.echo(f"{label}: {val}", err=True)
-                    if key == "spb-cost":
-                        spb_cost_present = True
-        if not spb_cost_present:
-            if credit_cost is not None:
-                click.echo(f"Credit Cost: {credit_cost}", err=True)
-            elif command:
-                from scrapingbee_cli.credits import ESTIMATED_CREDITS
+        if is_repl_mode():
+            status_style = "success" if status_code < 400 else "error"
+            styled_echo(f"HTTP Status: {status_code}", style=status_style)
+            headers_lower = {k.lower(): (k, v) for k, v in headers.items()}
+            spb_cost_present = False
+            for key, label in [
+                ("spb-cost", "Credit Cost"),
+                ("spb-resolved-url", "Resolved URL"),
+                ("spb-initial-status-code", "Initial Status Code"),
+            ]:
+                if key in headers_lower:
+                    _, val = headers_lower[key]
+                    if val:
+                        echo_key_value(label, str(val))
+                        if key == "spb-cost":
+                            spb_cost_present = True
+            if not spb_cost_present:
+                if credit_cost is not None:
+                    echo_key_value("Credit Cost", str(credit_cost))
+                elif command:
+                    from scrapingbee_cli.credits import ESTIMATED_CREDITS
 
-                if command in ESTIMATED_CREDITS:
-                    click.echo(f"Credit Cost (estimated): {ESTIMATED_CREDITS[command]}", err=True)
-        click.echo("---", err=True)
+                    if command in ESTIMATED_CREDITS:
+                        echo_key_value(
+                            "Credit Cost (estimated)", str(ESTIMATED_CREDITS[command])
+                        )
+            echo_separator()
+        else:
+            click.echo(f"HTTP Status: {status_code}", err=True)
+            headers_lower = {k.lower(): (k, v) for k, v in headers.items()}
+            spb_cost_present = False
+            for key, label in [
+                ("spb-cost", "Credit Cost"),
+                ("spb-resolved-url", "Resolved URL"),
+                ("spb-initial-status-code", "Initial Status Code"),
+            ]:
+                if key in headers_lower:
+                    _, val = headers_lower[key]
+                    if val:
+                        click.echo(f"{label}: {val}", err=True)
+                        if key == "spb-cost":
+                            spb_cost_present = True
+            if not spb_cost_present:
+                if credit_cost is not None:
+                    click.echo(f"Credit Cost: {credit_cost}", err=True)
+                elif command:
+                    from scrapingbee_cli.credits import ESTIMATED_CREDITS
+
+                    if command in ESTIMATED_CREDITS:
+                        click.echo(
+                            f"Credit Cost (estimated): {ESTIMATED_CREDITS[command]}", err=True
+                        )
+            click.echo("---", err=True)
     if smart_extract:
         from .extract import smart_extract as _smart_extract_fn
 

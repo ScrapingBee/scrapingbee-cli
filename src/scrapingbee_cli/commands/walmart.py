@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 
 import click
 from click_option_group import optgroup
@@ -30,6 +31,7 @@ from ..cli_utils import (
 )
 from ..client import Client
 from ..config import BASE_URL, get_api_key
+from ..theme import MiniBeeSpinner, is_repl_mode
 
 WALMART_SORT_BY = ["best-match", "price-low", "price-high", "best-seller"]
 
@@ -163,6 +165,7 @@ def walmart_search_cmd(
             output_file=obj.get("output_file") or None,
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
+            usage_info=usage_info,
         )
         return
 
@@ -171,25 +174,27 @@ def walmart_search_cmd(
         raise SystemExit(1)
 
     async def _single() -> None:
-        async with Client(key, BASE_URL) as client:
-            data, headers, status_code = await client.walmart_search(
-                query,
-                start_page=start_page,
-                min_price=min_price,
-                max_price=max_price,
-                sort_by=norm_val(sort_by),
-                device=device,
-                domain=domain,
-                fulfillment_speed=norm_val(fulfillment_speed),
-                fulfillment_type=norm_val(fulfillment_type),
-                delivery_zip=delivery_zip,
-                store_id=store_id,
-                add_html=parse_bool(add_html),
-                light_request=parse_bool(light_request),
-                screenshot=parse_bool(screenshot),
-                retries=int(obj.get("retries") or 3),
-                backoff=float(obj.get("backoff") or 2.0),
-            )
+        _spinner = MiniBeeSpinner("walmart-search") if is_repl_mode() else nullcontext()
+        with _spinner:
+            async with Client(key, BASE_URL) as client:
+                data, headers, status_code = await client.walmart_search(
+                    query,
+                    start_page=start_page,
+                    min_price=min_price,
+                    max_price=max_price,
+                    sort_by=norm_val(sort_by),
+                    device=device,
+                    domain=domain,
+                    fulfillment_speed=norm_val(fulfillment_speed),
+                    fulfillment_type=norm_val(fulfillment_type),
+                    delivery_zip=delivery_zip,
+                    store_id=store_id,
+                    add_html=parse_bool(add_html),
+                    light_request=parse_bool(light_request),
+                    screenshot=parse_bool(screenshot),
+                    retries=int(obj.get("retries") or 3),
+                    backoff=float(obj.get("backoff") or 2.0),
+                )
         check_api_response(data, status_code)
         from ..credits import walmart_credits
 
@@ -302,6 +307,7 @@ def walmart_product_cmd(
             output_file=obj.get("output_file") or None,
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
+            usage_info=usage_info,
         )
         return
 
@@ -310,19 +316,21 @@ def walmart_product_cmd(
         raise SystemExit(1)
 
     async def _single() -> None:
-        async with Client(key, BASE_URL) as client:
-            data, headers, status_code = await client.walmart_product(
-                product_id,
-                device=device,
-                domain=domain,
-                delivery_zip=delivery_zip,
-                store_id=store_id,
-                add_html=parse_bool(add_html),
-                light_request=parse_bool(light_request),
-                screenshot=parse_bool(screenshot),
-                retries=int(obj.get("retries") or 3),
-                backoff=float(obj.get("backoff") or 2.0),
-            )
+        _spinner = MiniBeeSpinner("walmart-product") if is_repl_mode() else nullcontext()
+        with _spinner:
+            async with Client(key, BASE_URL) as client:
+                data, headers, status_code = await client.walmart_product(
+                    product_id,
+                    device=device,
+                    domain=domain,
+                    delivery_zip=delivery_zip,
+                    store_id=store_id,
+                    add_html=parse_bool(add_html),
+                    light_request=parse_bool(light_request),
+                    screenshot=parse_bool(screenshot),
+                    retries=int(obj.get("retries") or 3),
+                    backoff=float(obj.get("backoff") or 2.0),
+                )
         check_api_response(data, status_code)
         from ..credits import walmart_credits
 

@@ -17,6 +17,16 @@ import click
 
 from .client import Client, parse_usage
 from .config import BASE_URL, get_api_key
+from .theme import (
+    LiveCreditTracker,
+    echo_warning,
+    err_console,
+    format_honeycomb_trail,
+    is_repl_mode,
+    notify_completion,
+    print_completion_summary,
+    styled_echo,
+)
 
 # Map Content-Type (main part, lowercased) to file extension for batch output.
 CONTENT_TYPE_EXTENSION: dict[str, str] = {
@@ -442,11 +452,17 @@ def resolve_batch_concurrency(
     if user_concurrency > 0:
         cap = min(from_usage, CONCURRENCY_CAP)
         if user_concurrency > cap and warn:
-            click.echo(
-                f"Warning: concurrency capped at {cap} (plan limit or max {CONCURRENCY_CAP}). "
-                "Very high concurrency can overload your network.",
-                err=True,
-            )
+            if is_repl_mode():
+                echo_warning(
+                    f"Concurrency capped at {cap} (plan limit or max {CONCURRENCY_CAP}). "
+                    "Very high concurrency can overload your network."
+                )
+            else:
+                click.echo(
+                    f"Warning: concurrency capped at {cap} (plan limit or max {CONCURRENCY_CAP}). "
+                    "Very high concurrency can overload your network.",
+                    err=True,
+                )
         return min(user_concurrency, cap)
     return max(1, from_usage)
 
@@ -524,7 +540,10 @@ async def run_batch_async(
     concurrency = min(max(1, concurrency), len(inputs))
     source = "from --concurrency" if from_user else "from usage API"
     total = len(inputs)
-    click.echo(f"Batch: {total} items, concurrency {concurrency} ({source})", err=True)
+    if is_repl_mode():
+        styled_echo(f"Batch: {total} items, concurrency {concurrency} ({source})", style="info")
+    else:
+        click.echo(f"Batch: {total} items, concurrency {concurrency} ({source})", err=True)
     sem = asyncio.Semaphore(concurrency)
     completed = 0
     failure_count = 0
@@ -567,17 +586,30 @@ async def run_batch_async(
             failure_count += 1
         if show_progress:
             elapsed = time.monotonic() - start_time
-            parts = [f"[{completed}/{total}]"]
+            rps_val = None
+            eta_val = None
+            fail_pct = None
             if elapsed > 0:
-                rps = completed / elapsed
-                parts.append(f"{rps:.0f} req/s")
+                rps_val = completed / elapsed
                 remaining = total - completed
-                if rps > 0 and remaining > 0:
-                    parts.append(f"ETA {_format_eta(remaining / rps)}")
+                if rps_val > 0 and remaining > 0:
+                    eta_val = _format_eta(remaining / rps_val)
             if failure_count > 0:
-                pct = failure_count / completed * 100
-                parts.append(f"Failures: {pct:.0f}%")
-            click.echo(f"  {' | '.join(parts)}", err=True)
+                fail_pct = failure_count / completed * 100
+            if is_repl_mode():
+                progress = format_honeycomb_trail(
+                    completed, total, rps=rps_val, eta=eta_val, failure_pct=fail_pct
+                )
+                err_console.print(progress)
+            else:
+                parts = [f"[{completed}/{total}]"]
+                if rps_val is not None:
+                    parts.append(f"{rps_val:.0f} req/s")
+                if eta_val is not None:
+                    parts.append(f"ETA {eta_val}")
+                if fail_pct is not None and fail_pct > 0:
+                    parts.append(f"Failures: {fail_pct:.0f}%")
+                click.echo(f"  {' | '.join(parts)}", err=True)
         if on_result is not None:
             on_result(result)
         return i, result
@@ -1072,6 +1104,25 @@ def write_batch_output_csv(
 ApiCallFn = Callable[[Client, str], Awaitable[tuple[bytes, dict, int]]]
 
 
+def _batch_done(
+    plain_msg: str,
+    *,
+    succeeded: int = 0,
+    failed: int = 0,
+    duration_s: float | None = None,
+    output_path: str | None = None,
+    err: bool = True,
+) -> None:
+    """Print batch completion — fancy panel in REPL, plain line otherwise."""
+    if is_repl_mode():
+        print_completion_summary(
+            succeeded=succeeded, failed=failed, duration_s=duration_s, output_path=output_path
+        )
+        notify_completion("ScrapingBee", plain_msg)
+    else:
+        click.echo(plain_msg, err=err)
+
+
 async def _run_api_batch_async(
     key: str,
     inputs: list[str],
@@ -1091,6 +1142,7 @@ async def _run_api_batch_async(
     extract_field: str | None = None,
     fields: str | None = None,
 ) -> None:
+    _batch_start = time.monotonic()
     ndjson_pp = post_process if output_format == "ndjson" else None
     ndjson_fh = None
     if output_format == "ndjson" and output_file:
@@ -1162,6 +1214,7 @@ async def _run_api_batch_async(
 
     out_dir_resolved = ""
     out_file_resolved = ""
+    _duration = time.monotonic() - _batch_start
     if update_csv_path:
         out_file_resolved, succeeded, failed = update_csv_with_results(
             update_csv_path,
@@ -1169,9 +1222,12 @@ async def _run_api_batch_async(
             results,
             output_file,
         )
-        click.echo(
+        _batch_done(
             f"CSV updated: {succeeded} succeeded, {failed} failed. Output: {out_file_resolved}",
-            err=True,
+            succeeded=succeeded,
+            failed=failed,
+            duration_s=_duration,
+            output_path=out_file_resolved,
         )
     elif output_format == "ndjson":
         if ndjson_fh:
@@ -1180,9 +1236,12 @@ async def _run_api_batch_async(
         failed = sum(1 for r in results if r.error and not r.skipped)
         out_file_resolved = output_file or ""
         out_label = out_file_resolved or "<stdout>"
-        click.echo(
+        _batch_done(
             f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_label}",
-            err=True,
+            succeeded=succeeded,
+            failed=failed,
+            duration_s=_duration,
+            output_path=out_file_resolved or None,
         )
     elif output_format == "csv":
         if post_process:
@@ -1192,9 +1251,12 @@ async def _run_api_batch_async(
         out_file_resolved, succeeded, failed = write_batch_output_csv(
             results, output_file, fields=fields
         )
-        click.echo(
+        _batch_done(
             f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_file_resolved}",
-            err=True,
+            succeeded=succeeded,
+            failed=failed,
+            duration_s=_duration,
+            output_path=out_file_resolved,
         )
     else:
         out_dir_resolved, succeeded, failed = write_batch_output_to_dir(
@@ -1203,9 +1265,12 @@ async def _run_api_batch_async(
             verbose,
             post_process=post_process,
         )
-        click.echo(
+        _batch_done(
             f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_dir_resolved}",
-            err=True,
+            succeeded=succeeded,
+            failed=failed,
+            duration_s=_duration,
+            output_path=out_dir_resolved,
         )
     if on_complete:
         from .cli_utils import run_on_complete
@@ -1239,26 +1304,31 @@ def run_api_batch(
     output_file: str | None = None,
     extract_field: str | None = None,
     fields: str | None = None,
+    usage_info: dict | None = None,
 ) -> None:
     """Run a batch of single-item API calls and write results."""
-    asyncio.run(
-        _run_api_batch_async(
-            key=key,
-            inputs=inputs,
-            concurrency=concurrency,
-            from_user=from_user,
-            skip_n=skip_n,
-            output_dir=output_dir,
-            verbose=verbose,
-            show_progress=show_progress,
-            api_call=api_call,
-            on_complete=on_complete,
-            output_format=output_format,
-            post_process=post_process,
-            update_csv_path=update_csv_path,
-            input_column=input_column,
-            output_file=output_file,
-            extract_field=extract_field,
-            fields=fields,
+    # In REPL mode show live credit updates every 20s during the batch.
+    initial_remaining = usage_info.get("credits") if usage_info else None
+    initial_total = usage_info.get("max_api_credit") if usage_info else None
+    with LiveCreditTracker(key, initial_remaining=initial_remaining, total=initial_total):
+        asyncio.run(
+            _run_api_batch_async(
+                key=key,
+                inputs=inputs,
+                concurrency=concurrency,
+                from_user=from_user,
+                skip_n=skip_n,
+                output_dir=output_dir,
+                verbose=verbose,
+                show_progress=show_progress,
+                api_call=api_call,
+                on_complete=on_complete,
+                output_format=output_format,
+                post_process=post_process,
+                update_csv_path=update_csv_path,
+                input_column=input_column,
+                output_file=output_file,
+                extract_field=extract_field,
+                fields=fields,
+            )
         )
-    )

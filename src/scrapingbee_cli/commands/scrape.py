@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from contextlib import nullcontext
 
 import click
 from click_option_group import optgroup
@@ -38,6 +39,7 @@ from ..cli_utils import (
 from ..client import Client, pretty_json
 from ..config import BASE_URL, get_api_key
 from ..crawl import _preferred_extension_from_scrape_params
+from ..theme import LiveCreditTracker, MiniBeeSpinner, echo_error, is_repl_mode
 
 
 def _apply_chunking(url: str, data: bytes, chunk_size: int, chunk_overlap: int) -> bytes:
@@ -703,7 +705,10 @@ def scrape_cmd(
             if failed:
                 raise SystemExit(1)
 
-        asyncio.run(_batch())
+        _rem = usage_info.get("credits") if usage_info else None
+        _tot = usage_info.get("max_api_credit") if usage_info else None
+        with LiveCreditTracker(key, initial_remaining=_rem, total=_tot):
+            asyncio.run(_batch())
         return
 
     if not url and not scraping_config:
@@ -715,18 +720,25 @@ def scrape_cmd(
 
     async def _single() -> None:
         scrape_url = url or ""  # empty when using --scraping-config (API uses config's URL)
-        async with Client(key, BASE_URL, timeout=client_timeout) as client:
-            if escalate_proxy:
-                data, resp_headers, status_code = await scrape_with_escalation(
-                    client,
-                    scrape_url,
-                    scrape_kwargs,
-                    verbose=obj["verbose"],
-                )
-            else:
-                data, resp_headers, status_code = await client.scrape(scrape_url, **scrape_kwargs)
+        _spinner = MiniBeeSpinner("scrape") if is_repl_mode() else nullcontext()
+        with _spinner:
+            async with Client(key, BASE_URL, timeout=client_timeout) as client:
+                if escalate_proxy:
+                    data, resp_headers, status_code = await scrape_with_escalation(
+                        client,
+                        scrape_url,
+                        scrape_kwargs,
+                        verbose=obj["verbose"],
+                    )
+                else:
+                    data, resp_headers, status_code = await client.scrape(
+                        scrape_url, **scrape_kwargs
+                    )
         if not scrape_kwargs.get("transparent_status_code") and status_code >= 400:
-            click.echo(f"Error: HTTP {status_code}", err=True)
+            if is_repl_mode():
+                echo_error(f"Error: HTTP {status_code}")
+            else:
+                click.echo(f"Error: HTTP {status_code}", err=True)
             try:
                 click.echo(pretty_json(data), err=True)
             except Exception:

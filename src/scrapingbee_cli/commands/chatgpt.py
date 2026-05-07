@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 
 import click
 
@@ -24,6 +25,7 @@ from ..cli_utils import (
 )
 from ..client import Client
 from ..config import BASE_URL, get_api_key
+from ..theme import MiniBeeSpinner, is_repl_mode
 
 
 @click.command()
@@ -115,6 +117,7 @@ def chatgpt_cmd(
             output_file=obj.get("output_file") or None,
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
+            usage_info=usage_info,
         )
         return
 
@@ -125,15 +128,17 @@ def chatgpt_cmd(
     prompt_str = " ".join(prompt)
 
     async def _single() -> None:
-        async with Client(key, BASE_URL) as client:
-            data, headers, status_code = await client.chatgpt(
-                prompt_str,
-                search=parse_bool(search),
-                add_html=parse_bool(add_html),
-                country_code=country_code,
-                retries=int(obj.get("retries") or 3),
-                backoff=float(obj.get("backoff") or 2.0),
-            )
+        _spinner = MiniBeeSpinner("chatgpt") if is_repl_mode() else nullcontext()
+        with _spinner:
+            async with Client(key, BASE_URL) as client:
+                data, headers, status_code = await client.chatgpt(
+                    prompt_str,
+                    search=parse_bool(search),
+                    add_html=parse_bool(add_html),
+                    country_code=country_code,
+                    retries=int(obj.get("retries") or 3),
+                    backoff=float(obj.get("backoff") or 2.0),
+                )
         check_api_response(data, status_code)
         write_output(
             data,
