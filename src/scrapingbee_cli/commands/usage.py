@@ -62,7 +62,6 @@ def _show_repl_usage(data: bytes) -> None:
 
     from ..theme import (
         BEE_YELLOW,
-        _render_inline_bee,
         echo_key_value,
         echo_separator,
         err_console,
@@ -72,8 +71,6 @@ def _show_repl_usage(data: bytes) -> None:
     raw = _json.loads(data)
 
     header = Text()
-    header.append(" ")
-    header.append_text(_render_inline_bee(0))
     header.append("  Credit Usage", style=f"bold {BEE_YELLOW}")
     err_console.print(header)
     err_console.print()

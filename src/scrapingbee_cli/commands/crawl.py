@@ -432,6 +432,7 @@ def crawl_cmd(
     if not target:
         click.echo("Provide a spider name, one or more URLs, or --from-sitemap URL.", err=True)
         raise SystemExit(1)
+    usage_info: dict | None = None
     try:
         usage_info = get_batch_usage(None)
         concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, 1)
@@ -443,6 +444,7 @@ def crawl_cmd(
             "Use --concurrency to set explicitly.",
             err=True,
         )
+        usage_info = None
         concurrency = 1
         from_concurrency = False
         plan_concurrency = 0

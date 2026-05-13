@@ -29,6 +29,51 @@ if TYPE_CHECKING:
 SCRAPINGBEE_MIDDLEWARE = "scrapy_scrapingbee.ScrapingBeeMiddleware"
 MIDDLEWARE_PRIORITY = 725
 
+
+def _install_signal_handlers() -> bool:
+    """Whether Scrapy / Twisted should install Unix signal handlers.
+
+    Returns False when running inside the REPL — there we run crawl in a
+    worker thread (to avoid asyncio.run conflicting with prompt_toolkit's
+    main-thread loop), and ``signal.signal()`` is restricted to the main
+    thread, so any attempt to install handlers raises ``ValueError:
+    signal only works in main thread of the main interpreter``. The REPL
+    provides its own Ctrl+C handling that injects ``KeyboardInterrupt``
+    into the worker thread, so we don't need Scrapy's handlers there.
+
+    Returns True for direct ``scrapingbee crawl ...`` invocations — those
+    run on the main thread and benefit from Twisted's graceful shutdown.
+    """
+    try:
+        from .theme import is_repl_mode
+        return not is_repl_mode()
+    except Exception:
+        return True
+
+
+def _maybe_set_repl_log_file(settings) -> str | None:
+    """In REPL mode, also pipe Scrapy logs to a file on disk.
+
+    The REPL's virtual scrollback caps at ~10K lines and drops the oldest
+    10% when full, so long crawls lose history. Setting ``LOG_FILE`` makes
+    Scrapy *also* write its full log stream to the given path (terminal
+    output stays — LOG_FILE adds a file sink, doesn't replace stderr).
+    Returns the log path so the caller can surface it in the UI, or None
+    if logging-to-file wasn't enabled (non-REPL or on filesystem failure).
+    """
+    try:
+        from .theme import is_repl_mode
+        if not is_repl_mode():
+            return None
+        log_dir = Path.home() / ".cache" / "scrapingbee-cli"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "crawl.log"
+        settings.set("LOG_FILE", str(log_path))
+        settings.set("LOG_FILE_APPEND", False)  # fresh log per run
+        return str(log_path)
+    except Exception:
+        return None
+
 # 0 means unlimited
 DEFAULT_MAX_DEPTH = 0
 DEFAULT_MAX_PAGES = 0
@@ -617,9 +662,12 @@ def run_project_spider(
             download_delay=download_delay,
             autothrottle_enabled=autothrottle_enabled,
         )
+        log_path = _maybe_set_repl_log_file(settings)
+        if log_path:
+            click.echo(f"REPL mode: full crawl log → {log_path}", err=True)
         process = CrawlerProcess(settings)
         process.crawl(spider_name)
-        process.start()
+        process.start(install_signal_handlers=_install_signal_handlers())
     finally:
         os.chdir(orig_cwd)
 
@@ -682,6 +730,9 @@ def run_urls_spider(
     settings.set("LOG_LEVEL", "WARNING")
     if max_pages > 0:
         settings.set("CLOSESPIDER_PAGECOUNT", max_pages)
+    log_path = _maybe_set_repl_log_file(settings)
+    if log_path:
+        click.echo(f"REPL mode: full crawl log → {log_path}", err=True)
     process = CrawlerProcess(settings)
     process.crawl(
         GenericScrapingBeeSpider,
@@ -699,4 +750,4 @@ def run_urls_spider(
         exclude_pattern=exclude_pattern,
         save_pattern=save_pattern,
     )
-    process.start()
+    process.start(install_signal_handlers=_install_signal_handlers())

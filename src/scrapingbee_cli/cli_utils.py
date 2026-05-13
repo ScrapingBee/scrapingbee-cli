@@ -55,15 +55,10 @@ def _maybe_repl_preview(data: bytes) -> tuple[bytes, str | None, str | None]:
     if not is_text:
         return data, None, None
 
-    line_count = data.count(b"\n") + 1
-    if (
-        len(data) <= _REPL_PREVIEW_MAX_BYTES
-        and line_count <= _REPL_PREVIEW_MAX_LINES
-    ):
-        return data, None, None
-
-    # Save the full payload to a fixed cache file the user can scroll through
-    # via :view (or `less` directly).
+    # Always overwrite the ``last-output`` cache for every response, even
+    # short ones. Otherwise ``:view`` would happily display a stale large
+    # response from a previous command — the cache file would only get
+    # refreshed by responses big enough to trigger the truncation branch.
     full_path: str | None = None
     try:
         from pathlib import Path
@@ -75,6 +70,14 @@ def _maybe_repl_preview(data: bytes) -> tuple[bytes, str | None, str | None]:
         full_path = str(cache_path)
     except Exception:
         full_path = None
+
+    line_count = data.count(b"\n") + 1
+    if (
+        len(data) <= _REPL_PREVIEW_MAX_BYTES
+        and line_count <= _REPL_PREVIEW_MAX_LINES
+    ):
+        # Small enough to print inline — but the cache is still fresh.
+        return data, None, None
 
     text = data.decode("utf-8", errors="replace")
     lines = text.split("\n")

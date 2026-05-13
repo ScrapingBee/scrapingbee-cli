@@ -260,6 +260,12 @@ class MiniBeeSpinner:
         sys.stderr.flush()
 
     def start(self) -> None:
+        # Disabled inside the REPL: the spinner's `\r`-rewrites would flow
+        # through patch_stdout and trigger a bottom-strip redraw on every
+        # frame, causing visible flicker. The REPL's toolbar conveys the
+        # "running" state instead.
+        if _repl_mode:
+            return
         if not sys.stderr.isatty():
             return
         self._thread = threading.Thread(target=self._animate, daemon=True)
@@ -425,7 +431,13 @@ class LiveCreditTracker:
     # -- public --------------------------------------------------------------
 
     def start(self) -> None:
-        if not _repl_mode:
+        # Disabled inside the REPL. The REPL's bottom toolbar already shows
+        # credits + a usage gauge; running this thread additionally would
+        # repaint the bottom strip every ~0.5s via `\r`-rewrites that flow
+        # through patch_stdout, which is exactly what we see as flicker
+        # during a scrape. (Direct CLI mode — `scrapingbee scrape ...` outside
+        # the REPL — still gets the live meter on stderr as before.)
+        if _repl_mode:
             return
         # Print initial meter immediately if we have data
         if self._remaining is not None:

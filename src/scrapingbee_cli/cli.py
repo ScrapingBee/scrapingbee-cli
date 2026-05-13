@@ -71,8 +71,15 @@ def _show_active_schedules_hint() -> None:
 
 @click.group(invoke_without_command=True)
 @click.version_option(version=__version__)
+@click.option(
+    "--keep-bg",
+    is_flag=True,
+    default=False,
+    help="Keep the terminal's current background and theme colours instead "
+    "of forcing the REPL to black/light-grey.",
+)
 @click.pass_context
-def cli(ctx: click.Context) -> None:
+def cli(ctx: click.Context, keep_bg: bool) -> None:
     """ScrapingBee CLI - Web scraping API client.
 
     Commands: scrape (single or batch), crawl (Scrapy/quick-crawl), usage,
@@ -89,7 +96,7 @@ def cli(ctx: click.Context) -> None:
 
         _in_repl = True
         try:
-            run_repl(cli, __version__)
+            run_repl(cli, __version__, keep_bg=keep_bg)
         finally:
             _in_repl = False
 

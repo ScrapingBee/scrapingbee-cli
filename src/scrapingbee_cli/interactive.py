@@ -1,22 +1,27 @@
-"""Interactive REPL — Claude-style bordered input box with status toolbar.
+"""Interactive REPL — Ink-style hybrid (real scrollback + persistent bottom prompt).
 
-Built on prompt_toolkit's `Application` API (not `PromptSession`) so we can
-custom-layout the input area as a `Frame` with a chevron prompt mark, a
-bottom-anchored toolbar showing live state (credits, last cmd, settings),
-and a per-input syntax-highlighting lexer.
+The pattern is the same one Claude CLI uses (see Ink's `<Static>` component):
+- Past command output is printed to real terminal stdout → goes into terminal
+  scrollback. Mouse-wheel scrolling and selection work normally, resize is
+  handled by the terminal, and quitting leaves a clean record behind.
+- The input area + status toolbar live at the very bottom of the terminal as
+  a small persistent `Application(full_screen=False)`. prompt_toolkit's
+  `patch_stdout` redraws this strip whenever something prints, so the prompt
+  is always visible no matter how many lines of output flow above.
 
-Output from each command flows above the input box; the box stays anchored
-where the cursor was when the prompt opened.
+That means: typing a command, hitting enter, watching output stream in
+*above* the prompt — exactly the Claude experience — without losing real
+terminal scrollback or selection.
 
-Goals (revised; the previous version drifted from these):
-- Bordered input box, anchored bottom of the prompt area.
-- Restrained palette: yellow accent, soft amber chrome, dim greys, semantic
-  green / red. No yellow-on-yellow, no mascot, no animation.
-- Slash-prefixed REPL meta-commands (`:help`, `:q`, `:clear`, `:set`, ...).
-- Per-command tab completion driven by walking the click tree.
-- Toolbar with credits gauge, last status icon, `:set` chips, hint line.
-- Inline syntax highlighting: command, flags, URLs, quoted strings.
-- "Did you mean?" on typos. Multi-line input via trailing backslash.
+Implementation notes:
+- ONE persistent Application for the whole REPL session (not one-per-prompt).
+- Enter key binding runs the click command synchronously inside the handler.
+  Output from the command goes through patched stdout/stderr and lands above
+  the prompt.
+- Interactive commands (tutorial, auth) take over the terminal via
+  `run_in_terminal` so click.prompt() works.
+- On launch we pad with newlines so the prompt anchors at the bottom from
+  the first frame.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ import os
 import re
 import shlex
 import sys
+import threading
 import time
 from typing import TYPE_CHECKING, Any, Iterable
 
@@ -51,7 +57,9 @@ _STYLE_DICT = {
     "rule":          _AMBER,
     # Prompt mark inside the input area
     "promptmark":    f"{BEE_YELLOW} bold",
-    # Lexer (input syntax highlighting)
+    # Lexer (input syntax highlighting). Specific categories have explicit
+    # colours; unstyled tokens fall through to the application's default
+    # style (key `""`), which is set per-session in `_style_dict_for`.
     "lexer.cmd":     f"{BEE_YELLOW} bold",
     "lexer.flag":    _AMBER,
     "lexer.url":     _URL_CYAN,
@@ -73,6 +81,350 @@ _STYLE_DICT = {
     "completion-menu.meta.completion.current":  f"bg:{BEE_YELLOW} #000000",
     "auto-suggestion": "fg:#554400 italic",
 }
+
+
+def _style_dict_for(keep_bg: bool) -> dict[str, str]:
+    """Return the prompt_toolkit Style dict for the REPL session.
+
+    When `keep_bg` is False (default), set the empty class `""` (the default
+    style) to a dark-theme foreground. Combined with the OSC 11/10 escapes
+    that switch the *terminal* fg/bg to dark, this gives a single coherent
+    "dark theme" applied at both layers — explicit class colours stay as-is,
+    and any unstyled text falls back to a readable light-grey.
+
+    With `keep_bg=True`, the default class is empty and the terminal's own
+    fg/bg are untouched — the user's system theme drives all defaults.
+    """
+    style = dict(_STYLE_DICT)
+    if not keep_bg:
+        style[""] = "fg:#EAEAEA"
+    return style
+
+
+# ---------------------------------------------------------------------------
+# Binary-write adapter
+# ---------------------------------------------------------------------------
+
+
+class _BinaryAdapter:
+    """Adapter that exposes a ``.write(bytes)`` interface on top of a text
+    stream. Bolted onto prompt_toolkit's StdoutProxy at runtime so callers
+    that write bytes (``sys.stdout.buffer.write(b"...")``) work transparently
+    while we're inside a ``patch_stdout`` context.
+    """
+
+    def __init__(self, text_stream) -> None:
+        self._stream = text_stream
+
+    def write(self, data) -> int:
+        if data is None or len(data) == 0:
+            return 0
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            text = bytes(data).decode("utf-8", errors="replace")
+        else:
+            text = str(data)
+        self._stream.write(text)
+        return len(data)
+
+    def flush(self) -> None:
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    @property
+    def closed(self) -> bool:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Virtual scrollback (for full_screen=True mode)
+# ---------------------------------------------------------------------------
+
+
+def _split_fragments_to_width(
+    line: list[tuple[str, str]], width: int
+) -> list[list[tuple[str, str]]]:
+    """Split a logical line's (style, text) fragments into a list of
+    visual rows, each at most ``width`` characters wide.
+
+    Empty input → one empty row (so blank lines still occupy one row).
+    Preserves styles across the split — if a styled fragment crosses a
+    row boundary, the boundary lands inside the fragment with the same
+    style on both sides.
+    """
+    if width <= 0:
+        return [list(line)]
+    if not line:
+        return [[]]
+    out: list[list[tuple[str, str]]] = []
+    current: list[tuple[str, str]] = []
+    current_len = 0
+    for sty, text in line:
+        if not text:
+            continue
+        i = 0
+        n = len(text)
+        while i < n:
+            room = width - current_len
+            if room <= 0:
+                out.append(current)
+                current = []
+                current_len = 0
+                room = width
+            chunk = text[i : i + room]
+            current.append((sty, chunk))
+            current_len += len(chunk)
+            i += len(chunk)
+    if current or not out:
+        out.append(current)
+    return out
+
+
+class ScrollbackBuffer:
+    """In-memory line buffer that backs the scrollable output Window.
+
+    When the REPL runs in full_screen mode we own the alt buffer, so command
+    output can't flow into real terminal scrollback. Instead, every line of
+    output gets parsed for ANSI escapes and stored as a list of
+    ``(style, text)`` fragments. The render callback for the output Window
+    asks the buffer for a slice based on the current scroll offset.
+
+    Thread-safe append: command output is written from worker threads and
+    the renderer reads from the loop thread; a lock keeps the list
+    consistent without trying to be clever.
+    """
+
+    MAX_LINES = 10_000  # ring-buffer cap so a runaway scrape can't OOM us
+
+    def __init__(self) -> None:
+        self.lines: list[list[tuple[str, str]]] = []
+        # How many lines we're scrolled up from the bottom. 0 = at bottom
+        # (auto-follow); positive = locked at some scrolled-up position.
+        self.scroll_offset = 0
+        self._lock = threading.Lock()
+
+    def append_fragments(self, fragments: list[tuple[str, str]]) -> None:
+        """Append one rendered line (already styled) as the final entry."""
+        with self._lock:
+            self.lines.append(list(fragments))
+            if len(self.lines) > self.MAX_LINES:
+                # Drop the oldest 10% — cheaper than dropping one at a time
+                # if a scrape produces tens of thousands of lines.
+                drop = self.MAX_LINES // 10
+                del self.lines[:drop]
+
+    def append_ansi_text(self, text: str) -> None:
+        """Parse ANSI codes in ``text`` and append the resulting line(s).
+
+        Handles partial-line writes: callers may write text without a
+        trailing newline (e.g. an in-progress progress bar). We split on
+        ``\\n``; the final post-split chunk goes into a pending buffer
+        that gets prepended to the next write.
+        """
+        from prompt_toolkit.formatted_text import ANSI, to_formatted_text
+
+        # Combine with anything pending from a previous partial write.
+        with self._lock:
+            pending = self._pending if hasattr(self, "_pending") else ""
+            combined = pending + text
+            chunks = combined.split("\n")
+            self._pending = chunks[-1]  # may be empty if text ended with \n
+            complete = chunks[:-1]
+
+        for raw in complete:
+            try:
+                fragments = list(to_formatted_text(ANSI(raw)))
+            except Exception:
+                fragments = [("", raw)]
+            self.append_fragments(fragments)
+
+    def flush_pending(self) -> None:
+        """Commit any pending partial line as its own row."""
+        with self._lock:
+            pending = getattr(self, "_pending", "")
+            self._pending = ""
+        if pending:
+            from prompt_toolkit.formatted_text import ANSI, to_formatted_text
+
+            try:
+                fragments = list(to_formatted_text(ANSI(pending)))
+            except Exception:
+                fragments = [("", pending)]
+            self.append_fragments(fragments)
+
+    def get_visible_window(
+        self, height: int
+    ) -> list[list[tuple[str, str]]]:
+        """Backwards-compatible: visible slice in *logical* lines."""
+        with self._lock:
+            total = len(self.lines)
+            if total == 0:
+                return []
+            max_offset = max(0, total - height)
+            if self.scroll_offset > max_offset:
+                self.scroll_offset = max_offset
+            end = total - self.scroll_offset
+            start = max(0, end - height)
+            return [list(line) for line in self.lines[start:end]]
+
+    def get_visible_visual(
+        self, height: int, width: int
+    ) -> list[list[tuple[str, str]]]:
+        """Return visible content in *visual rows* (post-wrap).
+
+        Long single lines that wrap to multiple terminal rows are
+        pre-split here at ``width`` characters so each entry in the
+        returned list is exactly one terminal row. ``scroll_offset``
+        is in visual rows too, so one ``scroll_up(1)`` step moves the
+        view by exactly one visible row — even through a 5000-char
+        JSON blob that wraps to dozens of rows. This is what makes
+        wheel/trackpad scrolling feel consistent regardless of line
+        length.
+        """
+        if width <= 1:
+            return self.get_visible_window(height)
+        with self._lock:
+            # Walk from the bottom up, accumulating visual rows until we
+            # have enough to fill the window at the requested scroll offset.
+            # Stops early on large buffers — we don't need to wrap content
+            # the user can't see this frame.
+            need = max(0, self.scroll_offset) + max(1, height)
+            collected: list[list[tuple[str, str]]] = []  # newest-first
+            for line in reversed(self.lines):
+                for visual_row in reversed(_split_fragments_to_width(line, width)):
+                    collected.append(visual_row)
+                if len(collected) >= need:
+                    break
+            collected.reverse()  # back to oldest-first
+            total = len(collected)
+            max_offset = max(0, total - height)
+            if self.scroll_offset > max_offset:
+                self.scroll_offset = max_offset
+            end = total - self.scroll_offset
+            start = max(0, end - height)
+            return collected[start:end]
+
+    def scroll_up(self, n: int = 1) -> None:
+        with self._lock:
+            # Soft cap — get_visible_window will further clamp based on
+            # the actual rendered height, but capping here at total-1
+            # avoids letting offset grow unboundedly between renders.
+            self.scroll_offset = min(
+                max(0, len(self.lines) - 1), self.scroll_offset + n
+            )
+
+    def scroll_down(self, n: int = 1) -> None:
+        with self._lock:
+            self.scroll_offset = max(0, self.scroll_offset - n)
+
+    def scroll_to_top(self) -> None:
+        with self._lock:
+            self.scroll_offset = max(0, len(self.lines) - 1)
+
+    def scroll_to_bottom(self) -> None:
+        with self._lock:
+            self.scroll_offset = 0
+
+    @property
+    def at_bottom(self) -> bool:
+        with self._lock:
+            return self.scroll_offset == 0
+
+    def insert_line(self, index: int, fragments: list[tuple[str, str]]) -> None:
+        """Insert a single line at ``index`` (clamped to current length).
+
+        Used to retroactively splice the command-echo line in front of a
+        finished command's output, so the user sees ``❯ <cmd>`` above the
+        output rows the command produced — without the echo being visible
+        during execution itself (where the shimmer is the live indicator).
+        """
+        with self._lock:
+            i = max(0, min(index, len(self.lines)))
+            self.lines.insert(i, list(fragments))
+
+    def current_length(self) -> int:
+        with self._lock:
+            return len(self.lines)
+
+
+class ScrollbackWriter:
+    """File-like writer that pipes everything into a ScrollbackBuffer.
+
+    Installed as ``sys.stdout`` / ``sys.stderr`` while the REPL runs.
+    Click commands, rich consoles, plain ``print`` calls — all flow
+    through here, get parsed for ANSI, and end up as rows in the
+    scrollback. The renderer then displays them.
+
+    Thread-safe: command output comes from worker threads while the
+    prompt_toolkit loop renders on the main thread.
+    """
+
+    encoding = "utf-8"
+
+    def __init__(self, scrollback: ScrollbackBuffer, on_write: Any = None) -> None:
+        self._sb = scrollback
+        self._on_write = on_write  # callable to nudge the app to re-render
+
+    def write(self, s: Any) -> int:
+        if not s:
+            return 0
+        if isinstance(s, (bytes, bytearray, memoryview)):
+            s = bytes(s).decode("utf-8", errors="replace")
+        elif not isinstance(s, str):
+            s = str(s)
+        self._sb.append_ansi_text(s)
+        if self._on_write is not None:
+            try:
+                self._on_write()
+            except Exception:
+                pass
+        return len(s)
+
+    def flush(self) -> None:
+        # No-op — we don't buffer beyond ScrollbackBuffer's pending partial.
+        pass
+
+    def isatty(self) -> bool:
+        return True  # let click / rich treat us as a tty so colors stay on
+
+    @property
+    def closed(self) -> bool:
+        return False
+
+    def writable(self) -> bool:
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Shimmer (prompt_toolkit-formatted)
+# ---------------------------------------------------------------------------
+
+# Used for the live "running command" line above the input. A bright white
+# "peak" cell sweeps across the line, flanked by warm-yellow cells, with the
+# rest in brand yellow — reads as a glow running along the command text.
+_SHIMMER_PEAK_PT  = "#FFFFFF"
+_SHIMMER_FLANK_PT = "#FFE780"
+
+
+def _shimmer_pt(text: str, position: int, base_color: str) -> list[tuple[str, str]]:
+    """Return prompt_toolkit formatted-text tuples with a shimmer at `position`.
+
+    Character at `position` is peak white, neighbours at ±1 are warm yellow,
+    everything else uses ``base_color``. Combined with a position that
+    advances each tick this reads as a wave of light along the text.
+    """
+    out: list[tuple[str, str]] = []
+    for i, ch in enumerate(text):
+        distance = abs(i - position)
+        if distance == 0:
+            style = f"bold fg:{_SHIMMER_PEAK_PT}"
+        elif distance == 1:
+            style = f"bold fg:{_SHIMMER_FLANK_PT}"
+        else:
+            style = f"bold fg:{base_color}"
+        out.append((style, ch))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -123,13 +475,40 @@ def _walk_click_tree(cli_group: Any) -> tuple[
 class SessionState:
     """REPL-wide mutable state surfaced in the bottom toolbar."""
 
+    USAGE_REFRESH_INTERVAL = 30.0  # seconds between background usage API calls
+
     def __init__(self) -> None:
         self.last_command: str | None = None
         self.last_status: str | None = None     # "ok" | "fail"
         self.last_duration: float | None = None
-        self.credits: int | None = None
-        self.credits_total: int | None = None
+        # Live account state — surfaced in the toolbar. None ⇒ unknown / N/A.
+        self.credits: int | None = None              # available = max - used
+        self.credits_total: int | None = None        # max_api_credit
+        self.used_credits: int | None = None         # used_api_credit (latest)
+        self.used_credits_at_start: int | None = None  # snapshotted after first ok refresh
+        self.max_concurrency: int | None = None
+        self.current_concurrency: int | None = None
+        # Whether the API key was present when the REPL started (or after auth).
+        # Drives "N/A" rendering in the toolbar while False.
+        self.api_key_set: bool = False
+        # Short hash of the live API key. Used to detect logout/relogin with
+        # the same key — when the key is unchanged we keep the session
+        # counter going instead of resetting it to 0.
+        self.api_key_hash: str | None = None
+        self.last_usage_refresh_mono: float | None = None  # time.monotonic() of last ok refresh
         self.settings: dict[str, str] = {}
+        # In-flight execution state — drives the live "running" line above
+        # the input (with shimmer sweep) and the toolbar's running indicator.
+        self.is_running: bool = False
+        self.running_command: str | None = None
+        self.running_command_text: str | None = None  # full line as typed
+        self.run_start: float | None = None
+        self.tick: int = 0   # frame counter for the shimmer position
+        # Mouse mode toggle: "scroll" = mouse_support on (wheel scrolls the
+        # virtual buffer, drag-select needs a per-terminal modifier);
+        # "select" = mouse_support off (native drag-select works everywhere
+        # without a modifier, but wheel scroll stops). Alt+S toggles.
+        self.mouse_mode: str = "scroll"
 
     def apply_settings_to_args(self, args: list[str]) -> list[str]:
         if not self.settings:
@@ -144,6 +523,19 @@ class SessionState:
         return out
 
     def refresh_credits_from_cache(self) -> None:
+        """Populate live fields from the on-disk usage cache.
+
+        Cache file shape (written by ``batch.write_usage_file_cache``):
+            ``{"ts": <float>, "key_hash": <str>, "data": <parsed_dict>}``
+        where ``data`` is the output of ``client.parse_usage``:
+            ``{"credits": int, "max_api_credit": int, "max_concurrency": int}``
+
+        Only the ``data`` sub-dict has the values we care about; reading any
+        other key would just see metadata. Earlier versions iterated
+        ``data.values()`` and relied on the fact that the inner dict happened
+        to have matching keys — works by accident, brittle if the cache
+        format ever grows.
+        """
         try:
             import json
             from pathlib import Path
@@ -151,19 +543,70 @@ class SessionState:
             cache = Path.home() / ".config" / "scrapingbee-cli" / "usage_cache.json"
             if not cache.exists():
                 return
-            data = json.loads(cache.read_text(encoding="utf-8"))
-            entries = data.values() if isinstance(data, dict) else []
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                if isinstance(entry.get("credits"), int):
-                    self.credits = entry["credits"]
-                if isinstance(entry.get("max_api_credit"), int):
-                    self.credits_total = entry["max_api_credit"]
-                if self.credits is not None:
-                    return
+            entry = json.loads(cache.read_text(encoding="utf-8"))
+            if not isinstance(entry, dict):
+                return
+            data = entry.get("data")
+            if not isinstance(data, dict):
+                return
+            if isinstance(data.get("credits"), int):
+                self.credits = data["credits"]
+            if isinstance(data.get("max_api_credit"), int):
+                self.credits_total = data["max_api_credit"]
+            if isinstance(data.get("max_concurrency"), int):
+                self.max_concurrency = data["max_concurrency"]
         except Exception:
             return
+
+    def update_from_usage_response(self, raw: dict, key_hash: str | None = None) -> None:
+        """Apply a parsed JSON usage-API response to the live state.
+
+        Snapshots ``used_credits_at_start`` on first successful update so the
+        toolbar's "used this session" remains accurate even if the REPL was
+        launched before the first refresh succeeded. If ``key_hash`` is
+        provided and differs from the previous one, the session start
+        snapshot is reset — so logging out and back in with a *different*
+        key starts the counter at 0, but re-auth with the *same* key keeps
+        counting from where it left off.
+        """
+        if key_hash is not None and key_hash != self.api_key_hash:
+            # Key changed (initial set OR switched to a different key) —
+            # forget the previous session's baseline so the next snapshot
+            # below establishes a fresh one.
+            self.used_credits_at_start = None
+            self.api_key_hash = key_hash
+        max_credit = raw.get("max_api_credit")
+        used_credit = raw.get("used_api_credit")
+        if isinstance(max_credit, (int, float)):
+            self.credits_total = int(max_credit)
+        if isinstance(used_credit, (int, float)):
+            self.used_credits = int(used_credit)
+            if self.used_credits_at_start is None:
+                self.used_credits_at_start = int(used_credit)
+        if self.credits_total is not None and self.used_credits is not None:
+            self.credits = max(0, self.credits_total - self.used_credits)
+        mc = raw.get("max_concurrency")
+        if isinstance(mc, (int, float)):
+            self.max_concurrency = int(mc)
+        cc = raw.get("current_concurrency")
+        if isinstance(cc, (int, float)):
+            self.current_concurrency = int(cc)
+        self.last_usage_refresh_mono = time.monotonic()
+
+    @property
+    def session_credits_used(self) -> int | None:
+        if self.used_credits is None or self.used_credits_at_start is None:
+            return None
+        return max(0, self.used_credits - self.used_credits_at_start)
+
+    @property
+    def seconds_until_next_refresh(self) -> int | None:
+        if self.last_usage_refresh_mono is None:
+            return None
+        remaining = (
+            self.last_usage_refresh_mono + self.USAGE_REFRESH_INTERVAL - time.monotonic()
+        )
+        return max(0, int(remaining + 0.999))  # ceil so the countdown never shows -1
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +692,9 @@ def _make_lexer():
                     ):
                         tokens.append(("class:lexer.string", piece))
                     else:
+                        # Inherit the app default style (`""`), which is set
+                        # to light-grey foreground when --keep-bg is off and
+                        # left empty (terminal default) when --keep-bg is on.
                         tokens.append(("", piece))
                 return tokens
 
@@ -269,69 +715,279 @@ def _make_toolbar(state: SessionState):
     - Wide:   credits gauge · last cmd · all chips · hint
     - Medium: credits gauge · last cmd · chip count · hint
     - Narrow: credits · last cmd · chip count
+
+    While a command is in flight (``state.is_running``) the toolbar shows a
+    plain "running · <elapsed>s" label; the visual animation lives on the
+    shimmering command line just above the input.
     """
 
     def render() -> list[tuple[str, str]]:
-        import shutil
+        # Width: prefer prompt_toolkit's live SIGWINCH-tracked size when an
+        # app is actually running (so the toolbar stays in lockstep with
+        # what prompt_toolkit's own renderer is using). Outside a run loop,
+        # ``get_app()`` returns a dummy whose output reports a constant 80
+        # — useless — so we fall through to shutil in that case.
+        width = 0
+        try:
+            from prompt_toolkit.application import get_app as _get_app
 
-        width = shutil.get_terminal_size((80, 24)).columns
+            _app = _get_app()
+            # get_app() returns a dummy outside a real run loop; its output
+            # reports a constant 80 — useless. Only trust the live app.
+            if getattr(_app, "is_running", False):
+                width = _app.output.get_size().columns
+        except Exception:
+            pass
+        if not width:
+            import shutil
+            width = shutil.get_terminal_size((80, 24)).columns
         segs: list[tuple[str, str]] = [("class:toolbar", "  ")]
 
-        # --- Credits + gauge --------------------------------------------------
-        segs.append(("class:toolbar.label", "credits "))
-        if state.credits is not None:
-            segs.append(("class:toolbar.value", _format_credits(state.credits)))
+        # --- In-flight: running label + elapsed + rotating usage stats ───
+        # Layout: ``running · 12.3s`` pinned on the left, ``Ctrl+C to stop``
+        # pinned on the right, and a rotating stat (Used Session / Concurrency
+        # / Next Update) in the middle. The rotation cycles every 5s so the
+        # user can monitor credits being consumed during a long scrape
+        # without leaving the command.
+        if state.is_running:
+            segs.append(("class:toolbar.label", "running"))
+            if state.run_start is not None:
+                elapsed = time.monotonic() - state.run_start
+                segs.append(("class:toolbar", f"  ·  {elapsed:.1f}s"))
+
+            # Build rotating stat chunks (subset of the idle toolbar's info).
+            stat_chunks: list[list[tuple[str, str]]] = []
+            if state.api_key_set and state.credits is not None:
+                stat_chunks.append([
+                    ("class:toolbar.label", "Available "),
+                    ("class:toolbar.value", _format_credits(state.credits)),
+                ])
+            scu = state.session_credits_used if state.api_key_set else None
+            stat_chunks.append([
+                ("class:toolbar.label", "Used (Session) "),
+                ("class:toolbar.value", _format_credits(scu) if scu is not None else "N/A"),
+            ])
+            if state.api_key_set and state.max_concurrency is not None:
+                cur = state.current_concurrency if state.current_concurrency is not None else 0
+                stat_chunks.append([
+                    ("class:toolbar.label", "Concurrency "),
+                    ("class:toolbar.value", f"{cur}/{state.max_concurrency}"),
+                ])
+            if state.api_key_set:
+                nxt = state.seconds_until_next_refresh
+                if nxt is not None:
+                    stat_chunks.append([
+                        ("class:toolbar.label", "Next Update "),
+                        ("class:toolbar.value", f"{nxt}s"),
+                    ])
+
+            stop_hint = "Ctrl+C to stop"
+            stop_hint_len = len(stop_hint)
+            so_far = sum(len(t) for _, t in segs)
+            # Reserve room for: "  ·  <stat>  ..." + right-aligned stop hint
+            available = max(0, width - so_far - stop_hint_len - 6)
+
+            # Pick the stat chunk for this rotation tick — only if it fits.
+            if stat_chunks and available > 8:
+                idx = int(time.monotonic() / 5) % len(stat_chunks)
+                chunk = stat_chunks[idx]
+                chunk_len = sum(len(t) for _, t in chunk)
+                if chunk_len + 5 <= available:
+                    segs.append(("class:toolbar", "  ·  "))
+                    segs.extend(chunk)
+
+            # Setting chips still show below if any room remains
+            if state.settings:
+                so_far = sum(len(t) for _, t in segs)
+                budget = max(0, width - so_far - stop_hint_len - 4)
+                shown = 0
+                for k, v in state.settings.items():
+                    chip = f" {k}={v} "
+                    if budget < len(chip) + 2 and shown > 0:
+                        break
+                    segs.append(("class:toolbar", "  "))
+                    segs.append(("class:toolbar.chip", chip))
+                    budget -= len(chip) + 2
+                    shown += 1
+                remaining = len(state.settings) - shown
+                if remaining > 0:
+                    segs.append(("class:toolbar", "  "))
+                    segs.append(("class:toolbar.hint", f"+{remaining} more"))
+
+            # Right-align "Ctrl+C to stop" hint
+            used = sum(len(t) for _, t in segs)
+            if width - used > stop_hint_len + 4:
+                segs.append(("class:toolbar", " " * max(2, width - used - stop_hint_len - 2)))
+                segs.append(("class:toolbar.hint", stop_hint))
+            return segs
+
+        # --- Idle: build all fields, then either render statically or paginate
+        # When the joined toolbar text exceeds the terminal width we'd
+        # otherwise emit a line longer than the screen — the terminal soft-
+        # wraps it into a phantom 2nd row that prompt_toolkit doesn't know
+        # about, leaving a ghost-toolbar in scrollback on resize. To keep
+        # everything visible without scrolling jitter, we greedy-pack fields
+        # into "pages" that each fit, then cycle pages every PAGE_SECONDS.
+        # Each page is rendered statically — no per-frame motion — so it
+        # reads cleanly and doesn't waste redraws.
+        fields: list[list[tuple[str, str]]] = []
+
+        # Available Credits
+        avail: list[tuple[str, str]] = [("class:toolbar.label", "Available Credits ")]
+        if state.api_key_set and state.credits is not None:
+            avail.append(("class:toolbar.value", _format_credits(state.credits)))
             if state.credits_total:
                 used_pct = max(
                     0,
                     min(100, 100 - int(state.credits / state.credits_total * 100)),
                 )
-                segs.append(("class:toolbar", " "))
-                segs.append(("class:toolbar.gauge", _credit_gauge(used_pct)))
+                avail.append(("class:toolbar.hint", f"  ({used_pct}% used)"))
         else:
-            segs.append(("class:toolbar.value", "—"))
+            avail.append(("class:toolbar.value", "N/A"))
+        fields.append(avail)
 
-        # --- Last command -----------------------------------------------------
-        if state.last_command:
-            segs.append(("class:toolbar", "   ·   "))
-            segs.append(("class:toolbar.label", "last "))
-            segs.append(("class:toolbar.value", state.last_command))
-            segs.append(("class:toolbar", " "))
-            if state.last_status == "ok":
-                segs.append(("class:toolbar.ok", "✓"))
-            elif state.last_status == "fail":
-                segs.append(("class:toolbar.fail", "✗"))
-            if state.last_duration is not None:
-                segs.append(("class:toolbar", f" {state.last_duration:.1f}s"))
+        # Used (Current Session)
+        used_chunk: list[tuple[str, str]] = [
+            ("class:toolbar.label", "Used (Current Session) ")
+        ]
+        scu = state.session_credits_used if state.api_key_set else None
+        used_chunk.append(
+            ("class:toolbar.value", _format_credits(scu) if scu is not None else "N/A")
+        )
+        fields.append(used_chunk)
 
-        # --- Session setting chips (with overflow handling) -------------------
+        # Concurrency
+        conc_chunk: list[tuple[str, str]] = [("class:toolbar.label", "Concurrency ")]
+        if state.api_key_set and state.max_concurrency is not None:
+            cur = state.current_concurrency if state.current_concurrency is not None else 0
+            conc_chunk.append(("class:toolbar.value", f"{cur}/{state.max_concurrency}"))
+        else:
+            conc_chunk.append(("class:toolbar.value", "N/A"))
+        fields.append(conc_chunk)
+
+        # Next Update countdown (only after first successful refresh)
+        if state.api_key_set:
+            nxt = state.seconds_until_next_refresh
+            if nxt is not None:
+                fields.append([
+                    ("class:toolbar.label", "Next Update "),
+                    ("class:toolbar.value", f"{nxt}s"),
+                ])
+
+        # (Removed "last cmd" indicator — the typed command and its
+        # ✓/✗ footer are already visible in the scrollback echo, so a
+        # toolbar copy doesn't add information and just consumes width.)
+
+        # Session setting chips
         if state.settings:
-            # Estimate space already used + reserved for hint
-            so_far = sum(len(text) for _, text in segs)
-            hint_len = 24  # roughly "tab · ↑↓ · :help · :q" + spacing
-            budget = max(0, width - so_far - hint_len - 4)
+            chip_segs: list[tuple[str, str]] = []
+            for k, v in state.settings.items():
+                if chip_segs:
+                    chip_segs.append(("class:toolbar", " "))
+                chip_segs.append(("class:toolbar.chip", f" {k}={v} "))
+            fields.append(chip_segs)
 
-            chips = list(state.settings.items())
-            shown = 0
-            for k, v in chips:
-                chip_text = f" {k}={v} "
-                if budget < len(chip_text) + 2 and shown > 0:
+        # Hint chunk — surfaces the active mouse mode and how to switch.
+        # Replaces the older "tab · ↑↓ · :help · :q" cheat-sheet, since the
+        # mode toggle is the one keybinding the user might actually need
+        # to *change* during a session. The other shortcuts are in :help.
+        if not state.api_key_set:
+            hint_text = "type `auth` to set API key"
+            hint_chunk: list[tuple[str, str]] = [("class:toolbar.hint", hint_text)]
+        else:
+            mode_label = (
+                "Scroll mode" if state.mouse_mode == "scroll" else "Select mode"
+            )
+            hint_chunk = [
+                ("class:toolbar.value", mode_label),
+                ("class:toolbar.hint", "  ·  Tab to switch"),
+            ]
+
+        LEADING = "  "
+        SEP = "  ·  "
+        PAGE_SECONDS = 5  # how long each page is displayed before rotating
+
+        def _seg_len(chunk: list[tuple[str, str]]) -> int:
+            return sum(len(t) for _, t in chunk)
+
+        # The mode hint ("Scroll mode · Tab to switch" / auth nudge) is the
+        # one piece of toolbar content the user needs to see at all times —
+        # it advertises the only globally-mutable runtime mode. Pin it on
+        # every page by reserving its width up-front and pagination only
+        # packs the *other* fields into the remaining space.
+        hint_len = _seg_len(hint_chunk)
+        budget = max(10, width - 2)
+        # Reserve room for hint + separator on every page. If the hint alone
+        # is wider than the budget, we'll still try to render it (final
+        # hard-truncate at the bottom of this function will clip).
+        field_budget = max(0, budget - hint_len - len(SEP))
+
+        # Greedy-pack the non-hint fields into pages, each ≤ field_budget.
+        pages: list[list[list[tuple[str, str]]]] = []
+        cur: list[list[tuple[str, str]]] = []
+        cur_len = len(LEADING)
+        for chunk in fields:
+            chunk_len = _seg_len(chunk)
+            added = chunk_len + (len(SEP) if cur else 0)
+            if cur and cur_len + added > field_budget:
+                pages.append(cur)
+                cur = [chunk]
+                cur_len = len(LEADING) + chunk_len
+            else:
+                cur.append(chunk)
+                cur_len += added
+        if cur:
+            pages.append(cur)
+        # Even if there are no non-hint fields (extreme narrow), produce
+        # one empty page so the hint still renders.
+        if not pages:
+            pages = [[]]
+
+        # Rotate pages by wall-clock time. Single-page case is static.
+        if len(pages) == 1:
+            page_idx = 0
+        else:
+            page_idx = int(time.monotonic() / PAGE_SECONDS) % len(pages)
+        page = pages[page_idx]
+
+        # Compose the chosen page.
+        segs: list[tuple[str, str]] = [("class:toolbar", LEADING)]
+        for i, chunk in enumerate(page):
+            if i > 0:
+                segs.append(("class:toolbar", SEP))
+            segs.extend(chunk)
+
+        # Page indicator (e.g. "1/3") trailing — only when rotating.
+        if len(pages) > 1:
+            indicator = f"  ({page_idx + 1}/{len(pages)})"
+            cur_total = sum(len(t) for _, t in segs)
+            if cur_total + len(indicator) <= field_budget:
+                segs.append(("class:toolbar.hint", indicator))
+
+        # Hint always rendered on the right edge of every page.
+        cur_total = sum(len(t) for _, t in segs)
+        pad = max(2, width - cur_total - hint_len - 2)
+        segs.append(("class:toolbar", " " * pad))
+        segs.extend(hint_chunk)
+
+        # Final safety: hard-truncate so we never emit a line wider than
+        # the terminal (prevents the soft-wrap ghost-toolbar artifact).
+        total = sum(len(t) for _, t in segs)
+        if total > width - 1:
+            cap = max(0, width - 1)
+            kept: list[tuple[str, str]] = []
+            used_len = 0
+            for sty, text in segs:
+                room = cap - used_len
+                if room <= 0:
                     break
-                segs.append(("class:toolbar", "  "))
-                segs.append(("class:toolbar.chip", chip_text))
-                budget -= len(chip_text) + 2
-                shown += 1
-            remaining = len(chips) - shown
-            if remaining > 0:
-                segs.append(("class:toolbar", "  "))
-                segs.append(("class:toolbar.hint", f"+{remaining} more"))
-
-        # --- Hint (rightmost, but only if there's room) -----------------------
-        used = sum(len(text) for _, text in segs)
-        if width - used > 26:
-            segs.append(("class:toolbar", " " * max(2, width - used - 24)))
-            segs.append(("class:toolbar.hint", "tab · ↑↓ · :help · :q"))
-
+                if len(text) <= room:
+                    kept.append((sty, text))
+                    used_len += len(text)
+                else:
+                    kept.append((sty, text[: max(0, room - 1)] + "…"))
+                    break
+            segs = kept
         return segs
 
     return render
@@ -452,21 +1108,125 @@ def _build_application(state: SessionState, completer: Any, history_path: str):
 # ---------------------------------------------------------------------------
 
 
-def _print_banner(version: str) -> None:
-    line = Text()
-    line.append(" ScrapingBee ", style=f"bold black on {BEE_YELLOW}")
-    line.append("  ")
-    line.append(f"v{version}", style=f"bold {BEE_YELLOW}")
-    line.append("  ")
-    line.append("Type ", style=BEE_DIM)
-    line.append(":help", style=f"bold {BEE_YELLOW}")
-    line.append(" for commands", style=BEE_DIM)
-    err_console.print()
-    err_console.print(line)
-    err_console.print()
+# ScrapingBee wordmark — approximation of the actual brand logo
+# (https://www.scrapingbee.com/images/favico.svg): three honeycomb cells
+# arranged in an L-shape (top, bottom-left, bottom-right) next to the
+# "ScrapingBee" text rendered in the figlet ``smblock`` font.
+# All rendered in brand yellow (terminal limits us to single-colour per
+# Window; the real SVG has the bottom-left cell highlighted vs the other
+# two). ~42 cols × 4 rows.
+# "ScrapingBee" rendered in the figlet ``smblock`` font — 4 rows × 32 cols,
+# roughly the same width as the "Web scraping from the terminal" tagline.
+# Same block-letter style as the old 6-row logo, just compact.
+_SCRAPINGBEE_LOGO = [
+    "  ▞▀▖            ▗       ▛▀▖      ",
+    "  ▚▄ ▞▀▖▙▀▖▝▀▖▛▀▖▄ ▛▀▖▞▀▌▙▄▘▞▀▖▞▀▖",
+    "  ▖ ▌▌ ▖▌  ▞▀▌▙▄▘▐ ▌ ▌▚▄▌▌ ▌▛▀ ▛▀ ",
+    "  ▝▀ ▝▀ ▘  ▝▀▘▌  ▀▘▘ ▘▗▄▘▀▀ ▝▀▘▝▀▘",
+]
+# Legacy 6-row logos kept around in case we want to swap back later or
+# use them elsewhere (e.g. a one-shot welcome screen). The pinned REPL
+# banner uses the compact form above.
+_BEE_LOGO = [
+    "  ██████╗ ███████╗███████╗",
+    "  ██╔══██╗██╔════╝██╔════╝",
+    "  ██████╔╝█████╗  █████╗  ",
+    "  ██╔══██╗██╔══╝  ██╔══╝  ",
+    "  ██████╔╝███████╗███████╗",
+    "  ╚═════╝ ╚══════╝╚══════╝",
+]
+
+
+def _render_banner(version: str) -> str:
+    """Render the startup banner to an ANSI-formatted string.
+
+    Rendered into an in-memory StringIO via rich so the whole banner is
+    assembled before any write to the terminal — avoids interleaving with
+    other stdout writes (clear-screen, padding newlines) and avoids any
+    timing-related re-ordering between rich's internal flushing and our
+    direct sys.stdout.write calls.
+    """
+    from io import StringIO
+
+    from rich.console import Console
+
+    from .theme import SCRAPINGBEE_THEME
+
+    buf = StringIO()
+    c = Console(
+        file=buf,
+        theme=SCRAPINGBEE_THEME,
+        highlight=False,
+        force_terminal=True,
+        width=200,  # don't wrap the wide ASCII logo
+    )
+    c.print()
+    for line in _SCRAPINGBEE_LOGO:
+        c.print(f"[bold {BEE_YELLOW}]{line}[/]")
+    for line in _BEE_LOGO:
+        c.print(f"[bold white]{line}[/]")
+    c.print()
+    # Version
+    c.print(f"  [bold {BEE_YELLOW}]v{version}[/]")
+    # Tagline
+    c.print(f"  [{BEE_DIM}]Web scraping from the terminal[/]")
+    c.print()
+    # Hint
+    hint = Text()
+    hint.append("  Type ", style=BEE_DIM)
+    hint.append(":help", style=f"bold {BEE_YELLOW}")
+    hint.append(" for commands, ", style=BEE_DIM)
+    hint.append(":q", style=f"bold {BEE_YELLOW}")
+    hint.append(" to quit", style=BEE_DIM)
+    c.print(hint)
+    c.print()
+    return buf.getvalue()
 
 
 def _print_help(commands: dict[str, str]) -> None:
+    """Print the REPL command list with a two-column layout.
+
+    Long descriptions wrap with a hanging indent so continuation lines line
+    up under the description column instead of flowing back to column 0.
+    Column widths:
+        4 (leading)  +  20 (cmd col)  +  2 (gap)  =  26-col indent for
+    continuation lines. The description column gets the rest of the
+    terminal width.
+    """
+    import shutil
+    import textwrap
+
+    cmd_col = 20
+    leading = 4
+    gap = 2
+    indent_width = leading + cmd_col + gap  # 26
+    indent_str = " " * indent_width
+
+    def _print_row(cmd: str, desc: str) -> None:
+        try:
+            term_w = shutil.get_terminal_size((80, 24)).columns
+        except Exception:
+            term_w = 80
+        desc_w = max(20, term_w - indent_width)
+        lines = textwrap.wrap(desc, width=desc_w) or [""]
+        # Build Text objects directly instead of using Rich's markup
+        # parser — markup strings like ``[dim]...[/]`` go through Rich's
+        # console renderer which strips leading whitespace and re-wraps
+        # at its own console width (re-wrapping our pre-wrapped lines
+        # mid-word, and dropping the hanging indent). Plain Text objects
+        # plus ``soft_wrap=True`` keep the spans and indent intact.
+        first = Text()
+        first.append(" " * leading)
+        first.append(cmd.ljust(cmd_col), style=f"bold {BEE_YELLOW}")
+        first.append(" " * gap)
+        first.append(lines[0], style=BEE_DIM)
+        err_console.print(first, soft_wrap=True)
+        for line in lines[1:]:
+            cont = Text()
+            cont.append(indent_str)
+            cont.append(line, style=BEE_DIM)
+            err_console.print(cont, soft_wrap=True)
+
     err_console.print()
     groups = {
         "Pages":        ["scrape", "crawl"],
@@ -479,12 +1239,12 @@ def _print_help(commands: dict[str, str]) -> None:
         "Account":      ["auth", "logout"],
         "Tools":        ["usage", "schedule", "export", "docs", "unsafe"],
     }
-    for group_name, cmds in groups.items():
+    for i, (group_name, cmds) in enumerate(groups.items()):
+        if i > 0:
+            err_console.print()  # blank row between categories for breathing room
         err_console.print(f"  [{BEE_DIM}]{group_name}[/]")
         for cmd in cmds:
-            err_console.print(
-                f"    [bold {BEE_YELLOW}]{cmd:<20}[/]  [dim]{commands.get(cmd, '')}[/]"
-            )
+            _print_row(cmd, commands.get(cmd, ""))
     err_console.print()
     err_console.print(f"  [{BEE_DIM}]REPL[/]")
     for cmd, desc in [
@@ -497,7 +1257,7 @@ def _print_help(commands: dict[str, str]) -> None:
         (":show",       "Show current session defaults"),
         (":q, :quit",   "Quit the REPL"),
     ]:
-        err_console.print(f"    [bold {BEE_YELLOW}]{cmd:<20}[/]  [dim]{desc}[/]")
+        _print_row(cmd, desc)
     err_console.print()
 
 
@@ -521,6 +1281,8 @@ def _print_command_footer(status: str, duration: float) -> None:
         line.append("✓", style=f"bold {_GREEN}")
     elif status == "fail":
         line.append("✗", style=f"bold {BEE_RED}")
+    elif status == "stopped":
+        line.append("■", style=f"bold {BEE_YELLOW}")
     line.append(f"  {duration:.2f}s", style=BEE_DIM)
     err_console.print(line)
     err_console.print()
@@ -537,8 +1299,11 @@ def _open_pager(path: str) -> None:
     Replaces external tools (`less` on Unix, `more` on Windows) with an
     in-process viewer so the CLI works identically everywhere with no extra
     install. Arrow keys / page up-down / home / end / mouse wheel scroll;
-    `q` or `Esc` exits back to the REPL.
+    `q` or `Esc` exits back to the REPL. Long lines wrap to the terminal
+    width so you can see all of a wide JSON or HTML response without
+    horizontal scrolling. Press `p` to toggle pretty-printed JSON.
     """
+    import json
     from pathlib import Path
 
     from prompt_toolkit.application import Application
@@ -552,27 +1317,64 @@ def _open_pager(path: str) -> None:
     from prompt_toolkit.layout.dimension import D
     from prompt_toolkit.styles import Style
 
-    text = Path(path).read_text(encoding="utf-8", errors="replace")
-    line_count = text.count("\n") + 1
+    raw_text = Path(path).read_text(encoding="utf-8", errors="replace")
+
+    # If the cached output is valid JSON, prepare a pretty-printed
+    # version up-front. We default to pretty mode so the user sees the
+    # human-readable form first; `r` toggles raw if they need to grep
+    # the original bytes. When the content isn't JSON, pretty is
+    # unavailable and we stick with raw.
+    pretty_text: str | None
+    try:
+        pretty_text = json.dumps(
+            json.loads(raw_text), indent=2, ensure_ascii=False
+        )
+    except Exception:
+        pretty_text = None
+
+    mode = ["pretty" if pretty_text is not None else "raw"]
 
     buffer = Buffer(read_only=Condition(lambda: True))
-    buffer.set_document(Document(text=text, cursor_position=0), bypass_readonly=True)
+
+    def _set_text(s: str) -> None:
+        buffer.set_document(Document(text=s, cursor_position=0), bypass_readonly=True)
+
+    _set_text(pretty_text if mode[0] == "pretty" else raw_text)
+
+    def _current_line_count() -> int:
+        return buffer.document.line_count
 
     text_window = Window(
         content=BufferControl(buffer=buffer),
-        wrap_lines=False,
+        # Wrap long lines so a multi-KB JSON / HTML response is fully
+        # visible without horizontal scrolling. The previous default
+        # (wrap_lines=False) clipped at column-N and the rest was just
+        # gone unless the user used Left/Right scrolling.
+        wrap_lines=True,
     )
 
     def _status_line():
         cursor_line = buffer.document.cursor_position_row + 1
-        pct = int(cursor_line / max(1, line_count) * 100)
+        total = _current_line_count()
+        pct = int(cursor_line / max(1, total) * 100)
+        mode_label = "pretty" if mode[0] == "pretty" else "raw"
+        # `r` toggles raw on/off. Hidden when there's no pretty version
+        # available (non-JSON content) — there'd be nothing to toggle to.
+        toggle_hint = (
+            ("r: pretty" if mode[0] == "raw" else "r: raw")
+            if pretty_text is not None else ""
+        )
+        right_hint = (
+            "↑↓ PgUp/PgDn scroll" + (f"  ·  {toggle_hint}" if toggle_hint else "")
+            + "  ·  q to exit"
+        )
         return [
             ("class:pager.bar", "  "),
-            ("class:pager.value", f"{cursor_line}/{line_count}"),
-            ("class:pager.bar", f"  ({pct}%)  ·  "),
+            ("class:pager.value", f"{cursor_line}/{total}"),
+            ("class:pager.bar", f"  ({pct}%)  ·  {mode_label}  ·  "),
             ("class:pager.label", path),
             ("class:pager.bar", "    "),
-            ("class:pager.hint", "↑↓ PgUp/PgDn Home/End scroll  ·  q / Esc to exit"),
+            ("class:pager.hint", right_hint),
         ]
 
     status_window = Window(
@@ -589,6 +1391,19 @@ def _open_pager(path: str) -> None:
     @kb.add("c-c")
     def _exit(event):
         event.app.exit()
+
+    @kb.add("r")
+    def _toggle_raw(_e):
+        # No-op if the content isn't JSON — pretty isn't available, so
+        # we're already showing raw and there's nothing to toggle to.
+        if pretty_text is None:
+            return
+        if mode[0] == "pretty":
+            mode[0] = "raw"
+            _set_text(raw_text)
+        else:
+            mode[0] = "pretty"
+            _set_text(pretty_text)
 
     @kb.add("up")
     def _up(_e):
@@ -631,14 +1446,54 @@ def _open_pager(path: str) -> None:
         }
     )
 
-    app = Application(
+    pager_app = Application(
         layout=layout,
         key_bindings=kb,
         style=style,
         full_screen=True,
         mouse_support=True,
     )
-    app.run()
+
+    # We're (almost certainly) called from inside the REPL's prompt_toolkit
+    # event loop — a sync key-binding handler invoked `:view`. Calling
+    # ``pager_app.run()`` here would hit ``asyncio.run()`` from inside a
+    # running loop and raise. Detect that and farm the pager out to a
+    # worker thread which has no loop of its own, so ``app.run()`` can
+    # safely create a fresh one. Blocking the main thread on ``join()``
+    # freezes the outer app's rendering while the pager has the terminal,
+    # which is exactly what we want — the pager uses the alternate screen
+    # buffer (full_screen=True), then yields it back on exit.
+    try:
+        import asyncio as _asyncio_check
+
+        _asyncio_check.get_running_loop()
+        in_loop = True
+    except RuntimeError:
+        in_loop = False
+
+    if not in_loop:
+        pager_app.run()
+        return
+
+    err_holder: list[BaseException | None] = [None]
+
+    def _run_in_worker() -> None:
+        try:
+            pager_app.run()
+        except BaseException as e:
+            err_holder[0] = e
+
+    t = threading.Thread(target=_run_in_worker, daemon=False)
+    t.start()
+    t.join()
+    if err_holder[0] is not None:
+        raise err_holder[0]
+    # NOTE: the caller (run_repl, after :view) is responsible for
+    # re-entering the alt buffer and resetting the outer app's renderer
+    # cache. prompt_toolkit's Application.run cleanup emits
+    # ``\x1b[?1049l`` on exit, which kicks the outer REPL out of the
+    # alt buffer too — only the caller has access to ``app`` to invalidate
+    # it properly, so the cleanup lives there.
 
 
 def _normalize_setting_key(key: str) -> str:
@@ -699,6 +1554,7 @@ def _handle_meta(
     all_known_flags: set[str],
     bool_flags: set[str],
     choice_flags: dict[str, list[str]],
+    scrollback: ScrollbackBuffer | None = None,
 ) -> str | None:
     parts = line.strip().split(None, 1)
     head = parts[0]
@@ -711,8 +1567,15 @@ def _handle_meta(
         _print_help(command_help)
         return "ok"
     if head_low in {":clear", "clear"}:
-        sys.stderr.write("\033[2J\033[H")
-        sys.stderr.flush()
+        if scrollback is not None:
+            # full_screen mode — clear our virtual buffer
+            with scrollback._lock:
+                scrollback.lines.clear()
+                scrollback.scroll_offset = 0
+        else:
+            # Legacy fallback (shouldn't trigger in current REPL)
+            sys.stderr.write("\033[2J\033[H")
+            sys.stderr.flush()
         return "ok"
     if head_low == ":show":
         if not state.settings:
@@ -734,6 +1597,9 @@ def _handle_meta(
             return "ok"
         try:
             _open_pager(str(cache_path))
+        except FileNotFoundError:
+            # File got deleted between exists() and read() — race with cleanup
+            err_console.print(f"  [{BEE_DIM}]cached output no longer available[/]")
         except Exception as e:
             err_console.print(f"  [bold {BEE_RED}]pager error:[/] {e}")
             err_console.print(
@@ -854,6 +1720,15 @@ def _make_completer(
         ":q", ":quit",
     ]
 
+    # Precompute the union of every flag known to any command. Used as a
+    # fallback completion pool when the user's typed command isn't
+    # recognised (typo, in-progress rename, etc.) — without this the
+    # completer would silently stop suggesting anything as soon as the
+    # first word is unknown, which is confusing UX.
+    _all_known_flags: list[str] = sorted({
+        f for flags in command_flags.values() for f in flags
+    })
+
     class BeeCompleter(Completer):
         def get_completions(self, document, complete_event):
             text = document.text_before_cursor.lstrip()
@@ -872,7 +1747,14 @@ def _make_completer(
                 return
 
             cmd_name = words[0]
-            flags_for_cmd = command_flags.get(cmd_name, [])
+            # If cmd_name is unknown, fall back to the union of all flags
+            # so the user still gets *some* suggestions instead of silence.
+            # Display "(unknown command)" so they know completions may
+            # not actually apply to what they typed.
+            cmd_known = cmd_name in command_flags
+            flags_for_cmd = (
+                command_flags[cmd_name] if cmd_known else _all_known_flags
+            )
             last = words[-1] if words else ""
             prev = words[-2] if len(words) >= 2 else ""
 
@@ -896,9 +1778,12 @@ def _make_completer(
                             yield Completion(v, start_position=-len(last))
                     return
             if last.startswith("-"):
+                meta_label = "" if cmd_known else "(unknown command)"
                 for flag in flags_for_cmd:
                     if flag.startswith(last):
-                        yield Completion(flag, start_position=-len(last))
+                        yield Completion(
+                            flag, start_position=-len(last), display_meta=meta_label
+                        )
 
     return BeeCompleter()
 
@@ -908,149 +1793,1119 @@ def _make_completer(
 # ---------------------------------------------------------------------------
 
 
-def _prompt_once(state: SessionState, completer: Any, history_path: str) -> str | None:
-    app, _buffer = _build_application(state, completer, history_path)
-    return app.run()
-
-
-def _read_input(state: SessionState, completer: Any, history_path: str) -> str | None:
-    line = _prompt_once(state, completer, history_path)
-    if line is None:
-        return None
-    while line.rstrip().endswith("\\"):
-        more = _prompt_once(state, completer, history_path)
-        if more is None:
-            return line.rstrip().rstrip("\\").rstrip()
-        line = line.rstrip().rstrip("\\").rstrip() + " " + more
-    return line
-
-
 # ---------------------------------------------------------------------------
-# Main loop
+# Main loop — persistent Application + patch_stdout
 # ---------------------------------------------------------------------------
 
 
-def run_repl(cli_group: Any, version: str) -> None:
+_INTERACTIVE_COMMANDS = {"tutorial", "auth"}
+
+
+def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
+    """Run the REPL with the Ink-style hybrid pattern.
+
+    Banner is printed to real stdout, lands in scrollback. The input + toolbar
+    live in a persistent Application(full_screen=False) at the bottom of the
+    terminal. The whole loop runs inside ``patch_stdout()`` so any print or
+    click.echo from a command flows through real terminal stdout (real
+    scrollback, real selection) while the bottom strip is redrawn afterwards.
+    """
+    import shutil
     from pathlib import Path
 
     import click
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.application.run_in_terminal import run_in_terminal
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.document import Document
+    from prompt_toolkit.filters import Condition, has_completions
+    from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.layout.containers import ConditionalContainer, HSplit, Window
+    from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+    from prompt_toolkit.layout.dimension import D
+    from prompt_toolkit.styles import Style
 
     from .theme import set_repl_mode
 
     set_repl_mode(True)
 
+    # ── Click tree introspection ────────────────────────────────────────────
     command_help, command_flags, bool_flags, choice_flags = _walk_click_tree(cli_group)
     command_names = sorted(command_flags.keys())
-
-    _print_banner(version)
+    all_known_flags: set[str] = set()
+    for flags_list in command_flags.values():
+        all_known_flags.update(flags_list)
 
     state = SessionState()
     state.refresh_credits_from_cache()
 
+    from .config import get_api_key_if_set
+
+    state.api_key_set = bool(get_api_key_if_set(None))
+
     history_path = str(Path.home() / ".config" / "scrapingbee-cli" / ".history")
     Path(history_path).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        history = FileHistory(history_path)
+    except Exception:
+        history = None  # type: ignore[assignment]
 
     completer = _make_completer(
         command_names, command_flags, bool_flags, choice_flags, command_help
     )
 
-    # Flat set of every known flag across all commands — used by `:set` to
-    # validate keys and surface "did you mean?" suggestions for typos.
-    all_known_flags: set[str] = set()
-    for flags_list in command_flags.values():
-        all_known_flags.update(flags_list)
+    # Set the terminal background to pure black AND the default foreground to
+    # light grey for the REPL session. We need both — otherwise, any text the
+    # terminal renders with its theme-default foreground (e.g. a number or an
+    # unstyled token in the lexer) keeps the user's theme's fg colour, which
+    # may be near-black on a light theme → invisible on our forced-black bg.
+    # OSC 11 sets bg, OSC 10 sets fg. BEL terminator (`\x07`) is the most
+    # compatible across Mac Terminal, Warp, iTerm2, kitty, alacritty,
+    # gnome-terminal, Windows Terminal. Opt out with `scrapingbee --keep-bg`.
+    _set_black_bg = not keep_bg
+    if _set_black_bg:
+        sys.stdout.write("\033]11;#000000\007")
+        sys.stdout.write("\033]10;#EAEAEA\007")
+        sys.stdout.flush()
 
-    while True:
+    # Create the virtual scrollback buffer and seed it with the banner.
+    # In full_screen mode we own the alt buffer entirely. The banner is
+    # rendered as a FIXED Window at the top of the layout (not pushed into
+    # scrollback), so it stays anchored while command output flows in the
+    # scrollback area below it. Trade-off: banner consumes its natural
+    # height of terminal rows every frame, but the user keeps the brand
+    # surface visible (their explicit ask: "when scraping banner should
+    # not disappear").
+    scrollback = ScrollbackBuffer()
+    rows = shutil.get_terminal_size((80, 24)).lines  # kept for API-key prompt sizing
+
+    # ── First-run API key prompt ────────────────────────────────────────────
+    # Inline masked input — banner already announced us, no need to repeat.
+    # Validates against the live `/usage` endpoint, saves to ~/.config/
+    # scrapingbee-cli/.env, and updates os.environ so the rest of this
+    # process sees the new key (the .env file alone wouldn't help — most
+    # call sites read os.environ directly).
+    #
+    # Required, not skippable: almost every command in the CLI hits the
+    # ScrapingBee API, so launching the REPL without a key would just give
+    # the user an unusable shell. We loop until a valid key is entered or
+    # they Ctrl+C / Ctrl+D out (which exits the whole program, since with
+    # no key the REPL is dead weight).
+    if not state.api_key_set:
+        from .commands.auth import _masked_getpass, _validate_api_key
+        from .config import ENV_API_KEY, save_api_key_to_dotenv
+
+        err_console.print(
+            f"  [{BEE_DIM}]Enter your API key to get started — find it at "
+            f"[bold {BEE_YELLOW}]dashboard.scrapingbee.com/dashboard[/][{BEE_DIM}].[/]"
+        )
+        err_console.print()
+        while not state.api_key_set:
+            try:
+                raw = _masked_getpass("  API key: ")
+            except (EOFError, KeyboardInterrupt):
+                err_console.print()
+                err_console.print(
+                    f"  [{BEE_DIM}]Exiting — an API key is required to use the CLI.[/]"
+                )
+                if _set_black_bg:
+                    try:
+                        sys.stdout.write("\033]111\007")
+                        sys.stdout.write("\033]110\007")
+                        sys.stdout.flush()
+                    except Exception:
+                        pass
+                set_repl_mode(False)
+                return
+            raw = raw or ""
+            key = raw.strip()
+            # Pasted keys from password managers / clipboards often pick up
+            # a leading or trailing space. Strip silently but warn so the
+            # user knows we did — otherwise a key that "looks right" but
+            # fails to authenticate is bewildering.
+            if key and key != raw:
+                err_console.print(
+                    f"  [{BEE_DIM}]Note: stripped surrounding whitespace from your key.[/]"
+                )
+            if not key:
+                err_console.print(
+                    f"  [bold {BEE_RED}]Empty key.[/] [{BEE_DIM}]Please paste your API key.[/]"
+                )
+                continue
+            err_console.print(f"  [{BEE_DIM}]Validating…[/]")
+            valid, err_msg = _validate_api_key(key)
+            if valid:
+                try:
+                    save_api_key_to_dotenv(key)
+                except Exception as e:
+                    err_console.print(
+                        f"  [bold {BEE_RED}]Could not save:[/] [{BEE_DIM}]{e}[/]"
+                    )
+                os.environ[ENV_API_KEY] = key
+                state.api_key_set = True
+                err_console.print(f"  [bold {BEE_YELLOW}]✓[/] API key saved.")
+            else:
+                err_console.print(
+                    f"  [bold {BEE_RED}]Invalid:[/] [{BEE_DIM}]{err_msg or 'unknown error'}. Try again.[/]"
+                )
+        # No clear / re-write needed — the API-key prompt happened in
+        # the real terminal, then app.run() will switch to the alt
+        # buffer and we get a clean screen automatically. The banner is
+        # already loaded in our scrollback buffer from earlier.
+
+    # ── Input buffer ────────────────────────────────────────────────────────
+    # Locked while a worker thread is running a command so the user can't
+    # submit another command on top of the first one (their outputs would
+    # interleave through patched stdout).
+    is_input_locked = [False]
+    # Reference to the currently-running worker thread (or None). Used by the
+    # Ctrl+C handler to inject KeyboardInterrupt into the worker so the user
+    # can stop a long scrape without exiting the REPL.
+    current_worker: list[threading.Thread | None] = [None]
+
+    input_buffer = Buffer(
+        history=history,
+        completer=completer,
+        complete_while_typing=False,
+        auto_suggest=AutoSuggestFromHistory(),
+        multiline=False,
+        read_only=Condition(lambda: is_input_locked[0]),
+    )
+
+    def _line_prefix(line_no, _wrap_count):
+        if line_no == 0:
+            return [("class:promptmark", "❯ ")]
+        return [("", "  ")]
+
+    # While a command is in flight we collapse the input window's height to
+    # 0 — instead of hiding it via ConditionalContainer. Hiding via Conditional
+    # makes the focused window invisible, but prompt_toolkit still places the
+    # terminal cursor *somewhere*, and Mac Terminal renders that cursor as a
+    # visible `[` block on the first visible row. With the input still in the
+    # layout but 0-rows tall, the cursor is "on" the input but in an invisible
+    # row → no stray indicator anywhere.
+    def _input_height():
+        if state.is_running:
+            return D.exact(0)
+        return D(min=1, max=8)
+
+    input_window = Window(
+        content=BufferControl(buffer=input_buffer, lexer=_make_lexer()),
+        get_line_prefix=_line_prefix,
+        wrap_lines=True,
+        height=_input_height,
+        dont_extend_height=True,
+        always_hide_cursor=Condition(lambda: state.is_running),
+    )
+
+    toolbar_window = Window(
+        content=FormattedTextControl(_make_toolbar(state)),
+        height=D.exact(1),
+        wrap_lines=False,  # pin explicitly so toolbar can never grow to 2 rows
+    )
+
+    # Live "running command" line that appears above the input only while a
+    # command is in flight. Renders the typed line with a sweeping white-glim
+    # shimmer so the user has clear visual feedback that something is happening.
+    def _running_text() -> list[tuple[str, str]]:
+        if not state.is_running or not state.running_command_text:
+            return []
+        text = f"❯ {state.running_command_text}"
+        pos = state.tick % max(1, len(text))
+        return _shimmer_pt(text, pos, BEE_YELLOW)
+
+    running_window = ConditionalContainer(
+        content=Window(
+            content=FormattedTextControl(_running_text),
+            height=D.exact(1),
+        ),
+        filter=Condition(lambda: state.is_running),
+    )
+
+    # ── Scrollback Window — virtual buffer rendered as the top section ─────
+    # This Window fills the vertical space above the running line / input /
+    # toolbar. It renders whatever ScrollbackBuffer says is visible based
+    # on the current scroll offset. The user scrolls it with PgUp/PgDn etc.
+    def _scrollback_render() -> list[tuple[str, str]]:
+        height = 20
+        width = 80
         try:
-            line = _read_input(state, completer, history_path)
-        except (KeyboardInterrupt, EOFError):
-            err_console.print()
-            break
+            from prompt_toolkit.application import get_app as _get_app
 
-        if line is None:
-            err_console.print()
-            break
+            _app = _get_app()
+            if getattr(_app, "is_running", False):
+                size = _app.output.get_size()
+                # Reserve rows for the full banner + everything below the
+                # scrollback in the layout: banner_visual + spacer_top(1)
+                # + separator(1) + running_or_input(1) + spacer_bottom(1)
+                # + toolbar(1) = banner_visual + 5.
+                reserved = _banner_visual_height + 5
+                height = max(1, size.rows - reserved)
+                width = max(1, size.columns)
+        except Exception:
+            pass
+        # Use visual-row pagination so scrolling moves exactly one terminal
+        # row per step, even through long single-line content that would
+        # otherwise wrap into many visual rows. We split at width-1 so a
+        # full-width row never accidentally pushes the cursor onto the
+        # next terminal row (which some terminals do at col == width).
+        visual_rows = scrollback.get_visible_visual(height, max(1, width - 1))
+        out: list[tuple[str, str]] = []
+        for i, row in enumerate(visual_rows):
+            if i > 0:
+                out.append(("", "\n"))
+            out.extend(row)
+        return out
 
-        line = line.strip()
-        if not line:
-            continue
+    # FormattedTextControl subclass that routes mouse wheel / trackpad
+    # scroll events to our virtual buffer. prompt_toolkit's default mouse
+    # mode (1000) captures button events but NOT motion, so the terminal
+    # still handles drag-select natively (or with a modifier — Option on
+    # Mac, Shift on most Linux terminals — depending on the terminal).
+    from prompt_toolkit.mouse_events import MouseEventType
+    from prompt_toolkit.layout.controls import FormattedTextControl as _PTFTC
 
-        # The prompt area is erased on submit (erase_when_done=True), so echo
-        # what the user typed into scrollback. Single line, ❯ + dim text —
-        # cleaner and more resize-safe than the old `─── cmd ──` divider.
+    class _ScrollbackControl(_PTFTC):
+        def mouse_handler(self, mouse_event):
+            et = mouse_event.event_type
+            # 1 line per wheel/trackpad event keeps motion smooth — trackpads
+            # send a flurry of small events per gesture, so a tight step
+            # tracks the user's finger movement closely. Larger steps (3+)
+            # feel jumpy / snap-y.
+            if et == MouseEventType.SCROLL_UP:
+                scrollback.scroll_up(1)
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+                return None
+            if et == MouseEventType.SCROLL_DOWN:
+                scrollback.scroll_down(1)
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+                return None
+            return NotImplemented
+
+    scrollback_window = Window(
+        content=_ScrollbackControl(_scrollback_render),
+        # We pre-wrap content ourselves (see _split_fragments_to_width) so
+        # each line passed to prompt_toolkit is already ≤ terminal width.
+        # Disable prompt_toolkit's own line-wrapping so it doesn't try to
+        # second-guess us — we want exact control of which visual rows
+        # appear for accurate scroll-by-row behaviour.
+        wrap_lines=False,
+        always_hide_cursor=True,
+    )
+
+    # ── Pinned banner Window (smaller logo, original stacked structure) ───
+    # Restores the original banner layout — ASCII logo, then version,
+    # tagline, blank, hint — but uses only the SCRAPING logo (6 rows)
+    # instead of stacking SCRAPING + BEE (which was 12 rows). Half the
+    # vertical footprint, same look.
+    _banner_visual_height = len(_SCRAPINGBEE_LOGO) + 5  # logo + 5 text rows
+
+    def _banner_render() -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        # SCRAPING logo in brand yellow.
+        for i, logo_line in enumerate(_SCRAPINGBEE_LOGO):
+            if i > 0:
+                out.append(("", "\n"))
+            out.append((f"bold {BEE_YELLOW}", logo_line))
+        # Spacer row
+        out.append(("", "\n"))
+        # v1.4.1
+        out.append(("", "\n"))
+        out.append((f"bold {BEE_YELLOW}", f"  v{version}"))
+        # Tagline
+        out.append(("", "\n"))
+        out.append((f"{BEE_DIM}", "  Web scraping from the terminal"))
+        out.append(("", "\n"))
+        # Hint
+        out.append((f"{BEE_DIM}", "  Type "))
+        out.append((f"bold {BEE_YELLOW}", ":help"))
+        out.append((f"{BEE_DIM}", " for commands, "))
+        out.append((f"bold {BEE_YELLOW}", ":q"))
+        out.append((f"{BEE_DIM}", " to quit"))
+        return out
+
+    def _banner_height() -> "D":
+        return D.exact(_banner_visual_height)
+
+    banner_window = Window(
+        content=FormattedTextControl(_banner_render),
+        height=_banner_height,
+        wrap_lines=False,
+        always_hide_cursor=True,
+    )
+
+    # Breathing room around the prompt area (Claude-CLI-style).
+    # - blank row above the separator → visual gap from output
+    # - dim horizontal rule → clear boundary between "history" and "input"
+    # - blank row below the toolbar → keeps the toolbar from sitting right
+    #   on the bottom edge of the terminal
+    def _hr_render() -> list[tuple[str, str]]:
+        try:
+            from prompt_toolkit.application import get_app as _get_app
+
+            _app = _get_app()
+            if getattr(_app, "is_running", False):
+                cols = _app.output.get_size().columns
+            else:
+                cols = 80
+        except Exception:
+            cols = 80
+        return [("class:toolbar.hint", "─" * max(1, cols))]
+
+    spacer_top = Window(height=D.exact(1), char=" ")
+    separator = Window(
+        content=FormattedTextControl(_hr_render),
+        height=D.exact(1),
+        always_hide_cursor=True,
+    )
+    spacer_bottom = Window(height=D.exact(1), char=" ")
+
+    # FloatContainer wraps the main layout so we can hover a completion
+    # popup near the cursor. Without the Float + CompletionsMenu prompt-
+    # toolkit's `start_completion()` enters completion *state* but nothing
+    # visible changes — the user thought Tab did nothing and pressed
+    # again, hitting `complete_next` which cycled invisibly. With the
+    # menu in place, the first Tab opens the popup; Up/Down navigate
+    # entries; Enter / Tab inserts; Esc dismisses.
+    from prompt_toolkit.layout.containers import Float, FloatContainer
+    from prompt_toolkit.layout.menus import CompletionsMenu
+
+    main_split = HSplit(
+        [
+            banner_window,
+            scrollback_window,
+            spacer_top,
+            separator,
+            running_window,
+            input_window,
+            spacer_bottom,
+            toolbar_window,
+        ]
+    )
+    layout = Layout(
+        FloatContainer(
+            content=main_split,
+            floats=[
+                Float(
+                    xcursor=True,
+                    ycursor=True,
+                    content=CompletionsMenu(max_height=10, scroll_offset=1),
+                ),
+            ],
+        )
+    )
+
+    # ── Command echo ────────────────────────────────────────────────────────
+    def _echo_to_scrollback(line: str) -> None:
+        """Echo the submitted command into scrollback (dim grey).
+
+        Both chevron and line use the explicit ``#888888`` colour rather
+        than mixing in Rich's ``dim`` attribute on top — on our dark
+        background the compound was rendering nearly black, making the
+        echo invisible. A single mid-grey shade is subdued enough to feel
+        like "history" without disappearing.
+
+        Only the *live* input prompt at the bottom uses the bright yellow
+        chevron, so the eye can find "where I'm typing now" without it
+        competing with past commands above.
+        """
         echo = Text()
-        echo.append("❯ ", style=f"bold {BEE_YELLOW}")
-        echo.append(line, style="dim")
+        echo.append("❯ ", style=BEE_DIM)
+        echo.append(line, style=BEE_DIM)
         err_console.print(echo)
 
-        # Slash / bare meta-commands
-        meta = _handle_meta(
-            line, state, command_help, all_known_flags, bool_flags, choice_flags
-        )
-        if meta == "quit":
-            break
-        if meta == "ok":
-            continue
+    # ── Command execution (synchronous, output flows via patched stdout) ────
+    def _execute(line: str) -> bool:
+        """Run a single REPL submission: meta-command or click command.
 
-        # Tolerate users typing `scrapingbee ...` out of muscle memory
+        Returns ``True`` if the submission was consumed (whether it
+        succeeded, failed at runtime, or was an unknown command) — in
+        every such case the user has gotten feedback and the input buffer
+        should be cleared. Returns ``False`` only when the submission
+        couldn't even be parsed (shlex error); the caller leaves the
+        buffer untouched so the user can correct and retry without
+        re-typing.
+        """
+        line = line.strip()
+        if not line:
+            return True
+
+        # Meta-commands (`:set`, `:help`, `:show`, ...) and unknown / parse
+        # errors echo the command immediately — there's no shimmer pass for
+        # those. Click commands defer the echo until after completion, so
+        # the live shimmering line above the input is the only on-screen
+        # representation while the command runs.
+        # `:q` is handled at the key-binding layer so we don't get here for it.
+        meta = _handle_meta(
+            line, state, command_help, all_known_flags, bool_flags, choice_flags,
+            scrollback=scrollback,
+        )
+        if meta == "ok":
+            # If we just ran :view, the nested pager Application emitted
+            # ``\x1b[?1049l`` on its exit, kicking us out of the alt screen
+            # buffer. Re-enter it and reset the outer renderer so the next
+            # paint goes into the fresh alt buffer instead of leaking into
+            # main-screen scrollback.
+            if line.strip().lower().startswith(":view"):
+                try:
+                    sys.__stdout__.write("\x1b[?1049h")
+                    sys.__stdout__.flush()
+                except Exception:
+                    pass
+                try:
+                    app.renderer.reset()
+                except Exception:
+                    pass
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+            # Meta commands echo themselves with rich-styled output already;
+            # only echo the user's typed line for the record.
+            _echo_to_scrollback(line)
+            return True
+        if meta == "quit":  # belt-and-braces; key binding usually catches it
+            return True
+
+        # Tolerate users typing `scrapingbee ...` out of muscle memory.
         if line.lower().startswith("scrapingbee "):
             line = line[len("scrapingbee "):].strip()
+
+        original_line = line  # what to echo after completion
 
         try:
             args = shlex.split(line)
         except ValueError as e:
+            # Parse error — DO NOT consume the buffer. The user almost
+            # certainly has an unclosed quote; let them fix it in-place.
             err_console.print(f"  [bold {BEE_RED}]parse error:[/] {e}")
-            continue
+            return False
         if not args:
-            continue
+            return True
 
         cmd_name = args[0]
         if cmd_name not in command_flags:
+            _echo_to_scrollback(original_line)
             suggestion = _suggest(cmd_name, command_names)
             if suggestion:
                 err_console.print(
                     f"  [bold {BEE_RED}]unknown:[/] {cmd_name}   "
-                    f"[{BEE_DIM}]did you mean[/] [bold {BEE_YELLOW}]{suggestion}[/][{BEE_DIM}]?[/]"
+                    f"[{BEE_DIM}]did you mean[/] "
+                    f"[bold {BEE_YELLOW}]{suggestion}[/][{BEE_DIM}]?[/]"
                 )
             else:
                 err_console.print(f"  [bold {BEE_RED}]unknown:[/] {cmd_name}")
-            continue
+            return True
 
         args = state.apply_settings_to_args(args)
+
+        # Mark the scrollback position where this command's output will
+        # start. We DO NOT echo here — while the command runs, only the
+        # shimmering running line is the live indicator. After the
+        # command finishes, _finish inserts the dim echo at this index
+        # so the rendered order becomes:
+        #     ❯ scrape https://…    (echo, inserted post-completion)
+        #       <output>             (was streamed in during execution)
+        #       ✓ 0.45s              (footer, appended in _finish)
+        # i.e. echo + output + footer atomically appear together at the
+        # moment of completion, without doubling up the live shimmer.
+        output_start_index = scrollback.current_length()
+
         start = time.monotonic()
-        status = "ok"
+        status_ref = ["ok"]
+        state.is_running = True
+        state.running_command = cmd_name
+        state.running_command_text = original_line  # used by shimmer above input
+        state.run_start = start
+
+        def _run() -> None:
+            try:
+                cli_group.main(args, standalone_mode=False)
+            except click.UsageError as e:
+                msg = str(e)
+                err_console.print(f"  [bold {BEE_RED}]usage:[/] {msg}")
+                if "no such option" in msg.lower():
+                    m = re.search(r"--?[A-Za-z0-9-]+", msg)
+                    if m:
+                        bad = m.group(0)
+                        suggestion = _suggest(bad, command_flags.get(cmd_name, []))
+                        if suggestion:
+                            err_console.print(
+                                f"  [{BEE_DIM}]did you mean[/] "
+                                f"[bold {BEE_YELLOW}]{suggestion}[/][{BEE_DIM}]?[/]"
+                            )
+                status_ref[0] = "fail"
+            except click.ClickException as e:
+                e.show()
+                status_ref[0] = "fail"
+            except KeyboardInterrupt:
+                # Ctrl+C while running — the keybinding injected this into us
+                # via PyThreadState_SetAsyncExc. Surface it as a deliberate
+                # stop in the footer rather than a generic failure.
+                err_console.print(f"  [{BEE_DIM}]stopped[/]")
+                status_ref[0] = "stopped"
+            except SystemExit as e:
+                code = e.code if e.code is not None else 0
+                if code not in (0, None):
+                    status_ref[0] = "fail"
+            except Exception as e:
+                err_console.print(f"  [bold {BEE_RED}]error:[/] {e}")
+                status_ref[0] = "fail"
+
+        def _finish() -> None:
+            duration = time.monotonic() - start
+            # Stop the shimmer first so the echo + footer commit cleanly to
+            # scrollback without competing with the live above-input line.
+            state.is_running = False
+            state.running_command = None
+            state.running_command_text = None
+            state.run_start = None
+            # Splice the dim echo line in *front of* the output rows that
+            # streamed into scrollback during execution. We marked the
+            # position at the start of _execute (output_start_index); any
+            # rows past that index belong to this command. Inserting at
+            # that index puts the echo right above its output.
+            try:
+                from prompt_toolkit.formatted_text import (
+                    ANSI as _ANSI,
+                    to_formatted_text as _tft,
+                )
+                from io import StringIO as _SIO
+                from rich.console import Console as _RC
+
+                _buf = _SIO()
+                _c = _RC(
+                    file=_buf, force_terminal=True, color_system="truecolor",
+                    highlight=False, width=200,
+                )
+                _echo_t = Text()
+                _echo_t.append("❯ ", style=BEE_DIM)
+                _echo_t.append(original_line, style=BEE_DIM)
+                _c.print(_echo_t, end="")
+                _echo_fragments = list(_tft(_ANSI(_buf.getvalue())))
+                scrollback.insert_line(output_start_index, _echo_fragments)
+            except Exception:
+                # Defensive fallback: if anything goes wrong with the rich
+                # render, drop the echo rather than crash the REPL.
+                pass
+            _print_command_footer(status_ref[0], duration)
+            state.last_command = cmd_name
+            state.last_status = status_ref[0]
+            state.last_duration = duration
+            state.refresh_credits_from_cache()
+            is_input_locked[0] = False
+            # State mutations triggered by auth/logout need to be visible to
+            # the asyncio loop's _usage_refresher and the toolbar render —
+            # both run on the main loop thread while we're in the worker
+            # thread. Bouncing the writes through call_soon_threadsafe
+            # guarantees a happens-before edge with the loop's next tick.
+            #
+            # We deliberately keep ``used_credits_at_start`` across logout —
+            # if the user re-authenticates with the *same* key, the next
+            # refresh detects an unchanged ``api_key_hash`` and continues the
+            # session counter. A *different* key triggers a reset there.
+            def _apply_post_cmd_state() -> None:
+                if cmd_name == "auth":
+                    if get_api_key_if_set(None):
+                        state.api_key_set = True
+                elif cmd_name == "logout":
+                    state.api_key_set = False
+                    state.credits = None
+                    state.credits_total = None
+                    state.used_credits = None
+                    state.max_concurrency = None
+                    state.current_concurrency = None
+                    state.last_usage_refresh_mono = None
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+
+            try:
+                loop = getattr(app, "loop", None)
+                if loop is not None:
+                    loop.call_soon_threadsafe(_apply_post_cmd_state)
+                else:
+                    _apply_post_cmd_state()
+            except Exception:
+                _apply_post_cmd_state()
+
+            # `usage` and `auth` are the two commands whose completion implies
+            # the live toolbar values are stale — trigger an immediate refresh
+            # rather than waiting for the next 30s tick.
+            if cmd_name in ("usage", "auth"):
+                _signal_refresh_from_thread()
+            try:
+                app.invalidate()
+            except Exception:
+                pass
+
+        if cmd_name in _INTERACTIVE_COMMANDS:
+            # tutorial / auth use click.prompt() and need raw terminal access.
+            # Suspend the persistent prompt-toolkit app, run the command in
+            # the bare terminal, then resume. Synchronous — we wait for it.
+            is_input_locked[0] = True
+            try:
+                run_in_terminal(_run, in_executor=False)
+            finally:
+                _finish()
+            return True
+
+        # Network commands run in a worker thread so they don't fight
+        # prompt_toolkit's asyncio loop. (scrape, google, etc. each call
+        # `asyncio.run(...)` internally — and asyncio.run refuses to start
+        # when a loop is already running, which is the case while
+        # prompt_toolkit's Application is alive.) Locking the input
+        # prevents the user from submitting a second command on top.
+        is_input_locked[0] = True
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+        def _worker() -> None:
+            try:
+                _run()
+            finally:
+                # Always clear the worker reference first — the Ctrl+C handler
+                # uses it to decide between "cancel command" and "exit REPL".
+                # Stale references would make a quick second Ctrl+C target
+                # a thread that's already finished.
+                current_worker[0] = None
+                # Cleanup MUST always run, even if _finish itself raises — a
+                # broken finish would leave is_running=True and is_input_locked=True
+                # forever, making the REPL unusable until restart.
+                try:
+                    _finish()
+                except Exception:
+                    state.is_running = False
+                    state.running_command = None
+                    state.running_command_text = None
+                    state.run_start = None
+                    is_input_locked[0] = False
+                    try:
+                        app.invalidate()
+                    except Exception:
+                        pass
+
+        worker_thread = threading.Thread(target=_worker, daemon=True)
+        current_worker[0] = worker_thread
+        worker_thread.start()
+        return True
+
+    # ── Key bindings ────────────────────────────────────────────────────────
+    _QUIT_TOKENS = {":q", ":quit", "exit", "quit", "q"}
+
+    kb = KeyBindings()
+
+    @kb.add("enter", filter=has_completions)
+    def _accept(event):
+        event.current_buffer.complete_state = None
+
+    @kb.add("enter", filter=~has_completions)
+    def _submit(event):
+        text = input_buffer.text
+        stripped = text.strip()
+        if not stripped:
+            input_buffer.set_document(Document(""), bypass_readonly=True)
+            return
+        if stripped.lower() in _QUIT_TOKENS:
+            input_buffer.set_document(Document(""), bypass_readonly=True)
+            event.app.exit()
+            return
+        # Persist the submitted line into the FileHistory before we kick off
+        # execution. We do this manually (rather than letting prompt_toolkit
+        # do it via Buffer.validate_and_handle) because our custom Enter
+        # binding bypasses that path. The default up/down arrow bindings on
+        # Buffer pull from this same history, so commands the user runs
+        # become navigable on the next prompt.
+        if history is not None:
+            try:
+                history.store_string(stripped)
+            except Exception:
+                pass
+        # Clear the buffer only after a successful parse — _execute returns
+        # False for shlex errors so the user can fix their unclosed quote
+        # in-place instead of having to retype the whole line.
+        # ``bypass_readonly=True`` is mandatory: _execute synchronously sets
+        # ``is_input_locked[0] = True`` before spawning the worker, which
+        # makes the Buffer read-only — a plain bypass_readonly=False
+        # set_document would be silently rejected, leaving the typed line
+        # stranded in the prompt after the command finishes.
+        if _execute(stripped):
+            input_buffer.set_document(Document(""), bypass_readonly=True)
+
+    @kb.add("c-c")
+    def _ctrl_c(event):
+        # If a worker thread is running, Ctrl+C stops that command rather
+        # than exiting the REPL. Uses PyThreadState_SetAsyncExc to inject
+        # KeyboardInterrupt into the worker — the inner _run catches it and
+        # surfaces a "stopped" footer. This is the documented mechanism for
+        # interrupting a misbehaving thread; for in-flight HTTP the
+        # exception fires when the request returns, which is acceptable.
+        worker = current_worker[0]
+        if state.is_running and worker is not None and worker.is_alive():
+            import ctypes
+
+            tid = worker.ident
+            if tid is None:
+                event.app.exit()
+                return
+            try:
+                res = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                    ctypes.c_ulong(tid), ctypes.py_object(KeyboardInterrupt)
+                )
+                # If we managed to flip exception state in more than one
+                # thread, the docs say to undo it — otherwise we leave a
+                # dangling pending exception on an unrelated thread.
+                if res > 1:
+                    ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                        ctypes.c_ulong(tid), None
+                    )
+            except Exception:
+                # ctypes path failed (PyPy? embedded?) — fall back to
+                # exiting; daemon worker dies with the process.
+                event.app.exit()
+            return
+        event.app.exit()
+
+    @kb.add("c-d")
+    def _ctrl_d(event):
+        # Ctrl+D on empty input is "logout from shell" → exit. While a
+        # command is running, ignore it to avoid yanking the REPL out from
+        # under the user mid-scrape; they have :q or a second Ctrl+C.
+        if state.is_running:
+            return
+        if not input_buffer.text:
+            event.app.exit()
+
+    @kb.add("tab", filter=~has_completions)
+    def _tab_open(event):
+        # Tab on an EMPTY input → toggle Scroll/Select mode (no need for
+        # completions when there's nothing to complete). Tab while typing
+        # opens completions as before.
+        if not input_buffer.text:
+            _toggle_mouse_mode(event)
+            return
+        event.current_buffer.start_completion(select_first=False)
+
+    @kb.add("tab", filter=has_completions)
+    def _tab_next(event):
+        event.current_buffer.complete_next()
+
+    @kb.add("s-tab", filter=has_completions)
+    def _shift_tab(event):
+        event.current_buffer.complete_previous()
+
+    @kb.add("escape", filter=has_completions, eager=True)
+    def _esc(event):
+        event.current_buffer.cancel_completion()
+
+    # ── History navigation ─────────────────────────────────────────────────
+    # Plain Up/Down navigate the FileHistory at ~/.config/scrapingbee-cli/
+    # .history. When the completion menu is open these keys instead
+    # navigate the menu (prompt_toolkit's default behaviour); the
+    # ``~has_completions`` filter ensures we don't compete.
+    @kb.add("up", filter=~has_completions)
+    def _history_back(event):
+        event.current_buffer.history_backward()
+
+    @kb.add("down", filter=~has_completions)
+    def _history_forward(event):
+        event.current_buffer.history_forward()
+
+    # ── Scrollback navigation ──────────────────────────────────────────────
+    # Keyboard-only scrolling of the virtual buffer. We don't enable mouse
+    # capture (so native drag-select stays usable), so these keys are the
+    # primary way to scroll history. Familiar to vim/less/htop users.
+    #
+    # ``eager=True`` is critical here: prompt_toolkit's Buffer has its own
+    # default bindings for PgUp/PgDn (history navigation in some modes) and
+    # the completion menu also consumes PgUp/PgDn when open. Eager bindings
+    # fire BEFORE buffer-level handlers, so our scrollback scroll wins
+    # whenever no completion popup is showing.
+    @kb.add("pageup", eager=True, filter=~has_completions)
+    def _sb_pageup(_e):
+        scrollback.scroll_up(10)
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+    @kb.add("pagedown", eager=True, filter=~has_completions)
+    def _sb_pagedown(_e):
+        scrollback.scroll_down(10)
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+    @kb.add("c-up", eager=True)
+    def _sb_lineup(_e):
+        scrollback.scroll_up(1)
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+    @kb.add("c-down", eager=True)
+    def _sb_linedown(_e):
+        scrollback.scroll_down(1)
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+    @kb.add("c-home", eager=True)
+    def _sb_top(_e):
+        scrollback.scroll_to_top()
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+    @kb.add("c-end", eager=True)
+    def _sb_bottom(_e):
+        scrollback.scroll_to_bottom()
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+    # ── Mouse mode toggle (Alt+S = Esc S in terminal protocol) ─────────────
+    # Flips between "scroll mode" (mouse_support on — wheel scrolls our
+    # virtual buffer, drag-select needs per-terminal modifier like
+    # Option/Shift) and "select mode" (mouse_support off — drag-select
+    # works without any modifier on every terminal, wheel scrolling falls
+    # back to PgUp/PgDn/Ctrl-arrows). Toolbar shows the active mode.
+    @kb.add("escape", "s", eager=True)
+    def _toggle_mouse_mode(_event):
+        if state.mouse_mode == "scroll":
+            state.mouse_mode = "select"
+            try:
+                app.output.disable_mouse_support()
+                app.output.flush()
+            except Exception:
+                pass
+        else:
+            state.mouse_mode = "scroll"
+            try:
+                app.output.enable_mouse_support()
+                app.output.flush()
+            except Exception:
+                pass
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+    # ── Application (full_screen=True: own the alt buffer cleanly) ─────────
+    # Owning the alternate screen buffer eliminates the wrap-fragment /
+    # orphan-toolbar artifacts we got with full_screen=False (where the
+    # terminal could reflow content under us on resize).
+    #
+    # Mouse support is enabled so trackpad / wheel scroll events reach our
+    # scrollback handler. prompt_toolkit uses mode 1000 — button events
+    # only, NO motion tracking — so the terminal still owns drag-selection
+    # (Mac Terminal / iTerm / kitty all keep native select with mode 1000;
+    # on a few terminals users may need to hold Option/Shift while
+    # dragging to bypass mouse capture).
+    app = Application(
+        layout=layout,
+        key_bindings=kb,
+        style=Style.from_dict(_style_dict_for(keep_bg)),
+        full_screen=True,
+        mouse_support=True,
+    )
+
+    # ── Periodic invalidate while a command is in flight ───────────────────
+    # The shimmer on the running command line + the elapsed-time counter
+    # need a tick ~10× per second to feel live. Without this, the live area
+    # would only redraw on stdout writes (sparse for long-running scrapes).
+    # When idle, 1Hz is enough — the "Next Update Xs" countdown only changes
+    # once per second, and the paged toolbar carousel rotates on 5-second
+    # boundaries.
+    async def _ticker():
+        import asyncio
+
+        idle_counter = 0
+        # Track terminal width and trigger a fresh invalidate on resize.
+        # No manual resize-detection needed any more — in full_screen
+        # mode prompt_toolkit owns the entire screen, so SIGWINCH is
+        # handled cleanly by the framework: the next render uses the
+        # new size and the alt buffer has no scrollback-vs-logical-row
+        # mismatch to worry about.
+
+        while True:
+            await asyncio.sleep(0.1)
+            if state.is_running:
+                state.tick += 1
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+                idle_counter = 0
+            else:
+                idle_counter += 1
+                if idle_counter >= 10:  # 1Hz idle redraw
+                    idle_counter = 0
+                    try:
+                        app.invalidate()
+                    except Exception:
+                        pass
+
+    # ── Background usage refresher ──────────────────────────────────────────
+    # Polls the usage API on a 30s interval so the toolbar's "available",
+    # "used (session)" and "conc" values stay roughly current. The user can
+    # force an immediate refresh by signalling _refresh_event (used after the
+    # `usage` and `auth` commands complete — see _execute). The first call
+    # is fire-and-forget right after the task starts, so the toolbar
+    # populates within a beat of REPL startup rather than after a 30s wait.
+    import asyncio as _asyncio  # local alias avoids shadowing module-level usage
+
+    _refresh_event = _asyncio.Event()
+
+    async def _do_usage_refresh() -> None:
+        import hashlib as _hashlib
+        import json as _json
+
+        from .batch import write_usage_file_cache
+        from .client import Client, parse_usage
+        from .config import BASE_URL, get_api_key
 
         try:
-            cli_group.main(args, standalone_mode=False)
-        except click.UsageError as e:
-            msg = str(e)
-            err_console.print(f"  [bold {BEE_RED}]usage:[/] {msg}")
-            if "no such option" in msg.lower():
-                m = re.search(r"--?[A-Za-z0-9-]+", msg)
-                if m:
-                    bad = m.group(0)
-                    suggestion = _suggest(bad, command_flags.get(cmd_name, []))
-                    if suggestion:
-                        err_console.print(
-                            f"  [{BEE_DIM}]did you mean[/] "
-                            f"[bold {BEE_YELLOW}]{suggestion}[/][{BEE_DIM}]?[/]"
-                        )
-            status = "fail"
-        except click.ClickException as e:
-            e.show()
-            status = "fail"
-        except SystemExit as e:
-            code = e.code if e.code is not None else 0
-            if code not in (0, None):
-                status = "fail"
-        except Exception as e:
-            err_console.print(f"  [bold {BEE_RED}]error:[/] {e}")
-            status = "fail"
+            key = get_api_key(None)
+        except ValueError:
+            return  # No key set yet — quietly skip; toolbar stays N/A.
+        # Short non-reversible hash of the key — used to detect logout/relogin
+        # with the *same* key vs a different one, so the session counter
+        # continues for the former and resets for the latter.
+        key_hash = _hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        try:
+            async with Client(key, BASE_URL) as client:
+                data, _hdrs, status_code = await client.usage(retries=1, backoff=1.0)
+            if status_code != 200:
+                return
+            try:
+                raw = _json.loads(data)
+            except Exception:
+                return
+            state.update_from_usage_response(raw, key_hash=key_hash)
+            try:
+                write_usage_file_cache(key, parse_usage(data))
+            except Exception:
+                pass
+            try:
+                app.invalidate()
+            except Exception:
+                pass
+        except Exception:
+            # Network errors must not kill the refresher — just skip this
+            # tick and try again on the next interval.
+            return
 
-        duration = time.monotonic() - start
-        _print_command_footer(status, duration)
+    async def _usage_refresher() -> None:
+        while True:
+            if state.api_key_set:
+                await _do_usage_refresh()
+            try:
+                await _asyncio.wait_for(
+                    _refresh_event.wait(),
+                    timeout=SessionState.USAGE_REFRESH_INTERVAL,
+                )
+                _refresh_event.clear()
+            except _asyncio.TimeoutError:
+                pass
 
-        state.last_command = cmd_name
-        state.last_status = status
-        state.last_duration = duration
-        state.refresh_credits_from_cache()
+    def _signal_refresh_from_thread() -> None:
+        """Request an immediate usage refresh from a non-loop thread.
+
+        ``asyncio.Event.set`` is not thread-safe, so we hop back onto the
+        application's event loop. Used after the worker thread finishes
+        ``usage`` (data just arrived) or ``auth`` (api_key may have just
+        become set) so the toolbar updates without waiting for the next
+        scheduled 30s tick.
+        """
+        try:
+            loop = app.loop  # type: ignore[attr-defined]
+            if loop is not None:
+                loop.call_soon_threadsafe(_refresh_event.set)
+        except Exception:
+            pass
+
+    # Track background tasks so we can cancel them cleanly on shutdown
+    # instead of letting them run until the process exits (they would keep
+    # firing app.invalidate() against a dead app and leak the asyncio loop
+    # if the REPL is ever embedded in a larger program).
+    _bg_tasks: list[Any] = []
+
+    def _pre_run() -> None:
+        _bg_tasks.append(app.create_background_task(_ticker()))
+        _bg_tasks.append(app.create_background_task(_usage_refresher()))
+
+    # ── Run inside patch_stdout so command output flows above the prompt ────
+    def _restore_bg():
+        if _set_black_bg:
+            try:
+                sys.stdout.write("\033]111\007")  # reset bg to user default
+                sys.stdout.write("\033]110\007")  # reset fg to user default
+                sys.stdout.flush()
+            except Exception:
+                pass
+
+    # Pipe every stdout / stderr write into the virtual scrollback buffer.
+    # The renderer (FormattedTextControl on the output Window) reads from
+    # the buffer each frame. We don't touch the real terminal at all
+    # while the app runs — that's the alt buffer's job, and it'll be
+    # dismissed cleanly on exit.
+    def _on_buffer_write() -> None:
+        # Auto-follow: a write while user is at the bottom keeps them at
+        # the bottom (scroll_offset stays 0). A user who's scrolled up
+        # stays put — they explicitly asked to read history.
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+    sb_writer = ScrollbackWriter(scrollback, on_write=_on_buffer_write)
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    sys.stdout = sb_writer  # type: ignore[assignment]
+    sys.stderr = sb_writer  # type: ignore[assignment]
+    # Some callers (cli_utils.write_output) call ``sys.stdout.buffer.write(bytes)``.
+    # Expose a binary-decoding adapter so those routes still land in our
+    # scrollback as text. Truly binary output is decoded with errors=replace.
+    if not hasattr(sys.stdout, "buffer"):
+        sys.stdout.buffer = _BinaryAdapter(sys.stdout)  # type: ignore[attr-defined]
+    if not hasattr(sys.stderr, "buffer"):
+        sys.stderr.buffer = _BinaryAdapter(sys.stderr)  # type: ignore[attr-defined]
+    # err_console (rich.Console used by theme.py) caches a file= reference
+    # at module import time — point it at our buffer too.
+    _orig_err_console_file = err_console.file
+    err_console.file = sb_writer  # type: ignore[assignment]
+    try:
+        app.run(pre_run=_pre_run)
+    finally:
+        # Cancel background tasks (ticker + usage refresher) so they stop
+        # invalidating the now-dead app and release the loop they live on.
+        for task in _bg_tasks:
+            try:
+                task.cancel()
+            except Exception:
+                pass
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        try:
+            err_console.file = _orig_err_console_file
+        except Exception:
+            pass
+        _restore_bg()
+        set_repl_mode(False)
