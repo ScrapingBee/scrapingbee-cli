@@ -1387,9 +1387,17 @@ def _open_pager(path: str) -> None:
     kb = KeyBindings()
 
     @kb.add("q")
-    @kb.add("escape")
     @kb.add("c-c")
     def _exit(event):
+        event.app.exit()
+
+    # Esc gets its own binding with ``eager=True`` so it fires immediately
+    # instead of waiting through prompt_toolkit's internal key-processor
+    # ``timeoutlen`` (the buffered-input default + any partial-match
+    # search across implicit bindings). Without eager the user perceives
+    # a multi-second pause between pressing Esc and the pager exiting.
+    @kb.add("escape", eager=True)
+    def _exit_esc(event):
         event.app.exit()
 
     @kb.add("r")
@@ -1453,6 +1461,15 @@ def _open_pager(path: str) -> None:
         full_screen=True,
         mouse_support=True,
     )
+    # Shrink BOTH escape-related timeouts. ``ttimeoutlen`` is the parser-
+    # level wait for "is this Esc-byte the start of an escape sequence",
+    # default 0.5s. ``timeoutlen`` is the key-processor wait for "is this
+    # complete key the start of a multi-key binding", default 1.0s.
+    # Together with eager=True on the Esc-exit binding above, this makes
+    # Esc fire essentially instantly in the pager. 50ms is enough for
+    # any well-formed escape sequence from a modern terminal.
+    pager_app.ttimeoutlen = 0.05
+    pager_app.timeoutlen = 0.05
 
     # We're (almost certainly) called from inside the REPL's prompt_toolkit
     # event loop — a sync key-binding handler invoked `:view`. Calling
@@ -2516,10 +2533,15 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         text = input_buffer.text
         stripped = text.strip()
         if not stripped:
-            input_buffer.set_document(Document(""), bypass_readonly=True)
+            # ``reset()`` clears the buffer AND the history-navigation
+            # cursor (``working_index``). A plain set_document keeps the
+            # cursor, so an Up press after an empty Enter would resume
+            # whatever the user was previously browsing in history rather
+            # than starting fresh from the most recent command.
+            input_buffer.reset()
             return
         if stripped.lower() in _QUIT_TOKENS:
-            input_buffer.set_document(Document(""), bypass_readonly=True)
+            input_buffer.reset()
             event.app.exit()
             return
         # Persist the submitted line into the FileHistory before we kick off
@@ -2536,13 +2558,12 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # Clear the buffer only after a successful parse — _execute returns
         # False for shlex errors so the user can fix their unclosed quote
         # in-place instead of having to retype the whole line.
-        # ``bypass_readonly=True`` is mandatory: _execute synchronously sets
-        # ``is_input_locked[0] = True`` before spawning the worker, which
-        # makes the Buffer read-only — a plain bypass_readonly=False
-        # set_document would be silently rejected, leaving the typed line
-        # stranded in the prompt after the command finishes.
+        # We use ``reset()`` (not ``set_document``) so the
+        # history-navigation cursor is reset; otherwise a subsequent Up
+        # press would continue browsing from the prior position instead
+        # of starting at the newest entry.
         if _execute(stripped):
-            input_buffer.set_document(Document(""), bypass_readonly=True)
+            input_buffer.reset()
 
     @kb.add("c-c")
     def _ctrl_c(event):
@@ -2617,7 +2638,29 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # ``~has_completions`` filter ensures we don't compete.
     @kb.add("up", filter=~has_completions)
     def _history_back(event):
-        event.current_buffer.history_backward()
+        buf = event.current_buffer
+        # prompt_toolkit loads history asynchronously via a background
+        # task scheduled at first render. After our ``buffer.reset()`` on
+        # submit, that task is cancelled and ``_working_lines`` is just
+        # ``[""]`` — the next Up press lands before the task re-runs, so
+        # ``history_backward`` has nothing to walk and is a no-op. Load
+        # the history strings synchronously here as a fallback so the
+        # first Up after a submit actually shows the newest entry.
+        try:
+            if len(buf._working_lines) <= 1:
+                strings = list(buf.history.get_strings())
+                if strings:
+                    for s in reversed(strings):
+                        buf._working_lines.appendleft(s)
+                    buf.working_index = len(buf._working_lines) - 1
+            elif not buf.text and buf.working_index != len(buf._working_lines) - 1:
+                # User has browsed back and erased to empty: jump the
+                # cursor to the newest entry so this Up restarts there
+                # instead of continuing from the previous browse point.
+                buf.working_index = len(buf._working_lines) - 1
+        except Exception:
+            pass
+        buf.history_backward()
 
     @kb.add("down", filter=~has_completions)
     def _history_forward(event):
@@ -2726,6 +2769,11 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         full_screen=True,
         mouse_support=True,
     )
+    # 50ms escape-sequence timeout (default 500ms). Snappy Esc for
+    # cancel-completion etc. — modern terminals deliver escape sequences
+    # as one read, so 50ms is plenty. Set on the instance because
+    # ``ttimeoutlen`` isn't a constructor parameter.
+    app.ttimeoutlen = 0.05
 
     # ── Periodic invalidate while a command is in flight ───────────────────
     # The shimmer on the running command line + the elapsed-time counter
