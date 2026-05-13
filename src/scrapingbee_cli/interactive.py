@@ -1373,23 +1373,46 @@ def _build_application(state: SessionState, completer: Any, history_path: str):
 # "ScrapingBee" rendered in the figlet ``smblock`` font — 4 rows × 32 cols,
 # roughly the same width as the "Web scraping from the terminal" tagline.
 # Same block-letter style as the old 6-row logo, just compact.
+# ANSI Shadow letters for "SCRAPING" and "BEE", kept as separate halves
+# so each can carry its own colour (yellow + white, matching the brand
+# wordmark) when stitched together at render time.
+#
+# Note on widths: the rightmost letter ``G`` has a natural 1-column
+# narrower silhouette on its top and bottom rows (its shape leaves a
+# trailing space on rows 1, 2, 6 but extends to a full ``╗``/``║``/``╝``
+# on rows 3, 4, 5). Without explicit padding, that imbalance shifts
+# BEE one column right on the middle rows when we concat them, which
+# reads as a misaligned bottom-left/last-bottom-right on the BEE side.
+# Each row below is normalised to the same width with a trailing space
+# where the font naturally has one.
+_SCRAPING_LETTERS = [
+    "███████╗ ██████╗██████╗  █████╗ ██████╗ ██╗███╗   ██╗ ██████╗ ",
+    "██╔════╝██╔════╝██╔══██╗██╔══██╗██╔══██╗██║████╗  ██║██╔════╝ ",
+    "███████╗██║     ██████╔╝███████║██████╔╝██║██╔██╗ ██║██║  ███╗",
+    "╚════██║██║     ██╔══██╗██╔══██║██╔═══╝ ██║██║╚██╗██║██║   ██║",
+    "███████║╚██████╗██║  ██║██║  ██║██║     ██║██║ ╚████║╚██████╔╝",
+    "╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═══╝ ╚═════╝ ",
+]
+_BEE_LETTERS = [
+    "██████╗ ███████╗███████╗",
+    "██╔══██╗██╔════╝██╔════╝",
+    "██████╔╝█████╗  █████╗  ",
+    "██╔══██╗██╔══╝  ██╔══╝  ",
+    "██████╔╝███████╗███████╗",
+    "╚═════╝ ╚══════╝╚══════╝",
+]
+# Combined "SCRAPING BEE" wordmark on a single row of letterforms — 6
+# lines tall, ~90 cols wide. Replaces the prior 4-row smblock SCRAPING
+# + 6-row BEE stack (10 logo rows) with this single 6-row version.
 _SCRAPINGBEE_LOGO = [
-    "  ▞▀▖            ▗       ▛▀▖      ",
-    "  ▚▄ ▞▀▖▙▀▖▝▀▖▛▀▖▄ ▛▀▖▞▀▌▙▄▘▞▀▖▞▀▖",
-    "  ▖ ▌▌ ▖▌  ▞▀▌▙▄▘▐ ▌ ▌▚▄▌▌ ▌▛▀ ▛▀ ",
-    "  ▝▀ ▝▀ ▘  ▝▀▘▌  ▀▘▘ ▘▗▄▘▀▀ ▝▀▘▝▀▘",
+    "  " + s + "  " + b for s, b in zip(_SCRAPING_LETTERS, _BEE_LETTERS)
 ]
-# Legacy 6-row logos kept around in case we want to swap back later or
-# use them elsewhere (e.g. a one-shot welcome screen). The pinned REPL
-# banner uses the compact form above.
-_BEE_LOGO = [
-    "  ██████╗ ███████╗███████╗",
-    "  ██╔══██╗██╔════╝██╔════╝",
-    "  ██████╔╝█████╗  █████╗  ",
-    "  ██╔══██╗██╔══╝  ██╔══╝  ",
-    "  ██████╔╝███████╗███████╗",
-    "  ╚═════╝ ╚══════╝╚══════╝",
-]
+# Column at which "BEE" begins inside each combined row, used by the
+# pinned banner renderer to split the row into a yellow "SCRAPING" half
+# and a white "BEE" half.
+_BEE_OFFSET = 2 + len(_SCRAPING_LETTERS[0]) + 2
+# Legacy alias kept so any external callers still resolve.
+_BEE_LOGO = _BEE_LETTERS
 
 
 def _render_banner(version: str) -> str:
@@ -1416,10 +1439,15 @@ def _render_banner(version: str) -> str:
         width=200,  # don't wrap the wide ASCII logo
     )
     c.print()
+    # Each combined row is "  <SCRAPING letters>  <BEE letters>". Split
+    # at the known offset so the yellow/white wordmark colours mirror
+    # the brand mark (SCRAPING yellow, BEE white).
     for line in _SCRAPINGBEE_LOGO:
-        c.print(f"[bold {BEE_YELLOW}]{line}[/]")
-    for line in _BEE_LOGO:
-        c.print(f"[bold white]{line}[/]")
+        left = line[:_BEE_OFFSET]
+        right = line[_BEE_OFFSET:]
+        c.print(
+            f"[bold {BEE_YELLOW}]{left}[/][bold white]{right}[/]"
+        )
     c.print()
     # Version
     c.print(f"  [bold {BEE_YELLOW}]v{version}[/]")
@@ -2488,11 +2516,15 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
     def _banner_render() -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
-        # SCRAPING logo in brand yellow.
+        # SCRAPING half in brand yellow, BEE half in white — matches the
+        # wordmark in the official brand assets.
         for i, logo_line in enumerate(_SCRAPINGBEE_LOGO):
             if i > 0:
                 out.append(("", "\n"))
-            out.append((f"bold {BEE_YELLOW}", logo_line))
+            left = logo_line[:_BEE_OFFSET]
+            right = logo_line[_BEE_OFFSET:]
+            out.append((f"bold {BEE_YELLOW}", left))
+            out.append(("bold white", right))
         # Spacer row
         out.append(("", "\n"))
         # v1.4.1
