@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -597,10 +598,15 @@ async def run_batch_async(
             if failure_count > 0:
                 fail_pct = failure_count / completed * 100
             if is_repl_mode():
-                progress = format_honeycomb_trail(
-                    completed, total, rps=rps_val, eta=eta_val, failure_pct=fail_pct
+                # Push the latest counts/rates into the shared progress
+                # state. ``update_progress_state`` renders immediately
+                # AND the REPL ticker will keep re-rendering at ~10 Hz
+                # so the boundary hex shimmers between completions.
+                from .theme import update_progress_state
+                update_progress_state(
+                    completed, total,
+                    rps=rps_val, eta=eta_val, failure_pct=fail_pct,
                 )
-                err_console.print(progress)
             else:
                 parts = [f"[{completed}/{total}]"]
                 if rps_val is not None:
@@ -615,7 +621,18 @@ async def run_batch_async(
         return i, result
 
     tasks = [run_one(i, inp) for i, inp in enumerate(inputs)]
-    ordered = await asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        ordered = await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        # Stop the REPL's ticker from re-rendering the progress widget
+        # now that the batch is done (or cancelled). Safe to call even
+        # when state was never set.
+        if is_repl_mode():
+            try:
+                from .theme import clear_progress_state
+                clear_progress_state()
+            except Exception:
+                pass
     results: list[BatchResult] = []
     for i, item in enumerate(ordered):
         if isinstance(item, BaseException):

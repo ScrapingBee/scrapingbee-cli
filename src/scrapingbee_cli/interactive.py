@@ -79,7 +79,7 @@ _STYLE_DICT = {
     "completion-menu.completion.current":       f"bg:{BEE_YELLOW} #000000 bold",
     "completion-menu.meta.completion":          f"bg:{_BG_CHIP} #886600",
     "completion-menu.meta.completion.current":  f"bg:{BEE_YELLOW} #000000",
-    "auto-suggestion": "fg:#554400 italic",
+    "auto-suggestion": "fg:#777777 italic",
 }
 
 
@@ -140,6 +140,217 @@ class _BinaryAdapter:
 # ---------------------------------------------------------------------------
 # Virtual scrollback (for full_screen=True mode)
 # ---------------------------------------------------------------------------
+
+
+try:
+    from prompt_toolkit.auto_suggest import AutoSuggest as _PTKAutoSuggest
+except Exception:  # pragma: no cover — prompt_toolkit should always be present
+    _PTKAutoSuggest = object  # type: ignore[assignment,misc]
+
+
+class BeeAutoSuggest(_PTKAutoSuggest):
+    """Context-aware ghost-text autosuggest for the REPL prompt.
+
+    On each keystroke prompt_toolkit calls ``get_suggestion`` with the
+    current buffer; we look at the partial token under the cursor and
+    return a single greyed-out continuation (or ``None`` for silence).
+
+    Sources used, in order:
+    - **First word** → match against known command names.
+    - **A flag** (token starts with ``-``) → match flags registered for
+      the current command.
+    - **Token after a choice/bool flag** → match valid choice values.
+    - **Free text otherwise** → match the start of a previous history
+      line that begins with the same prefix.
+
+    Candidates are ranked by recency in command history (most-recently-
+    used wins → behaves like frequency for active users). If the
+    partial token doesn't prefix any known candidate, we return
+    ``None`` — typos get no suggestion, even if they happen to be
+    substrings of past commands.
+
+    Accepting a suggestion (Right arrow / End, or Ctrl+F for the first
+    word in emacs-style bindings) is handled by prompt_toolkit's
+    built-in ``auto_suggest_apply`` key processors — no extra wiring
+    needed here.
+    """
+
+    def __init__(
+        self,
+        command_names,
+        command_flags,
+        bool_flags,
+        choice_flags,
+        history,
+        is_disabled=None,
+    ) -> None:
+        self._command_names = sorted(command_names)
+        self._command_flags = command_flags
+        self._bool_flags = bool_flags
+        self._choice_flags = choice_flags
+        self._history = history
+        # Optional callable; when it returns True we skip suggestions
+        # entirely. Used during first-run API key entry — we don't want
+        # history-based suggestions (which might leak a previously-typed
+        # secret) or command-name suggestions (irrelevant in that mode).
+        self._is_disabled = is_disabled
+        # Cache history lines (newest-first). Refreshed lazily when the
+        # underlying length changes — cheap O(1) check, avoids re-listing
+        # the history on every keystroke.
+        self._cached_lines: list[str] = []
+        self._cached_len = -1
+
+    def _refresh_history(self) -> None:
+        if self._history is None:
+            return
+        try:
+            lines = list(self._history.get_strings())
+        except Exception:
+            return
+        if len(lines) != self._cached_len:
+            self._cached_len = len(lines)
+            self._cached_lines = lines
+
+    def _rank_by_recency(self, candidates: list[str]) -> list[str]:
+        """Sort candidates by first occurrence in (newest-first) history.
+        Unseen candidates fall to the end, then ordered alphabetically."""
+        self._refresh_history()
+        recency: dict[str, int] = {}
+        for i, line in enumerate(self._cached_lines):
+            for tok in line.split():
+                if tok in candidates and tok not in recency:
+                    recency[tok] = i
+        return sorted(candidates, key=lambda c: (recency.get(c, 10**9), c))
+
+    def get_suggestion(self, buffer, document):
+        from prompt_toolkit.auto_suggest import Suggestion
+
+        try:
+            if self._is_disabled is not None and self._is_disabled():
+                return None
+            text = document.text_before_cursor
+            if not text:
+                return None
+            words = text.split()
+            if not words:
+                return None
+            first = words[0]
+
+            # Gate against typos at the command level. We only allow a
+            # suggestion if the first token is either a recognised command
+            # or a valid PREFIX of one — otherwise we'd risk surfacing
+            # history junk for a clear typo (the user's explicit ask).
+            first_is_known = first in self._command_flags
+            first_is_prefix = (
+                not first_is_known
+                and any(c.startswith(first) for c in self._command_names)
+            )
+            if not (first_is_known or first_is_prefix):
+                return None
+
+            # 1) Prefer a full history-line continuation. Catches the most
+            #    natural case: "scrape https://exam" → finish the URL
+            #    and any flags the user last paired with it.
+            self._refresh_history()
+            for line in self._cached_lines:
+                if line.startswith(text) and line != text:
+                    return Suggestion(line[len(text):])
+
+            # 2) No matching history line. Suggest from the structured
+            #    options (command names, flags, choice values).
+            has_trailing_space = text.endswith(" ")
+            last = words[-1]
+            on_first = (len(words) == 1) and not has_trailing_space
+
+            if on_first:
+                cands = [
+                    c for c in self._command_names
+                    if c.startswith(last) and c != last
+                ]
+                if not cands:
+                    return None
+                best = self._rank_by_recency(cands)[0]
+                return Suggestion(best[len(last):])
+
+            # Multi-word — need a recognised command to suggest structure.
+            if not first_is_known:
+                return None
+            if has_trailing_space:
+                return None  # no partial token to complete
+
+            if last.startswith("-"):
+                flags = self._command_flags.get(first, [])
+                cands = [f for f in flags if f.startswith(last) and f != last]
+                if not cands:
+                    return None
+                best = self._rank_by_recency(cands)[0]
+                return Suggestion(best[len(last):])
+
+            if len(words) >= 2:
+                prev = words[-2]
+                if prev in self._choice_flags:
+                    cands = [
+                        v for v in self._choice_flags[prev]
+                        if v.startswith(last) and v != last
+                    ]
+                    if not cands:
+                        return None
+                    best = self._rank_by_recency(cands)[0]
+                    return Suggestion(best[len(last):])
+                if prev in self._bool_flags:
+                    for v in ("true", "false"):
+                        if v.startswith(last.lower()) and v != last.lower():
+                            return Suggestion(v[len(last):])
+                    return None
+            return None
+        except Exception:
+            return None
+
+
+def _make_capped_history(filename: str, max_entries: int = 10_000):
+    """Construct a ``FileHistory`` with the on-disk file pre-trimmed to
+    keep at most ``max_entries`` most-recent entries.
+
+    prompt_toolkit's stock ``FileHistory`` appends forever — every
+    command you ever type lives in ``.history`` until you delete the
+    file manually. For long-running CLI users that file grows unbounded
+    and slows down the REPL's initial history-load. We keep the last
+    10000 entries on disk (a few months of normal use, file stays
+    under ~2 MB).
+
+    Trim runs once at construction. During the session, ``FileHistory``
+    appends as normal — no per-write overhead. The file may briefly
+    exceed the cap mid-session; the excess is dropped on next startup.
+    """
+    import datetime as _dt
+    import os as _os
+
+    from prompt_toolkit.history import FileHistory
+
+    if _os.path.exists(filename):
+        try:
+            tmp_history = FileHistory(filename)
+            strings = list(tmp_history.load_history_strings())  # newest-first
+            if len(strings) > max_entries:
+                keep_newest_first = strings[:max_entries]
+                keep_oldest_first = list(reversed(keep_newest_first))
+                tmp = filename + ".tmp"
+                now = _dt.datetime.now()
+                try:
+                    with open(tmp, "wb") as f:
+                        for s in keep_oldest_first:
+                            f.write(f"\n# {now}\n".encode("utf-8"))
+                            for line in s.split("\n"):
+                                f.write(f"+{line}\n".encode("utf-8"))
+                    _os.replace(tmp, filename)
+                except Exception:
+                    try:
+                        _os.unlink(tmp)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    return FileHistory(filename)
 
 
 def _split_fragments_to_width(
@@ -214,6 +425,35 @@ class ScrollbackBuffer:
                 drop = self.MAX_LINES // 10
                 del self.lines[:drop]
 
+    def replace_last_line(self, fragments: list[tuple[str, str]]) -> None:
+        """Overwrite the most recent line. Used for in-place progress
+        updates via the standard terminal ``\\r`` idiom — write
+        ``\\r<content>\\n`` and the previous line gets replaced rather
+        than another row appended.
+        """
+        with self._lock:
+            if self.lines:
+                self.lines[-1] = list(fragments)
+            else:
+                self.lines.append(list(fragments))
+
+    def replace_last_n_lines(
+        self, n: int, lines: list[list[tuple[str, str]]]
+    ) -> None:
+        """Replace the most recent ``n`` lines with the given ``lines``.
+        If fewer than ``n`` lines exist, the remainder is appended.
+        Used for multi-line in-place progress widgets (e.g. the
+        3-row honeycomb progress bar).
+        """
+        with self._lock:
+            if len(self.lines) >= n and n > 0:
+                # Replace tail in place — same count, no shift.
+                self.lines[len(self.lines) - n:] = [list(f) for f in lines]
+            else:
+                # Not enough prior lines to replace; append.
+                for f in lines:
+                    self.lines.append(list(f))
+
     def append_ansi_text(self, text: str) -> None:
         """Parse ANSI codes in ``text`` and append the resulting line(s).
 
@@ -221,6 +461,13 @@ class ScrollbackBuffer:
         trailing newline (e.g. an in-progress progress bar). We split on
         ``\\n``; the final post-split chunk goes into a pending buffer
         that gets prepended to the next write.
+
+        Carriage-return (``\\r``) handling: anything before the last
+        ``\\r`` on a line is discarded (standard terminal "go to start
+        of line" semantics), AND the resulting line replaces the
+        previous line in scrollback instead of appending. This lets
+        callers do in-place progress updates by writing
+        ``\\r<progress>\\n`` repeatedly.
         """
         from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 
@@ -233,11 +480,19 @@ class ScrollbackBuffer:
             complete = chunks[:-1]
 
         for raw in complete:
+            had_cr = "\r" in raw
+            if had_cr:
+                # Everything before the last \r is overwritten — keep
+                # only what comes after it.
+                raw = raw.rsplit("\r", 1)[1]
             try:
                 fragments = list(to_formatted_text(ANSI(raw)))
             except Exception:
                 fragments = [("", raw)]
-            self.append_fragments(fragments)
+            if had_cr:
+                self.replace_last_line(fragments)
+            else:
+                self.append_fragments(fragments)
 
     def flush_pending(self) -> None:
         """Commit any pending partial line as its own row."""
@@ -900,7 +1155,7 @@ def _make_toolbar(state: SessionState):
             )
             hint_chunk = [
                 ("class:toolbar.value", mode_label),
-                ("class:toolbar.hint", "  ·  Tab to switch"),
+                ("class:toolbar.hint", "  ·  Shift+Tab to switch"),
             ]
 
         LEADING = "  "
@@ -1250,11 +1505,12 @@ def _print_help(commands: dict[str, str]) -> None:
     for cmd, desc in [
         (":help, :?",   "Show this command list"),
         (":clear",      "Clear the screen"),
-        (":view",       "Scroll through the last command's full output"),
+        (":view",       "Scroll the last command's output ('crawl' = crawl log, or pass a path)"),
         (":set K=V ...", "Set one or more session defaults"),
         (":unset K",    "Remove a session default ('all' or '*' clears every)"),
         (":reset",      "Clear every session default"),
         (":show",       "Show current session defaults"),
+        ("!<cmd>",      "Run a shell command (requires unsafe mode)"),
         (":q, :quit",   "Quit the REPL"),
     ]:
         _print_row(cmd, desc)
@@ -1608,20 +1864,56 @@ def _handle_meta(
     if head_low == ":view":
         from pathlib import Path
 
-        cache_path = Path.home() / ".cache" / "scrapingbee-cli" / "last-output"
-        if not cache_path.exists():
-            err_console.print(f"  [{BEE_DIM}]no recent output to view[/]")
+        cache_dir = Path.home() / ".cache" / "scrapingbee-cli"
+        crawl_log = cache_dir / "crawl.log"
+        target_arg = rest.strip()
+        # `:view`                  → last command's output
+        # `:view crawl`            → the crawl log written by the most recent
+        #                            `crawl` run in REPL mode
+        # `:view crawl <log-path>` → also alias-mode, but ONLY when the
+        #                            path after ``crawl`` resolves to the
+        #                            actual crawl.log on disk. This lets
+        #                            users copy the full hint line ("crawl
+        #                            /Users/.../crawl.log") into the
+        #                            prompt; random text after ``crawl``
+        #                            falls through to "file not found"
+        #                            instead of silently opening the log.
+        # `:view <path>`           → arbitrary file (must exist)
+        if not target_arg:
+            target_path = cache_dir / "last-output"
+            missing_msg = "no recent output to view"
+        elif target_arg.lower() == "crawl":
+            target_path = crawl_log
+            missing_msg = "no crawl log yet — run `crawl ...` first"
+        elif target_arg.lower().startswith("crawl "):
+            after = target_arg[len("crawl "):].strip()
+            try:
+                supplied_path = Path(after).expanduser().resolve(strict=False)
+                if supplied_path == crawl_log.resolve(strict=False):
+                    target_path = crawl_log
+                    missing_msg = "no crawl log yet — run `crawl ...` first"
+                else:
+                    target_path = Path(target_arg).expanduser()
+                    missing_msg = f"file not found: {target_arg}"
+            except Exception:
+                target_path = Path(target_arg).expanduser()
+                missing_msg = f"file not found: {target_arg}"
+        else:
+            target_path = Path(target_arg).expanduser()
+            missing_msg = f"file not found: {target_arg}"
+        if not target_path.exists():
+            err_console.print(f"  [{BEE_DIM}]{missing_msg}[/]")
             return "ok"
         try:
-            _open_pager(str(cache_path))
+            _open_pager(str(target_path))
         except FileNotFoundError:
             # File got deleted between exists() and read() — race with cleanup
-            err_console.print(f"  [{BEE_DIM}]cached output no longer available[/]")
+            err_console.print(f"  [{BEE_DIM}]file no longer available[/]")
         except Exception as e:
             err_console.print(f"  [bold {BEE_RED}]pager error:[/] {e}")
             err_console.print(
                 f"  [{BEE_DIM}]full output saved at[/] "
-                f"[bold {BEE_YELLOW}]{cache_path}[/]"
+                f"[bold {BEE_YELLOW}]{target_path}[/]"
             )
         return "ok"
 
@@ -1849,6 +2141,42 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
     set_repl_mode(True)
 
+    # ── Asyncio loop tracking for fast Ctrl+C ───────────────────────────────
+    # Commands like ``scrape`` run ``asyncio.run(...)`` inside a worker
+    # thread to drive aiohttp. While the loop is in ``select()`` waiting
+    # on a socket, ``PyThreadState_SetAsyncExc`` doesn't deliver an
+    # interrupt — it only fires at the next Python bytecode boundary, and
+    # no bytecode runs until ``select()`` returns (typically when the
+    # ScrapingBee API responds, which can be 30+ seconds).
+    #
+    # We monkey-patch ``asyncio.run`` for the duration of this REPL
+    # session so we can keep a handle to the worker's loop. The Ctrl+C
+    # handler then uses ``call_soon_threadsafe`` to cancel in-flight
+    # tasks — that wakes the selector immediately and raises
+    # ``CancelledError`` on the await, which propagates out cleanly
+    # (the worker's except clause turns it into "stopped").
+    import asyncio as _asyncio_mod
+
+    _active_worker_loop: list[Any] = [None]
+    _original_asyncio_run = _asyncio_mod.run
+
+    def _tracking_loop_factory():
+        loop = _asyncio_mod.new_event_loop()
+        _active_worker_loop[0] = loop
+        return loop
+
+    def _tracking_asyncio_run(main, *, debug=None, loop_factory=None):
+        try:
+            return _original_asyncio_run(
+                main,
+                debug=debug,
+                loop_factory=loop_factory or _tracking_loop_factory,
+            )
+        finally:
+            _active_worker_loop[0] = None
+
+    _asyncio_mod.run = _tracking_asyncio_run
+
     # ── Click tree introspection ────────────────────────────────────────────
     command_help, command_flags, bool_flags, choice_flags = _walk_click_tree(cli_group)
     command_names = sorted(command_flags.keys())
@@ -1866,7 +2194,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     history_path = str(Path.home() / ".config" / "scrapingbee-cli" / ".history")
     Path(history_path).parent.mkdir(parents=True, exist_ok=True)
     try:
-        history = FileHistory(history_path)
+        history = _make_capped_history(history_path, max_entries=10_000)
     except Exception:
         history = None  # type: ignore[assignment]
 
@@ -1899,79 +2227,71 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     scrollback = ScrollbackBuffer()
     rows = shutil.get_terminal_size((80, 24)).lines  # kept for API-key prompt sizing
 
-    # ── First-run API key prompt ────────────────────────────────────────────
-    # Inline masked input — banner already announced us, no need to repeat.
-    # Validates against the live `/usage` endpoint, saves to ~/.config/
-    # scrapingbee-cli/.env, and updates os.environ so the rest of this
-    # process sees the new key (the .env file alone wouldn't help — most
-    # call sites read os.environ directly).
-    #
-    # Required, not skippable: almost every command in the CLI hits the
-    # ScrapingBee API, so launching the REPL without a key would just give
-    # the user an unusable shell. We loop until a valid key is entered or
-    # they Ctrl+C / Ctrl+D out (which exits the whole program, since with
-    # no key the REPL is dead weight).
-    if not state.api_key_set:
-        from .commands.auth import _masked_getpass, _validate_api_key
-        from .config import ENV_API_KEY, save_api_key_to_dotenv
+    # ── Multi-line in-place progress renderer ───────────────────────────────
+    # Wired so batch operations (``scrape --input-file ...``) can update a
+    # 3-row honeycomb progress widget in place rather than appending a new
+    # row per completion. The renderer keeps track of how many lines the
+    # previous frame consumed so the next frame overwrites the same band.
+    from .theme import set_progress_renderer as _set_progress_renderer
 
-        err_console.print(
-            f"  [{BEE_DIM}]Enter your API key to get started — find it at "
-            f"[bold {BEE_YELLOW}]dashboard.scrapingbee.com/dashboard[/][{BEE_DIM}].[/]"
-        )
-        err_console.print()
-        while not state.api_key_set:
+    _progress_line_count = [0]
+
+    def _render_progress(rendered_lines: list[str]) -> None:
+        from prompt_toolkit.formatted_text import ANSI, to_formatted_text
+
+        fragments_per_line: list[list[tuple[str, str]]] = []
+        for raw in rendered_lines:
             try:
-                raw = _masked_getpass("  API key: ")
-            except (EOFError, KeyboardInterrupt):
-                err_console.print()
-                err_console.print(
-                    f"  [{BEE_DIM}]Exiting — an API key is required to use the CLI.[/]"
-                )
-                if _set_black_bg:
-                    try:
-                        sys.stdout.write("\033]111\007")
-                        sys.stdout.write("\033]110\007")
-                        sys.stdout.flush()
-                    except Exception:
-                        pass
-                set_repl_mode(False)
-                return
-            raw = raw or ""
-            key = raw.strip()
-            # Pasted keys from password managers / clipboards often pick up
-            # a leading or trailing space. Strip silently but warn so the
-            # user knows we did — otherwise a key that "looks right" but
-            # fails to authenticate is bewildering.
-            if key and key != raw:
-                err_console.print(
-                    f"  [{BEE_DIM}]Note: stripped surrounding whitespace from your key.[/]"
-                )
-            if not key:
-                err_console.print(
-                    f"  [bold {BEE_RED}]Empty key.[/] [{BEE_DIM}]Please paste your API key.[/]"
-                )
-                continue
-            err_console.print(f"  [{BEE_DIM}]Validating…[/]")
-            valid, err_msg = _validate_api_key(key)
-            if valid:
-                try:
-                    save_api_key_to_dotenv(key)
-                except Exception as e:
-                    err_console.print(
-                        f"  [bold {BEE_RED}]Could not save:[/] [{BEE_DIM}]{e}[/]"
-                    )
-                os.environ[ENV_API_KEY] = key
-                state.api_key_set = True
-                err_console.print(f"  [bold {BEE_YELLOW}]✓[/] API key saved.")
-            else:
-                err_console.print(
-                    f"  [bold {BEE_RED}]Invalid:[/] [{BEE_DIM}]{err_msg or 'unknown error'}. Try again.[/]"
-                )
-        # No clear / re-write needed — the API-key prompt happened in
-        # the real terminal, then app.run() will switch to the alt
-        # buffer and we get a clean screen automatically. The banner is
-        # already loaded in our scrollback buffer from earlier.
+                fragments_per_line.append(list(to_formatted_text(ANSI(raw))))
+            except Exception:
+                fragments_per_line.append([("", raw)])
+        n = len(fragments_per_line)
+        prev = _progress_line_count[0]
+        if prev > 0 and prev == n:
+            scrollback.replace_last_n_lines(prev, fragments_per_line)
+        else:
+            # First frame, or row-count changed (rare): append fresh and
+            # remember how many lines to overwrite next time.
+            for f in fragments_per_line:
+                scrollback.append_fragments(f)
+        _progress_line_count[0] = n
+
+    _set_progress_renderer(_render_progress)
+
+    # ── First-run API key state ─────────────────────────────────────────────
+    # When no API key is configured we open the REPL UI in a "first-run"
+    # mode: the bottom prompt changes from ``❯`` to ``API key: ``, the
+    # input field is masked via PasswordProcessor, and ``_submit`` routes
+    # to ``_handle_first_run_key`` (which validates against /usage and
+    # writes to ~/.config/scrapingbee-cli/.env). Once a key validates we
+    # flip the flag and the prompt transitions to normal command mode in
+    # place — no app restart, no screen flicker.
+    _first_run_needs_key = [not state.api_key_set]
+    if _first_run_needs_key[0]:
+        # Render the welcome lines into the scrollback area so the user
+        # sees them right below the banner while the input field shows
+        # ``API key:``. We use a throwaway rich Console to produce ANSI,
+        # then append to the scrollback buffer (the live ``err_console``
+        # path doesn't work yet — patch_stdout isn't installed until
+        # ``app.run()`` starts).
+        try:
+            from io import StringIO as _SIO
+            from rich.console import Console as _RC
+
+            _buf = _SIO()
+            _c = _RC(
+                file=_buf, force_terminal=True, color_system="truecolor",
+                highlight=False, width=shutil.get_terminal_size((80, 24)).columns,
+            )
+            _c.print(
+                f"  [{BEE_DIM}]Welcome! Enter your API key to get started — "
+                f"find it at [bold {BEE_YELLOW}]dashboard.scrapingbee.com/dashboard[/]"
+                f"[{BEE_DIM}].[/]"
+            )
+            _c.print()
+            scrollback.append_ansi_text(_buf.getvalue())
+        except Exception:
+            pass
 
     # ── Input buffer ────────────────────────────────────────────────────────
     # Locked while a worker thread is running a command so the user can't
@@ -1982,18 +2302,32 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # Ctrl+C handler to inject KeyboardInterrupt into the worker so the user
     # can stop a long scrape without exiting the REPL.
     current_worker: list[threading.Thread | None] = [None]
+    # Currently-running shell subprocess (when the user submits ``!cmd``).
+    # Ctrl+C uses this to terminate the child process directly — injecting
+    # KeyboardInterrupt into the worker thread alone doesn't fire while the
+    # thread is blocked reading the subprocess's stdout in a C-level read().
+    current_subprocess: list[Any] = [None]
 
     input_buffer = Buffer(
         history=history,
         completer=completer,
         complete_while_typing=False,
-        auto_suggest=AutoSuggestFromHistory(),
+        auto_suggest=BeeAutoSuggest(
+            command_names=command_names,
+            command_flags=command_flags,
+            bool_flags=bool_flags,
+            choice_flags=choice_flags,
+            history=history,
+            is_disabled=lambda: _first_run_needs_key[0],
+        ),
         multiline=False,
         read_only=Condition(lambda: is_input_locked[0]),
     )
 
     def _line_prefix(line_no, _wrap_count):
         if line_no == 0:
+            if _first_run_needs_key[0]:
+                return [("class:promptmark", "API key: ")]
             return [("class:promptmark", "❯ ")]
         return [("", "  ")]
 
@@ -2009,8 +2343,34 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             return D.exact(0)
         return D(min=1, max=8)
 
+    # ``AppendAutoSuggestion`` is the input processor that renders ghost-text
+    # auto-suggestions after the cursor. Without it, ``buffer.suggestion``
+    # is set correctly but never drawn — BufferControl alone only handles
+    # the typed text + lexer styling. ``HighlightMatchingBracketProcessor``
+    # isn't applied so we don't add it.
+    #
+    # ``PasswordProcessor`` masks the input when ``_first_run_needs_key`` is
+    # True so an API key isn't visible on-screen. Wrapped in a
+    # ``ConditionalProcessor`` so masking flips off automatically once the
+    # key validates and we transition to normal command mode.
+    from prompt_toolkit.layout.processors import (
+        AppendAutoSuggestion,
+        ConditionalProcessor,
+        PasswordProcessor,
+    )
+
     input_window = Window(
-        content=BufferControl(buffer=input_buffer, lexer=_make_lexer()),
+        content=BufferControl(
+            buffer=input_buffer,
+            lexer=_make_lexer(),
+            input_processors=[
+                ConditionalProcessor(
+                    PasswordProcessor(),
+                    Condition(lambda: _first_run_needs_key[0]),
+                ),
+                AppendAutoSuggestion(),
+            ],
+        ),
         get_line_prefix=_line_prefix,
         wrap_lines=True,
         height=_input_height,
@@ -2240,6 +2600,179 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         echo.append(line, style=BEE_DIM)
         err_console.print(echo)
 
+    # ── First-run API key validation ────────────────────────────────────────
+    # Called from ``_submit`` on the main thread when ``_first_run_needs_key``
+    # is True. The user just submitted the masked key — we validate it
+    # against the live /usage endpoint, persist on success, and flip the
+    # flag so subsequent submits route to ``_execute`` (normal commands).
+    def _handle_first_run_key(key_raw: str, raw_with_ws: str) -> None:
+        from .commands.auth import _validate_api_key
+        from .config import ENV_API_KEY, save_api_key_to_dotenv
+
+        key = key_raw.strip()
+        # Pasted keys from password managers often pick up surrounding
+        # whitespace. Silently strip but warn so the user knows we did.
+        if key and key != raw_with_ws.rstrip("\n"):
+            err_console.print(
+                f"  [{BEE_DIM}]Note: stripped surrounding whitespace from your key.[/]"
+            )
+        if not key:
+            err_console.print(
+                f"  [bold {BEE_RED}]Empty key.[/] [{BEE_DIM}]Please paste your API key.[/]"
+            )
+            return
+        err_console.print(f"  [{BEE_DIM}]Validating…[/]")
+        valid, err_msg = _validate_api_key(key)
+        if valid:
+            try:
+                save_api_key_to_dotenv(key)
+            except Exception as e:
+                err_console.print(
+                    f"  [bold {BEE_RED}]Could not save:[/] [{BEE_DIM}]{e}[/]"
+                )
+            os.environ[ENV_API_KEY] = key
+            state.api_key_set = True
+            _first_run_needs_key[0] = False
+            err_console.print(f"  [bold {BEE_YELLOW}]✓[/] API key saved.")
+            # Toolbar credits/concurrency are stale (None); trigger a fresh
+            # /usage fetch so the bottom strip populates without waiting
+            # for the 30s tick.
+            _signal_refresh_from_thread()
+            try:
+                app.invalidate()
+            except Exception:
+                pass
+        else:
+            err_console.print(
+                f"  [bold {BEE_RED}]Invalid:[/] [{BEE_DIM}]{err_msg or 'unknown error'}. Try again.[/]"
+            )
+
+    # ── Shell command execution (`!cmd` in the REPL) ────────────────────────
+    # Runs in a worker thread so the REPL stays responsive. stdout+stderr
+    # are merged and streamed line-by-line through the patched
+    # ``sys.stdout`` (which writes into scrollback). Ctrl+C terminates the
+    # child process via ``current_subprocess[0].terminate()`` AND injects
+    # KeyboardInterrupt into the worker thread (so a hung read returns
+    # promptly).
+    def _execute_shell(shell_cmd: str, original_line: str, echo_idx: int) -> None:
+        import subprocess
+
+        output_start_index = echo_idx
+        start = time.monotonic()
+        status_ref = ["ok"]
+        state.is_running = True
+        state.running_command = "shell"
+        state.running_command_text = original_line
+        state.run_start = start
+
+        def _run() -> None:
+            try:
+                # Use the system shell so users can pipe / redirect / glob
+                # naturally. Merge stderr into stdout for unified streaming;
+                # any separation is the user's problem (they'd redirect
+                # 2>&1 themselves if they cared).
+                proc = subprocess.Popen(  # noqa: S602 — gated by exec_gate
+                    shell_cmd,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                current_subprocess[0] = proc
+                try:
+                    assert proc.stdout is not None
+                    for chunk in iter(proc.stdout.readline, ""):
+                        sys.stdout.write(chunk)
+                finally:
+                    code = proc.wait()
+                    current_subprocess[0] = None
+                if code != 0:
+                    status_ref[0] = "fail"
+                    err_console.print(
+                        f"  [{BEE_DIM}]exit code {code}[/]"
+                    )
+            except KeyboardInterrupt:
+                # Ctrl+C: stop the child if it's still running, then mark
+                # the command as cancelled in the footer.
+                proc = current_subprocess[0]
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                err_console.print(f"  [{BEE_DIM}]stopped[/]")
+                status_ref[0] = "stopped"
+            except Exception as e:
+                err_console.print(f"  [bold {BEE_RED}]error:[/] {e}")
+                status_ref[0] = "fail"
+
+        def _finish() -> None:
+            duration = time.monotonic() - start
+            state.is_running = False
+            state.running_command = None
+            state.running_command_text = None
+            state.run_start = None
+            # Splice the dim echo line above the streamed output.
+            try:
+                from prompt_toolkit.formatted_text import (
+                    ANSI as _ANSI,
+                    to_formatted_text as _tft,
+                )
+                from io import StringIO as _SIO
+                from rich.console import Console as _RC
+
+                _buf = _SIO()
+                _c = _RC(
+                    file=_buf, force_terminal=True, color_system="truecolor",
+                    highlight=False, width=200,
+                )
+                _echo_t = Text()
+                _echo_t.append("❯ ", style=BEE_DIM)
+                _echo_t.append(original_line, style=BEE_DIM)
+                _c.print(_echo_t, end="")
+                _echo_fragments = list(_tft(_ANSI(_buf.getvalue())))
+                scrollback.insert_line(output_start_index, _echo_fragments)
+            except Exception:
+                pass
+            _print_command_footer(status_ref[0], duration)
+            state.last_command = "shell"
+            state.last_status = status_ref[0]
+            state.last_duration = duration
+            is_input_locked[0] = False
+            try:
+                app.invalidate()
+            except Exception:
+                pass
+
+        is_input_locked[0] = True
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+        def _worker() -> None:
+            try:
+                _run()
+            finally:
+                current_worker[0] = None
+                try:
+                    _finish()
+                except Exception:
+                    state.is_running = False
+                    state.running_command = None
+                    state.running_command_text = None
+                    state.run_start = None
+                    is_input_locked[0] = False
+                    try:
+                        app.invalidate()
+                    except Exception:
+                        pass
+
+        worker_thread = threading.Thread(target=_worker, daemon=True)
+        current_worker[0] = worker_thread
+        worker_thread.start()
+
     # ── Command execution (synchronous, output flows via patched stdout) ────
     def _execute(line: str) -> bool:
         """Run a single REPL submission: meta-command or click command.
@@ -2262,6 +2795,14 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # the live shimmering line above the input is the only on-screen
         # representation while the command runs.
         # `:q` is handled at the key-binding layer so we don't get here for it.
+        #
+        # Snapshot scrollback length before running the meta-handler so we
+        # can splice the ``❯ line`` echo at this position afterwards. Without
+        # this, the echo lands AFTER any error/info the meta-handler
+        # printed (e.g. ``file not found: foo`` then ``❯ :view foo``), which
+        # reads upside-down. Insert-at-position keeps the conversational
+        # order: command, then its output.
+        meta_echo_idx = scrollback.current_length()
         meta = _handle_meta(
             line, state, command_help, all_known_flags, bool_flags, choice_flags,
             scrollback=scrollback,
@@ -2286,11 +2827,87 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                     app.invalidate()
                 except Exception:
                     pass
-            # Meta commands echo themselves with rich-styled output already;
-            # only echo the user's typed line for the record.
-            _echo_to_scrollback(line)
+            # Splice the dim echo line ABOVE whatever the meta-handler
+            # printed during its run. Fall back to appending if the
+            # rich-render or insert path fails.
+            try:
+                from prompt_toolkit.formatted_text import (
+                    ANSI as _ANSI,
+                    to_formatted_text as _tft,
+                )
+                from io import StringIO as _SIO
+                from rich.console import Console as _RC
+                _buf = _SIO()
+                _c = _RC(
+                    file=_buf, force_terminal=True, color_system="truecolor",
+                    highlight=False, width=200,
+                )
+                _echo_t = Text()
+                _echo_t.append("❯ ", style=BEE_DIM)
+                _echo_t.append(line, style=BEE_DIM)
+                _c.print(_echo_t, end="")
+                _echo_fragments = list(_tft(_ANSI(_buf.getvalue())))
+                scrollback.insert_line(meta_echo_idx, _echo_fragments)
+            except Exception:
+                _echo_to_scrollback(line)
             return True
         if meta == "quit":  # belt-and-braces; key binding usually catches it
+            return True
+
+        # `!shell command` — run a shell command in a worker thread,
+        # streaming output into scrollback. Gated by the same unsafe-mode
+        # check used by --post-process / --on-complete / schedule.
+        if line.startswith("!"):
+            shell_cmd = line[1:].strip()
+            shell_echo_idx = scrollback.current_length()
+            if not shell_cmd:
+                err_console.print(
+                    f"  [{BEE_DIM}]usage: ![/]"
+                    f"[bold {BEE_YELLOW}]<shell command>[/]"
+                )
+            else:
+                from .exec_gate import (
+                    is_command_whitelisted,
+                    is_exec_enabled,
+                    is_whitelist_enabled,
+                )
+
+                if not is_exec_enabled():
+                    err_console.print(
+                        f"  [bold {BEE_RED}]Shell execution disabled.[/] "
+                        f"[{BEE_DIM}]Enable it with `auth --unsafe` "
+                        f"(requires SCRAPINGBEE_ALLOW_EXEC=1).[/]"
+                    )
+                elif is_whitelist_enabled() and not is_command_whitelisted(shell_cmd):
+                    err_console.print(
+                        f"  [bold {BEE_RED}]Blocked:[/] "
+                        f"[{BEE_DIM}]command not in whitelist or contains "
+                        f"shell-injection patterns.[/]"
+                    )
+                else:
+                    _execute_shell(shell_cmd, line, shell_echo_idx)
+                    return True
+            # Echo the typed line above whatever error we just printed.
+            try:
+                from prompt_toolkit.formatted_text import (
+                    ANSI as _ANSI,
+                    to_formatted_text as _tft,
+                )
+                from io import StringIO as _SIO
+                from rich.console import Console as _RC
+                _buf = _SIO()
+                _c = _RC(
+                    file=_buf, force_terminal=True, color_system="truecolor",
+                    highlight=False, width=200,
+                )
+                _echo_t = Text()
+                _echo_t.append("❯ ", style=BEE_DIM)
+                _echo_t.append(line, style=BEE_DIM)
+                _c.print(_echo_t, end="")
+                _echo_fragments = list(_tft(_ANSI(_buf.getvalue())))
+                scrollback.insert_line(shell_echo_idx, _echo_fragments)
+            except Exception:
+                _echo_to_scrollback(line)
             return True
 
         # Tolerate users typing `scrapingbee ...` out of muscle memory.
@@ -2321,6 +2938,29 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 )
             else:
                 err_console.print(f"  [bold {BEE_RED}]unknown:[/] {cmd_name}")
+            return True
+
+        # Bare ``auth`` in the REPL (no flags) is best served by flipping
+        # the bottom prompt into first-run mode instead of routing through
+        # ``run_in_terminal`` — the suspend/resume cycle to read a key in
+        # the bare terminal feels jarring, and the masked in-place prompt
+        # is the same flow the user just learned at startup. Variants
+        # like ``auth --api-key KEY`` or ``auth --unsafe`` still go
+        # through click normally.
+        if cmd_name == "auth" and len(args) == 1:
+            _echo_to_scrollback(original_line)
+            _first_run_needs_key[0] = True
+            try:
+                input_buffer.reset()
+            except Exception:
+                pass
+            err_console.print(
+                f"  [{BEE_DIM}]Enter your API key below.[/]"
+            )
+            try:
+                app.invalidate()
+            except Exception:
+                pass
             return True
 
         args = state.apply_settings_to_args(args)
@@ -2364,10 +3004,14 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             except click.ClickException as e:
                 e.show()
                 status_ref[0] = "fail"
-            except KeyboardInterrupt:
-                # Ctrl+C while running — the keybinding injected this into us
-                # via PyThreadState_SetAsyncExc. Surface it as a deliberate
-                # stop in the footer rather than a generic failure.
+            except (KeyboardInterrupt, _asyncio_mod.CancelledError):
+                # Ctrl+C while running — the keybinding either cancelled
+                # our asyncio tasks (CancelledError propagates out of the
+                # await chain) or injected KeyboardInterrupt via
+                # PyThreadState_SetAsyncExc. Either way surface it as a
+                # deliberate stop in the footer rather than a generic
+                # failure. (CancelledError is a BaseException since
+                # Python 3.8 and won't be caught by ``except Exception``.)
                 err_console.print(f"  [{BEE_DIM}]stopped[/]")
                 status_ref[0] = "stopped"
             except SystemExit as e:
@@ -2442,6 +3086,26 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                     state.max_concurrency = None
                     state.current_concurrency = None
                     state.last_usage_refresh_mono = None
+                    # Flip back into first-run mode in place — the prompt
+                    # transitions to ``API key: `` and the input is masked
+                    # so the user can paste a new key without re-running
+                    # ``auth`` (which would suspend the REPL via
+                    # ``run_in_terminal`` and feel jarring).
+                    _first_run_needs_key[0] = True
+                    err_console.print(
+                        f"  [{BEE_DIM}]Enter a new API key to continue, or "
+                        f"[bold {BEE_YELLOW}]:q[/][{BEE_DIM}] to exit.[/]"
+                    )
+                # Clear the input buffer only on success — failed or
+                # cancelled commands leave the line in place so the user
+                # can edit and re-run without re-typing. Buffer mutations
+                # have to run on the main thread (this callback is
+                # already marshalled there via call_soon_threadsafe).
+                if status_ref[0] == "ok":
+                    try:
+                        input_buffer.reset()
+                    except Exception:
+                        pass
                 try:
                     app.invalidate()
                 except Exception:
@@ -2540,41 +3204,81 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             # than starting fresh from the most recent command.
             input_buffer.reset()
             return
+        # First-run API key entry path — text in the buffer is the raw key
+        # the user just pasted. Validate against /usage and, on success,
+        # persist + transition to normal command mode in place.
+        if _first_run_needs_key[0]:
+            input_buffer.reset()
+            _handle_first_run_key(stripped, text)
+            return
         if stripped.lower() in _QUIT_TOKENS:
             input_buffer.reset()
             event.app.exit()
             return
         # Persist the submitted line into the FileHistory before we kick off
-        # execution. We do this manually (rather than letting prompt_toolkit
-        # do it via Buffer.validate_and_handle) because our custom Enter
-        # binding bypasses that path. The default up/down arrow bindings on
-        # Buffer pull from this same history, so commands the user runs
-        # become navigable on the next prompt.
+        # execution. ``append_string`` is the right call (not
+        # ``store_string``): the latter only writes to disk, leaving the
+        # in-memory ``_loaded_strings`` stale, so newly-submitted commands
+        # don't show up on the next Up press until the REPL restarts and
+        # reloads from disk. ``append_string`` does both.
         if history is not None:
             try:
-                history.store_string(stripped)
+                history.append_string(stripped)
             except Exception:
                 pass
-        # Clear the buffer only after a successful parse — _execute returns
-        # False for shlex errors so the user can fix their unclosed quote
-        # in-place instead of having to retype the whole line.
-        # We use ``reset()`` (not ``set_document``) so the
-        # history-navigation cursor is reset; otherwise a subsequent Up
-        # press would continue browsing from the prior position instead
-        # of starting at the newest entry.
-        if _execute(stripped):
-            input_buffer.reset()
+        # Don't clear the buffer here — we want the typed command to
+        # stay visible if it fails or is cancelled (Ctrl+C), so the user
+        # can edit and retry without re-typing. ``_finish`` clears it
+        # only when the command succeeded. Shlex parse errors return
+        # False from ``_execute`` and the text stays in place naturally.
+        _execute(stripped)
 
     @kb.add("c-c")
     def _ctrl_c(event):
         # If a worker thread is running, Ctrl+C stops that command rather
-        # than exiting the REPL. Uses PyThreadState_SetAsyncExc to inject
-        # KeyboardInterrupt into the worker — the inner _run catches it and
-        # surfaces a "stopped" footer. This is the documented mechanism for
-        # interrupting a misbehaving thread; for in-flight HTTP the
-        # exception fires when the request returns, which is acceptable.
+        # than exiting the REPL. We try two mechanisms in parallel:
+        #
+        #   1. Cancel all tasks on the worker's asyncio loop via
+        #      ``call_soon_threadsafe``. This wakes the selector
+        #      immediately and raises ``CancelledError`` on the in-flight
+        #      await (e.g. an aiohttp request blocked on socket recv).
+        #      This is the only thing that produces a *fast* stop for
+        #      network commands — without it, a long ScrapingBee request
+        #      would hold the worker until it returns naturally.
+        #
+        #   2. Inject ``KeyboardInterrupt`` into the worker thread via
+        #      ``PyThreadState_SetAsyncExc``. Fires at the next Python
+        #      bytecode boundary; covers commands that aren't currently
+        #      blocked in asyncio (sync post-processing, slow loops, ...).
         worker = current_worker[0]
         if state.is_running and worker is not None and worker.is_alive():
+            loop = _active_worker_loop[0]
+            if loop is not None:
+                def _cancel_all_tasks() -> None:
+                    try:
+                        for task in _asyncio_mod.all_tasks(loop):
+                            if not task.done():
+                                task.cancel()
+                    except Exception:
+                        pass
+                try:
+                    loop.call_soon_threadsafe(_cancel_all_tasks)
+                except Exception:
+                    pass
+
+            # If a ``!shell`` command is running, terminate the subprocess
+            # directly — the worker thread is blocked in a C-level read()
+            # on the child's stdout pipe, so a Python-level
+            # KeyboardInterrupt won't fire until the read returns.
+            # ``terminate()`` sends SIGTERM; closing the pipe also frees
+            # the readline() loop.
+            proc = current_subprocess[0]
+            if proc is not None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
             import ctypes
 
             tid = worker.ident
@@ -2609,23 +3313,61 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         if not input_buffer.text:
             event.app.exit()
 
-    @kb.add("tab", filter=~has_completions)
+    # Right arrow / End accept the ghost-text suggestion. We're using
+    # ``Application`` directly (not ``PromptSession``), so the default
+    # ``load_auto_suggest_bindings`` are NOT in the merged binding set —
+    # without these, the ghost text appears but no key consumes it.
+    # (Ctrl-F is intentionally NOT bound — it would be redundant with Right
+    # arrow and a small minority of users expect it to mean "find".)
+    @Condition
+    def _suggestion_at_eol() -> bool:
+        try:
+            buf = input_buffer
+            return (
+                buf.suggestion is not None
+                and len(buf.suggestion.text) > 0
+                and buf.document.is_cursor_at_the_end
+            )
+        except Exception:
+            return False
+
+    def _do_accept_suggestion(event):
+        buf = event.current_buffer
+        sug = buf.suggestion
+        if sug:
+            buf.insert_text(sug.text)
+
+    kb.add("right", filter=_suggestion_at_eol, eager=True)(_do_accept_suggestion)
+    kb.add("end", filter=_suggestion_at_eol, eager=True)(_do_accept_suggestion)
+    kb.add(
+        "tab",
+        filter=~has_completions & _suggestion_at_eol,
+        eager=True,
+    )(_do_accept_suggestion)
+
+    _not_first_run = Condition(lambda: not _first_run_needs_key[0])
+
+    @kb.add("tab", filter=~has_completions & ~_suggestion_at_eol & _not_first_run)
     def _tab_open(event):
-        # Tab on an EMPTY input → toggle Scroll/Select mode (no need for
-        # completions when there's nothing to complete). Tab while typing
-        # opens completions as before.
-        if not input_buffer.text:
-            _toggle_mouse_mode(event)
-            return
+        # Tab opens the completion popup when no ghost suggestion is
+        # visible. Shift+Tab is the mode toggle. Suppressed during the
+        # first-run API key prompt — command-name completions are
+        # irrelevant there.
         event.current_buffer.start_completion(select_first=False)
 
     @kb.add("tab", filter=has_completions)
     def _tab_next(event):
         event.current_buffer.complete_next()
 
+    # Shift+Tab — when the completion popup is open, navigate backwards;
+    # when it's not, toggle Scroll ↔ Select mouse mode.
     @kb.add("s-tab", filter=has_completions)
-    def _shift_tab(event):
+    def _shift_tab_in_completions(event):
         event.current_buffer.complete_previous()
+
+    @kb.add("s-tab", filter=~has_completions)
+    def _shift_tab_toggle_mode(event):
+        _toggle_mouse_mode(event)
 
     @kb.add("escape", filter=has_completions, eager=True)
     def _esc(event):
@@ -2648,9 +3390,17 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # first Up after a submit actually shows the newest entry.
         try:
             if len(buf._working_lines) <= 1:
+                # ``get_strings()`` returns newest-first. prompt_toolkit's
+                # built-in ``_load_history`` calls ``appendleft`` for each
+                # yielded item in that order — newest gets pushed left
+                # FIRST, ending up closest to the current-edit slot at the
+                # right. Walking Up then visits newest before older. We
+                # mirror that exact order here so the first Up after a
+                # submit lands on the freshly-submitted command, not the
+                # oldest entry on disk.
                 strings = list(buf.history.get_strings())
                 if strings:
-                    for s in reversed(strings):
+                    for s in strings:
                         buf._working_lines.appendleft(s)
                     buf.working_index = len(buf._working_lines) - 1
             elif not buf.text and buf.working_index != len(buf._working_lines) - 1:
@@ -2785,6 +3535,8 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     async def _ticker():
         import asyncio
 
+        from .theme import has_progress_state, tick_progress_render
+
         idle_counter = 0
         # Track terminal width and trigger a fresh invalidate on resize.
         # No manual resize-detection needed any more — in full_screen
@@ -2795,6 +3547,19 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
         while True:
             await asyncio.sleep(0.1)
+            # Re-render the honeycomb progress widget while a batch is in
+            # flight so the boundary hex shimmers between completion
+            # events. ``tick_progress_render`` is a no-op when no batch
+            # state is set, so the cost is negligible when idle.
+            if has_progress_state():
+                try:
+                    tick_progress_render()
+                except Exception:
+                    pass
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
             if state.is_running:
                 state.tick += 1
                 try:

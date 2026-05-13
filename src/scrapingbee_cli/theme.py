@@ -71,6 +71,110 @@ def is_repl_mode() -> bool:
     return _repl_mode
 
 
+# -- Multi-line progress renderer hook ---------------------------------------
+# The REPL installs a renderer here at startup that knows how to replace
+# the last N lines of its virtual scrollback in place. Batch operations
+# call ``emit_progress_lines`` to update the honeycomb progress bar —
+# in REPL mode it overwrites the previous frame; outside the REPL it
+# falls back to printing the lines normally.
+
+_progress_renderer = None  # type: ignore[var-annotated]
+
+
+def set_progress_renderer(fn) -> None:
+    """Install a function ``fn(lines)`` where ``lines`` is a list of
+    ANSI-rendered strings. Called by the REPL to wire up in-place updates.
+    """
+    global _progress_renderer  # noqa: PLW0603
+    _progress_renderer = fn
+
+
+def emit_progress_lines(lines: list[str]) -> None:
+    """Emit a multi-line progress update. In REPL mode this overwrites
+    the previous frame; otherwise it falls back to writing to stderr.
+    ``lines`` is a list of already-rendered ANSI strings (one per row,
+    no trailing newlines).
+    """
+    if _progress_renderer is not None:
+        try:
+            _progress_renderer(lines)
+            return
+        except Exception:
+            pass
+    # Fallback: plain stderr append.
+    for line in lines:
+        sys.stderr.write(line + "\n")
+    sys.stderr.flush()
+
+
+# -- Shared progress state for the REPL ticker animation ---------------------
+# batch.py calls ``update_progress_state`` on each completion to record
+# latest counts/rates. The REPL ticker calls ``tick_progress_render`` at
+# ~10 Hz so the in-progress (boundary) hex shimmers between frames even
+# when no new completion has fired. ``clear_progress_state`` is called
+# when the batch finishes so the ticker stops re-rendering.
+
+_progress_state: dict | None = None
+
+
+def update_progress_state(
+    completed: int,
+    total: int,
+    *,
+    rps: float | None = None,
+    eta: str | None = None,
+    failure_pct: float | None = None,
+) -> None:
+    global _progress_state  # noqa: PLW0603
+    _progress_state = {
+        "completed": completed,
+        "total": total,
+        "rps": rps,
+        "eta": eta,
+        "failure_pct": failure_pct,
+    }
+    tick_progress_render()
+
+
+def clear_progress_state() -> None:
+    global _progress_state  # noqa: PLW0603
+    _progress_state = None
+
+
+def has_progress_state() -> bool:
+    return _progress_state is not None
+
+
+def tick_progress_render() -> None:
+    """Re-render the progress widget with the latest state. Safe to call
+    when no batch is in progress (becomes a no-op). The shimmer phase
+    is derived from ``time.monotonic()`` inside ``format_honeycomb_grid``.
+    """
+    if _progress_state is None:
+        return
+    rows = format_honeycomb_grid(
+        completed=_progress_state["completed"],
+        total=_progress_state["total"],
+        rps=_progress_state["rps"],
+        eta=_progress_state["eta"],
+        failure_pct=_progress_state["failure_pct"],
+        animate=True,
+    )
+    import io
+    from rich.console import Console as _RC
+
+    rendered: list[str] = []
+    for row in rows:
+        buf = io.StringIO()
+        _c = _RC(
+            file=buf, force_terminal=True, color_system="truecolor",
+            highlight=False, width=200,
+        )
+        _c.print(row, end="")
+        rendered.append(buf.getvalue())
+    emit_progress_lines(rendered)
+
+
 # -- Single-line bee frames --------------------------------------------------
 
 # Each frame is a tuple of (segment, style) pairs rendered inline.
@@ -462,20 +566,25 @@ class LiveCreditTracker:
 
 
 def format_honeycomb_meter(used: int, total: int) -> Text:
-    """Render a honeycomb-style credit meter. ⬡ = used, ⬢ = remaining."""
+    """Render a honeycomb-style credit meter.
+
+    Filled hex (⬢) = remaining credits (ScrapingBee brand yellow).
+    Outline hex (⬡) = used / consumed (dim grey).
+    Intuitive "fuel gauge" semantics — yellow shows what you have left.
+    """
     width = 20
     if total <= 0:
         pct = 0.0
     else:
         pct = (total - used) / total
     remaining = total - used
-    filled = int(width * pct)  # remaining portion (yellow)
-    empty = width - filled  # used portion (dim)
+    filled = int(width * pct)  # remaining portion (yellow, filled hex)
+    empty = width - filled  # used portion (dim, outline hex)
 
     text = Text()
     text.append("  ")
-    text.append("⬡" * filled, style=f"bold {BEE_YELLOW}")
-    text.append("⬢" * empty, style="dim")
+    text.append("⬢" * filled, style=f"bold {BEE_YELLOW}")
+    text.append("⬡" * empty, style=f"dim {BEE_YELLOW}")
     text.append(f"  {remaining:,} / {total:,} credits remaining", style="bold white")
 
     # Color the percentage based on health
@@ -560,6 +669,89 @@ def print_completion_summary(
 # -- Honeycomb trail progress ------------------------------------------------
 
 
+def format_honeycomb_grid(
+    completed: int,
+    total: int,
+    *,
+    rps: float | None = None,
+    eta: str | None = None,
+    failure_pct: float | None = None,
+    animate: bool = False,
+) -> list[Text]:
+    """3-row honeycomb progress bar for batch operations.
+
+    Filled hex (⬢) = completed (ScrapingBee brand yellow, bold).
+    Outline hex (⬡) = remaining (brand yellow, dim — still brand-colored,
+    just lower-emphasis so the difference reads visually). Cells fill in
+    row order, left to right.
+
+    Row layout (offset to look like a honeycomb):
+        Row 0:  ⬢ ⬢ ⬢ ⬢ ⬢ ⬢ ⬢ ⬢ ⬢ ⬢
+        Row 1: ⬢ ⬢ ⬢ ⬢ ⬢ ⬢ ⬢ ⬢ ⬢ ⬢ ⬢
+        Row 2:  ⬢ ⬢ ⬢ ⬢ ⬢ ⬢ ⬢ ⬢ ⬢ ⬢
+
+    Returns a list of three Text objects, one per row. The third row also
+    carries the ``X/Y  N req/s  ETA …`` stats trailing the cells.
+    """
+    # Single row of hexes — the terminal's line-height made a 3-row stack
+    # feel visually disconnected, and the user preferred a tighter
+    # single-line look. The multi-line plumbing (``replace_last_n_lines``,
+    # the ticker shimmer, the progress-state hook) is kept intact because
+    # it costs nothing and the single line is just ``n=1``.
+    width = 20
+    if total <= 0:
+        filled = 0
+    else:
+        filled = int(width * completed / total)
+    filled = min(filled, width)
+
+    filled_style = f"bold {BEE_YELLOW}"
+    outline_style = f"dim {BEE_YELLOW}"
+
+    # Boundary cell shimmer: the next-to-be-filled cell pulses between a
+    # mid-bright and a soft yellow so the user can see the batch is alive
+    # even when no completion has fired in the last few ms. Only active
+    # when ``animate=True`` (the REPL ticker passes that) and only when
+    # there is a still-empty cell at the front of the bar.
+    shimmer_styles: list[str] = []
+    if animate and filled < width:
+        import math
+        import time as _time
+
+        # 1.2 Hz pulse — slow enough to read, fast enough to feel alive.
+        phase = 0.5 + 0.5 * math.sin(_time.monotonic() * 2 * math.pi * 1.2)
+        if phase > 0.55:
+            shimmer_styles.append(f"bold {BEE_YELLOW}")
+        else:
+            shimmer_styles.append(f"{BEE_YELLOW}")
+
+    def _render_row(row_text: Text) -> None:
+        if filled > 0:
+            row_text.append("⬢" * filled, style=filled_style)
+        if filled < width:
+            if shimmer_styles:
+                # First empty cell uses the shimmer style; the rest are
+                # the regular dim-yellow outline.
+                row_text.append("⬡", style=shimmer_styles[0])
+                if (width - filled) > 1:
+                    row_text.append("⬡" * (width - filled - 1), style=outline_style)
+            else:
+                row_text.append("⬡" * (width - filled), style=outline_style)
+
+    row_text = Text()
+    row_text.append("  ")
+    _render_row(row_text)
+    # Stats trail directly off the single row.
+    row_text.append(f"  {completed}/{total}", style="bold white")
+    if rps is not None:
+        row_text.append(f"  {rps:.1f} req/s", style="dim")
+    if eta is not None:
+        row_text.append(f"  ETA {eta}", style="dim")
+    if failure_pct is not None and failure_pct > 0:
+        row_text.append(f"  Failures: {failure_pct:.0f}%", style=f"bold {BEE_RED}")
+    return [row_text]
+
+
 def format_honeycomb_trail(
     completed: int,
     total: int,
@@ -568,7 +760,9 @@ def format_honeycomb_trail(
     eta: str | None = None,
     failure_pct: float | None = None,
 ) -> Text:
-    """Bee flying across a honeycomb trail: ⬡⬡⬡\\(◉ω◉)/⬢⬢⬢"""
+    """Backward-compatible single-line variant. New code should use
+    :func:`format_honeycomb_grid` for the richer 3-row layout.
+    """
     width = 25
     if total <= 0:
         pos = 0
@@ -576,18 +770,11 @@ def format_honeycomb_trail(
         pos = int(width * completed / total)
     pos = min(pos, width)
 
-    trail_done = "⬡" * pos
-    trail_left = "⬢" * (width - pos)
-
-    bee_frames = ["\\(◉ω◉)/", "᎑(◉ω◉)᎑", "/(◉ω◉)\\", "᎑(◉ω◉)᎑"]
-    bee = bee_frames[completed % len(bee_frames)]
-
     text = Text()
     text.append("  ")
-    text.append(trail_done, style=f"bold {BEE_YELLOW}")
-    text.append(bee, style=f"bold {BEE_YELLOW}")
-    text.append(trail_left, style="dim")
-    text.append(f" {completed}/{total}", style="bold white")
+    text.append("⬢" * pos, style=f"bold {BEE_YELLOW}")
+    text.append("⬡" * (width - pos), style=f"dim {BEE_YELLOW}")
+    text.append(f"  {completed}/{total}", style="bold white")
     if rps is not None:
         text.append(f"  {rps:.1f} req/s", style="dim")
     if eta is not None:

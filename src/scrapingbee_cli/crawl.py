@@ -664,7 +664,11 @@ def run_project_spider(
         )
         log_path = _maybe_set_repl_log_file(settings)
         if log_path:
-            click.echo(f"REPL mode: full crawl log → {log_path}", err=True)
+            click.echo(
+                f"REPL mode: full crawl log → {log_path}  "
+                f"(use `:view crawl` to scroll through it)",
+                err=True,
+            )
         process = CrawlerProcess(settings)
         process.crawl(spider_name)
         process.start(install_signal_handlers=_install_signal_handlers())
@@ -732,7 +736,11 @@ def run_urls_spider(
         settings.set("CLOSESPIDER_PAGECOUNT", max_pages)
     log_path = _maybe_set_repl_log_file(settings)
     if log_path:
-        click.echo(f"REPL mode: full crawl log → {log_path}", err=True)
+        click.echo(
+            f"REPL mode: full crawl log → {log_path}  "
+            f"(use `:view crawl` to scroll through it)",
+            err=True,
+        )
     process = CrawlerProcess(settings)
     process.crawl(
         GenericScrapingBeeSpider,
