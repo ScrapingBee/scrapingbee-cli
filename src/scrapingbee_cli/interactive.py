@@ -2244,6 +2244,27 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         sys.stdout.write("\033]10;#EAEAEA\007")
         sys.stdout.flush()
 
+    # ── Request a usable terminal size (best-effort) ────────────────────────
+    # The banner is 90 cols wide; with margins + input + toolbar the REPL
+    # really wants ~100 cols × ~30 rows. XTERM Window Manipulation
+    # sequence "CSI 8 ; H ; W t" asks the terminal to resize itself to
+    # the given rows/cols. Honoured by xterm (with allowWindowOps),
+    # iTerm2, kitty, alacritty, WezTerm, Windows Terminal, GNOME
+    # Terminal. macOS Terminal.app and SSH/tmux sessions ignore it —
+    # we silently accept whatever size we end up with. Only fires when
+    # the current size is below the target so a user who's already on a
+    # large window isn't disrupted.
+    try:
+        _cur_cols, _cur_rows = shutil.get_terminal_size((80, 24))
+        _MIN_COLS, _MIN_ROWS = 100, 30
+        if _cur_cols < _MIN_COLS or _cur_rows < _MIN_ROWS:
+            _new_cols = max(_cur_cols, _MIN_COLS)
+            _new_rows = max(_cur_rows, _MIN_ROWS)
+            sys.stdout.write(f"\033[8;{_new_rows};{_new_cols}t")
+            sys.stdout.flush()
+    except Exception:
+        pass
+
     # Create the virtual scrollback buffer and seed it with the banner.
     # In full_screen mode we own the alt buffer entirely. The banner is
     # rendered as a FIXED Window at the top of the layout (not pushed into
