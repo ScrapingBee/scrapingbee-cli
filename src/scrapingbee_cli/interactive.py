@@ -2548,7 +2548,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             out.append(("bold white", right))
         # Spacer row
         out.append(("", "\n"))
-        # v1.4.1
+        # v1.5.0
         out.append(("", "\n"))
         out.append((f"bold {BEE_YELLOW}", f"  v{version}"))
         # Tagline
