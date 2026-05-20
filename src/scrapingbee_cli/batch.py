@@ -414,13 +414,11 @@ def get_batch_usage(api_key_flag: str | None) -> dict:
     key = get_api_key(api_key_flag)
     try:
         from .theme import is_repl_mode
+
         _in_repl = is_repl_mode()
     except Exception:
         _in_repl = False
-    cache_opt_in = (
-        _in_repl
-        or os.environ.get("SCRAPINGBEE_USAGE_CACHE") == "1"
-    )
+    cache_opt_in = _in_repl or os.environ.get("SCRAPINGBEE_USAGE_CACHE") == "1"
     if cache_opt_in:
         cached = read_usage_file_cache(key)
         if cached is not None:
@@ -571,6 +569,7 @@ async def run_batch_async(
     if is_repl_mode() and show_progress and total > 0:
         try:
             from .theme import update_progress_state
+
             update_progress_state(0, total, rps=None, eta=None, failure_pct=None)
         except Exception:
             pass
@@ -628,9 +627,13 @@ async def run_batch_async(
                 # AND the REPL ticker will keep re-rendering at ~10 Hz
                 # so the boundary hex shimmers between completions.
                 from .theme import update_progress_state
+
                 update_progress_state(
-                    completed, total,
-                    rps=rps_val, eta=eta_val, failure_pct=fail_pct,
+                    completed,
+                    total,
+                    rps=rps_val,
+                    eta=eta_val,
+                    failure_pct=fail_pct,
                 )
             else:
                 parts = [f"[{completed}/{total}]"]
@@ -655,6 +658,7 @@ async def run_batch_async(
         if is_repl_mode():
             try:
                 from .theme import clear_progress_state
+
                 clear_progress_state()
             except Exception:
                 pass

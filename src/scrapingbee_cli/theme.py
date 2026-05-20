@@ -389,6 +389,7 @@ def _maybe_mirror_to_status_file() -> None:
         return
     try:
         import json as _json
+
         payload: dict = {}
         if _crawl_status is not None:
             payload.update(_crawl_status)
@@ -480,8 +481,11 @@ def tick_crawl_render() -> None:
     for row in lines_text:
         buf = io.StringIO()
         _c = Console(
-            file=buf, force_terminal=True, color_system="truecolor",
-            highlight=False, width=200,
+            file=buf,
+            force_terminal=True,
+            color_system="truecolor",
+            highlight=False,
+            width=200,
         )
         _c.print(row, end="")
         rendered.append(buf.getvalue())
@@ -593,8 +597,11 @@ def tick_progress_render() -> None:
     for row in rows:
         buf = io.StringIO()
         _c = Console(
-            file=buf, force_terminal=True, color_system="truecolor",
-            highlight=False, width=200,
+            file=buf,
+            force_terminal=True,
+            color_system="truecolor",
+            highlight=False,
+            width=200,
         )
         _c.print(row, end="")
         rendered.append(buf.getvalue())
@@ -652,8 +659,6 @@ def _render_inline_bee(frame_idx: int) -> Text:
     for content, style in parts:
         text.append(content, style=style)
     return text
-
-
 
 
 # -- Styled output helpers ---------------------------------------------------
@@ -1112,5 +1117,3 @@ def echo_bee_error(status_code: int, fallback_msg: str = "") -> None:
         err_console.print(f"  [dim]Tip: {tip}[/dim]")
     else:
         echo_error(fallback_msg or f"Error: HTTP {status_code}")
-
-

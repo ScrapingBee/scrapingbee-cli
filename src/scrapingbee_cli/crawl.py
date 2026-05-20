@@ -97,6 +97,7 @@ def _ensure_reactor_usable() -> None:
     in a subprocess; that's a follow-up.)
     """
     import sys as _sys
+
     reactor = _sys.modules.get("twisted.internet.reactor")
     if reactor is None:
         return  # No reactor has been installed yet, nothing to check.
@@ -139,6 +140,7 @@ def _target_url_from_request(request) -> str:
         if "app.scrapingbee.com" in raw and "url=" in raw:
             try:
                 from urllib.parse import parse_qs, unquote, urlparse
+
                 qs = parse_qs(urlparse(raw).query)
                 target = qs.get("url", [None])[0]
                 if target:
@@ -174,6 +176,7 @@ def _install_signal_handlers() -> bool:
     """
     try:
         from .theme import is_repl_mode
+
         return not is_repl_mode()
     except Exception:
         return True
@@ -199,6 +202,7 @@ def _maybe_set_repl_log_file(settings) -> str | None:
     """
     try:
         from .theme import is_repl_mode
+
         in_repl = is_repl_mode() or os.environ.get("SCRAPINGBEE_FROM_REPL") == "1"
         if not in_repl:
             return None
@@ -209,6 +213,7 @@ def _maybe_set_repl_log_file(settings) -> str | None:
         settings.set("LOG_FILE_APPEND", False)  # fresh log per run
         try:
             import logging as _logging
+
             _logging.getLogger("py.warnings").setLevel(_logging.ERROR)
         except Exception:
             pass
@@ -216,9 +221,11 @@ def _maybe_set_repl_log_file(settings) -> str | None:
     except Exception:
         return None
 
+
 # 0 means unlimited
 DEFAULT_MAX_DEPTH = 0
 DEFAULT_MAX_PAGES = 0
+
 
 def _normalize_url(url: str) -> str:
     """Strip fragment and trailing slash for deduplication."""
@@ -480,9 +487,7 @@ class GenericScrapingBeeSpider(Spider):
             # at spider_idle (when discovery exhausts before reaching
             # ``max_pages``). Wire this regardless of REPL mode — it's
             # a credit-saving optimisation, not a UI feature.
-            crawler.signals.connect(
-                spider._on_spider_idle, signal=_scrapy_signals.spider_idle
-            )
+            crawler.signals.connect(spider._on_spider_idle, signal=_scrapy_signals.spider_idle)
 
             # Register signal handlers when running inside the REPL
             # (legacy in-process path) OR when the parent REPL spawned
@@ -490,9 +495,7 @@ class GenericScrapingBeeSpider(Spider):
             # new subprocess-per-crawl path). The handlers themselves
             # call ``update_crawl_status`` which atomically mirrors
             # state to the file if the env var is set.
-            _want_status = is_repl_mode() or bool(
-                os.environ.get("SCRAPINGBEE_CRAWL_STATUS_FILE")
-            )
+            _want_status = is_repl_mode() or bool(os.environ.get("SCRAPINGBEE_CRAWL_STATUS_FILE"))
             if _want_status:
                 crawler.signals.connect(
                     spider._on_spider_opened, signal=_scrapy_signals.spider_opened
@@ -520,8 +523,13 @@ class GenericScrapingBeeSpider(Spider):
     def _on_spider_opened(self, spider) -> None:
         try:
             from .theme import update_crawl_status, update_progress_state
+
             update_crawl_status(
-                current_url=None, fetched=0, queued=0, saved=0, phase="discovering",
+                current_url=None,
+                fetched=0,
+                queued=0,
+                saved=0,
+                phase="discovering",
             )
             # If we already know the total (sitemap mode), seed the
             # progress widget at 0/total so the user sees the bar from
@@ -535,6 +543,7 @@ class GenericScrapingBeeSpider(Spider):
         try:
             self._queued_count += 1
             from .theme import update_crawl_status
+
             update_crawl_status(queued=self._queued_count)
         except Exception:
             pass
@@ -542,6 +551,7 @@ class GenericScrapingBeeSpider(Spider):
     def _on_request_reached(self, request, spider) -> None:
         try:
             from .theme import update_crawl_status
+
             # Scrapy sees the outgoing proxy URL
             # (``app.scrapingbee.com/api/v1/?api_key=…&url=…``) — that's
             # leaky (API key) and not what the user thinks of as "their"
@@ -556,6 +566,7 @@ class GenericScrapingBeeSpider(Spider):
         try:
             self._response_count += 1
             from .theme import update_crawl_status, update_progress_state
+
             update_crawl_status(
                 fetched=self._response_count,
                 saved=self._save_count,
@@ -572,6 +583,7 @@ class GenericScrapingBeeSpider(Spider):
     def _on_spider_closed(self, spider, reason) -> None:
         try:
             from .theme import clear_crawl_status, clear_progress_state
+
             clear_crawl_status()
             clear_progress_state()
         except Exception:
@@ -611,9 +623,7 @@ class GenericScrapingBeeSpider(Spider):
             return
         self._discovery_done = True
         budget = (
-            min(self.max_pages, len(self._save_queue))
-            if self.max_pages
-            else len(self._save_queue)
+            min(self.max_pages, len(self._save_queue)) if self.max_pages else len(self._save_queue)
         )
         for url in self._save_queue[:budget]:
             self._save_pending += 1
@@ -624,6 +634,7 @@ class GenericScrapingBeeSpider(Spider):
                 if self._save_pending > 0:
                     self._save_pending -= 1
         from scrapy.exceptions import DontCloseSpider
+
         raise DontCloseSpider
 
     def _push_saved_status(self) -> None:
@@ -648,11 +659,13 @@ class GenericScrapingBeeSpider(Spider):
         """
         try:
             from .theme import update_crawl_status
+
             update_crawl_status(saved=self._save_count)
         except Exception:
             pass
         if self.max_pages != 0 and self._save_count >= self.max_pages:
             from scrapy.exceptions import CloseSpider
+
             raise CloseSpider("max_pages")
 
     def _on_request_error(self, failure) -> None:
@@ -808,6 +821,7 @@ class GenericScrapingBeeSpider(Spider):
         if self.max_depth != 0 and depth >= self.max_depth:
             return
         from urllib.parse import unquote as _unquote
+
         for href in _extract_hrefs_from_response(response):
             if not href or href.startswith(("#", "mailto:", "javascript:")):
                 continue
@@ -857,10 +871,7 @@ class GenericScrapingBeeSpider(Spider):
         """
         # max_pages = max saved pages. Stop queueing follow-ups once
         # the budget (already-saved + in-flight saves) is committed.
-        if (
-            self.max_pages != 0
-            and self._save_count + self._save_pending >= self.max_pages
-        ):
+        if self.max_pages != 0 and self._save_count + self._save_pending >= self.max_pages:
             return
         for full_url, next_depth in self._iter_follow_urls(response):
             yield ScrapingBeeRequest(
@@ -915,9 +926,7 @@ class GenericScrapingBeeSpider(Spider):
         except Exception:
             hrefs = []
         if hrefs:
-            yield from self._iter_follow_requests(
-                response, dict(self.scrape_params), self.parse
-            )
+            yield from self._iter_follow_requests(response, dict(self.scrape_params), self.parse)
 
     def _parse_crawl_and_save(self, response: Response, **kwargs: object) -> Any:
         """Discovery-first callback. Two flows live here:
@@ -945,12 +954,9 @@ class GenericScrapingBeeSpider(Spider):
 
         if not binary_mode:
             # ── HTML save-pattern flow (unchanged) ───────────────────
-            save_this = (self._save_re is None) or bool(
-                self._save_re.search(response.url)
-            )
+            save_this = (self._save_re is None) or bool(self._save_re.search(response.url))
             within_cap = (
-                self.max_pages == 0
-                or self._save_count + self._save_pending < self.max_pages
+                self.max_pages == 0 or self._save_count + self._save_pending < self.max_pages
             )
             if save_this and within_cap:
                 try:
@@ -1065,9 +1071,7 @@ class GenericScrapingBeeSpider(Spider):
                 and self._save_queue_next < len(self._save_queue)
                 and self._save_count + self._save_pending < self.max_pages
             ):
-                engine = getattr(
-                    getattr(self, "_crawler", None), "engine", None
-                )
+                engine = getattr(getattr(self, "_crawler", None), "engine", None)
                 if engine is not None:
                     url = self._save_queue[self._save_queue_next]
                     self._save_queue_next += 1
@@ -1231,6 +1235,7 @@ def run_project_spider(
             autothrottle_enabled=autothrottle_enabled,
         )
         from .theme import is_repl_mode as _is_repl_mode
+
         _repl_log_active = _is_repl_mode() or os.environ.get("SCRAPINGBEE_FROM_REPL") == "1"
         if _repl_log_active:
             # Verbose file log, quiet stream — see run_urls_spider for why.
@@ -1238,14 +1243,14 @@ def run_project_spider(
         log_path = _maybe_set_repl_log_file(settings)
         if log_path:
             click.echo(
-                f"REPL mode: full crawl log → {log_path}  "
-                f"(use `:view crawl` to scroll through it)",
+                f"REPL mode: full crawl log → {log_path}  (use `:view crawl` to scroll through it)",
                 err=True,
             )
         _ensure_reactor_usable()
         process = CrawlerProcess(settings)
         if _repl_log_active:
             import logging as _logging
+
             for _h in _logging.getLogger().handlers:
                 if isinstance(_h, _logging.FileHandler):
                     continue
@@ -1321,6 +1326,7 @@ def run_urls_spider(
     # the handlers (see below). Outside REPL there's no file log, so the
     # stream handler picks up LOG_LEVEL directly — keep that at WARNING.
     from .theme import is_repl_mode as _is_repl_mode
+
     _repl_log_active = _is_repl_mode() or os.environ.get("SCRAPINGBEE_FROM_REPL") == "1"
     settings.set("LOG_LEVEL", "INFO" if _repl_log_active else "WARNING")
     if max_pages > 0:
@@ -1333,16 +1339,13 @@ def run_urls_spider(
         # ``max_pages × N`` where N depends on how many hrefs a typical
         # page exposes. Set the framework cap to a generous multiple
         # so it never fires before the spider's own cap stops queuing.
-        use_discovery_flow = bool(save_pattern) or _requires_discovery_phase(
-            scrape_params or {}
-        )
+        use_discovery_flow = bool(save_pattern) or _requires_discovery_phase(scrape_params or {})
         framework_cap = max_pages * 20 if use_discovery_flow else max_pages
         settings.set("CLOSESPIDER_PAGECOUNT", framework_cap)
     log_path = _maybe_set_repl_log_file(settings)
     if log_path:
         click.echo(
-            f"REPL mode: full crawl log → {log_path}  "
-            f"(use `:view crawl` to scroll through it)",
+            f"REPL mode: full crawl log → {log_path}  (use `:view crawl` to scroll through it)",
             err=True,
         )
     _ensure_reactor_usable()
@@ -1355,6 +1358,7 @@ def run_urls_spider(
     # file stays verbose while stderr stays clean.
     if _repl_log_active:
         import logging as _logging
+
         for _h in _logging.getLogger().handlers:
             if isinstance(_h, _logging.FileHandler):
                 continue

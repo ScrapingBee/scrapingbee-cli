@@ -725,9 +725,7 @@ def scrape_cmd(
                     verbose=obj["verbose"],
                 )
             else:
-                data, resp_headers, status_code = await client.scrape(
-                    scrape_url, **scrape_kwargs
-                )
+                data, resp_headers, status_code = await client.scrape(scrape_url, **scrape_kwargs)
         if not scrape_kwargs.get("transparent_status_code") and status_code >= 400:
             if is_repl_mode():
                 echo_error(f"Error: HTTP {status_code}")

@@ -97,6 +97,7 @@ def _validate_api_key(key: str) -> tuple[bool, str]:
         try:
             asyncio.get_running_loop()
             from concurrent.futures import ThreadPoolExecutor
+
             with ThreadPoolExecutor(max_workers=1) as pool:
                 status, data = pool.submit(_run_check).result()
         except RuntimeError:

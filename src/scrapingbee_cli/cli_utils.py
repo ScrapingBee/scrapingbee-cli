@@ -71,16 +71,13 @@ def _maybe_repl_preview(data: bytes) -> tuple[bytes, str | None, str | None]:
         full_path = None
 
     line_count = data.count(b"\n") + 1
-    if (
-        len(data) <= _REPL_PREVIEW_MAX_BYTES
-        and line_count <= _REPL_PREVIEW_MAX_LINES
-    ):
+    if len(data) <= _REPL_PREVIEW_MAX_BYTES and line_count <= _REPL_PREVIEW_MAX_LINES:
         # Small enough to print inline — but the cache is still fresh.
         return data, None, None
 
     text = data.decode("utf-8", errors="replace")
     lines = text.split("\n")
-    line_preview = "\n".join(lines[: _REPL_PREVIEW_MAX_LINES])
+    line_preview = "\n".join(lines[:_REPL_PREVIEW_MAX_LINES])
 
     # Decide whether to truncate by lines or by chars. Single-line minified
     # HTML/JSON would have line_preview == text but len > byte cap; truncate by
@@ -89,20 +86,15 @@ def _maybe_repl_preview(data: bytes) -> tuple[bytes, str | None, str | None]:
         preview = text[:_REPL_PREVIEW_MAX_BYTES]
         more_chars = len(text) - len(preview)
         truncation_note = (
-            f"showing first {_REPL_PREVIEW_MAX_BYTES:,} chars  ·  "
-            f"+{more_chars:,} more chars"
+            f"showing first {_REPL_PREVIEW_MAX_BYTES:,} chars  ·  +{more_chars:,} more chars"
         )
     else:
         preview = line_preview
         more_lines = max(0, len(lines) - _REPL_PREVIEW_MAX_LINES)
         shown = min(_REPL_PREVIEW_MAX_LINES, len(lines))
-        truncation_note = (
-            f"showing {shown}/{len(lines):,} lines  ·  +{more_lines:,} more lines"
-        )
+        truncation_note = f"showing {shown}/{len(lines):,} lines  ·  +{more_lines:,} more lines"
 
-    summary = (
-        f"… preview truncated  ·  {_format_bytes(len(data))}  ·  {truncation_note}"
-    )
+    summary = f"… preview truncated  ·  {_format_bytes(len(data))}  ·  {truncation_note}"
     return preview.encode("utf-8"), summary, full_path
 
 
@@ -126,9 +118,7 @@ def collect_bool_flag_names(cli_group: click.Group) -> set[str]:
     return flags
 
 
-def normalize_bool_flag_args(
-    args: list[str], flag_names: set[str]
-) -> list[str]:
+def normalize_bool_flag_args(args: list[str], flag_names: set[str]) -> list[str]:
     """Pre-parse boolean flags so they accept an explicit true/false
     value in addition to the bare flag form:
       ``--verbose true``  → ``--verbose`` (value dropped, flag kept)
@@ -1737,9 +1727,7 @@ def write_output(
                     from scrapingbee_cli.credits import ESTIMATED_CREDITS
 
                     if command in ESTIMATED_CREDITS:
-                        echo_key_value(
-                            "Credit Cost (estimated)", str(ESTIMATED_CREDITS[command])
-                        )
+                        echo_key_value("Credit Cost (estimated)", str(ESTIMATED_CREDITS[command]))
             echo_separator()
         else:
             click.echo(f"HTTP Status: {status_code}", err=True)
@@ -1793,8 +1781,7 @@ def write_output(
         # must not have extra bytes appended.
         if preview_data and not preview_data.endswith(b"\n"):
             is_text = (
-                preview_data[:1] in (b"{", b"[", b"<", b"#")
-                or b"\x00" not in preview_data[:512]
+                preview_data[:1] in (b"{", b"[", b"<", b"#") or b"\x00" not in preview_data[:512]
             )
             if is_text:
                 click.echo()

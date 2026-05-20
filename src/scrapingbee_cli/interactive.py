@@ -47,39 +47,39 @@ if TYPE_CHECKING:
 # Refined palette
 # ---------------------------------------------------------------------------
 
-_AMBER     = "#E5A800"   # frame border / soft accent
-_GREEN     = "#22C55E"   # success
-_DIM2      = "#555555"   # darker chrome (toolbar labels, hint)
-_BG_CHIP   = "#1a1400"   # chip background (settings)
-_URL_CYAN  = "#7DD3FC"   # URLs in input lexer
+_AMBER = "#E5A800"  # frame border / soft accent
+_GREEN = "#22C55E"  # success
+_DIM2 = "#555555"  # darker chrome (toolbar labels, hint)
+_BG_CHIP = "#1a1400"  # chip background (settings)
+_URL_CYAN = "#7DD3FC"  # URLs in input lexer
 
 _STYLE_DICT = {
     # Top/bottom horizontal rules around the input
-    "rule":          _AMBER,
+    "rule": _AMBER,
     # Prompt mark inside the input area
-    "promptmark":    f"{BEE_YELLOW} bold",
+    "promptmark": f"{BEE_YELLOW} bold",
     # Lexer (input syntax highlighting). Specific categories have explicit
     # colours; unstyled tokens fall through to the application's default
     # style (key `""`), which is set per-session in `_style_dict_for`.
-    "lexer.cmd":     f"{BEE_YELLOW} bold",
-    "lexer.flag":    _AMBER,
-    "lexer.url":     _URL_CYAN,
-    "lexer.string":  _GREEN,
+    "lexer.cmd": f"{BEE_YELLOW} bold",
+    "lexer.flag": _AMBER,
+    "lexer.url": _URL_CYAN,
+    "lexer.string": _GREEN,
     # Bottom toolbar
-    "toolbar":         f"{BEE_DIM}",
-    "toolbar.label":   _DIM2,
-    "toolbar.value":   f"{BEE_YELLOW} bold",
-    "toolbar.ok":      f"{_GREEN} bold",
-    "toolbar.fail":    f"{BEE_RED} bold",
-    "toolbar.hint":    _DIM2,
-    "toolbar.chip":    f"bg:{_BG_CHIP} {BEE_YELLOW}",
-    "toolbar.gauge":   f"{BEE_YELLOW}",
+    "toolbar": f"{BEE_DIM}",
+    "toolbar.label": _DIM2,
+    "toolbar.value": f"{BEE_YELLOW} bold",
+    "toolbar.ok": f"{_GREEN} bold",
+    "toolbar.fail": f"{BEE_RED} bold",
+    "toolbar.hint": _DIM2,
+    "toolbar.chip": f"bg:{_BG_CHIP} {BEE_YELLOW}",
+    "toolbar.gauge": f"{BEE_YELLOW}",
     # Completion menu
-    "completion-menu":                          f"bg:{_BG_CHIP}",
-    "completion-menu.completion":               f"bg:{_BG_CHIP} {BEE_YELLOW}",
-    "completion-menu.completion.current":       f"bg:{BEE_YELLOW} #000000 bold",
-    "completion-menu.meta.completion":          f"bg:{_BG_CHIP} #886600",
-    "completion-menu.meta.completion.current":  f"bg:{BEE_YELLOW} #000000",
+    "completion-menu": f"bg:{_BG_CHIP}",
+    "completion-menu.completion": f"bg:{_BG_CHIP} {BEE_YELLOW}",
+    "completion-menu.completion.current": f"bg:{BEE_YELLOW} #000000 bold",
+    "completion-menu.meta.completion": f"bg:{_BG_CHIP} #886600",
+    "completion-menu.meta.completion.current": f"bg:{BEE_YELLOW} #000000",
     "auto-suggestion": "fg:#777777 italic",
 }
 
@@ -147,6 +147,8 @@ try:
     from prompt_toolkit.auto_suggest import AutoSuggest as _PTKAutoSuggest
 except Exception:  # pragma: no cover — prompt_toolkit should always be present
     _PTKAutoSuggest = object  # type: ignore[misc,assignment]
+
+
 class BeeAutoSuggest(_PTKAutoSuggest):
     """Context-aware ghost-text autosuggest for the REPL prompt.
 
@@ -240,9 +242,8 @@ class BeeAutoSuggest(_PTKAutoSuggest):
             # or a valid PREFIX of one — otherwise we'd risk surfacing
             # history junk for a clear typo (the user's explicit ask).
             first_is_known = first in self._command_flags
-            first_is_prefix = (
-                not first_is_known
-                and any(c.startswith(first) for c in self._command_names)
+            first_is_prefix = not first_is_known and any(
+                c.startswith(first) for c in self._command_names
             )
             if not (first_is_known or first_is_prefix):
                 return None
@@ -253,7 +254,7 @@ class BeeAutoSuggest(_PTKAutoSuggest):
             self._refresh_history()
             for line in self._cached_lines:
                 if line.startswith(text) and line != text:
-                    return Suggestion(line[len(text):])
+                    return Suggestion(line[len(text) :])
 
             # 2) No matching history line. Suggest from the structured
             #    options (command names, flags, choice values).
@@ -262,14 +263,11 @@ class BeeAutoSuggest(_PTKAutoSuggest):
             on_first = (len(words) == 1) and not has_trailing_space
 
             if on_first:
-                cands = [
-                    c for c in self._command_names
-                    if c.startswith(last) and c != last
-                ]
+                cands = [c for c in self._command_names if c.startswith(last) and c != last]
                 if not cands:
                     return None
                 best = self._rank_by_recency(cands)[0]
-                return Suggestion(best[len(last):])
+                return Suggestion(best[len(last) :])
 
             # Multi-word — need a recognised command to suggest structure.
             if not first_is_known:
@@ -283,23 +281,22 @@ class BeeAutoSuggest(_PTKAutoSuggest):
                 if not cands:
                     return None
                 best = self._rank_by_recency(cands)[0]
-                return Suggestion(best[len(last):])
+                return Suggestion(best[len(last) :])
 
             if len(words) >= 2:
                 prev = words[-2]
                 if prev in self._choice_flags:
                     cands = [
-                        v for v in self._choice_flags[prev]
-                        if v.startswith(last) and v != last
+                        v for v in self._choice_flags[prev] if v.startswith(last) and v != last
                     ]
                     if not cands:
                         return None
                     best = self._rank_by_recency(cands)[0]
-                    return Suggestion(best[len(last):])
+                    return Suggestion(best[len(last) :])
                 if prev in self._bool_flags:
                     for v in ("true", "false"):
                         if v.startswith(last.lower()) and v != last.lower():
-                            return Suggestion(v[len(last):])
+                            return Suggestion(v[len(last) :])
                     return None
             return None
         except Exception:
@@ -449,7 +446,7 @@ class ScrollbackBuffer:
         with self._lock:
             if len(self.lines) >= n and n > 0:
                 # Replace tail in place — same count, no shift.
-                self.lines[len(self.lines) - n:] = [list(f) for f in lines]
+                self.lines[len(self.lines) - n :] = [list(f) for f in lines]
             else:
                 # Not enough prior lines to replace; append.
                 for f in lines:
@@ -509,9 +506,7 @@ class ScrollbackBuffer:
                 fragments = [("", pending)]
             self.append_fragments(fragments)
 
-    def get_visible_window(
-        self, height: int
-    ) -> list[list[tuple[str, str]]]:
+    def get_visible_window(self, height: int) -> list[list[tuple[str, str]]]:
         """Backwards-compatible: visible slice in *logical* lines."""
         with self._lock:
             total = len(self.lines)
@@ -524,9 +519,7 @@ class ScrollbackBuffer:
             start = max(0, end - height)
             return [list(line) for line in self.lines[start:end]]
 
-    def get_visible_visual(
-        self, height: int, width: int
-    ) -> list[list[tuple[str, str]]]:
+    def get_visible_visual(self, height: int, width: int) -> list[list[tuple[str, str]]]:
         """Return visible content in *visual rows* (post-wrap).
 
         Long single lines that wrap to multiple terminal rows are
@@ -566,9 +559,7 @@ class ScrollbackBuffer:
             # Soft cap — get_visible_window will further clamp based on
             # the actual rendered height, but capping here at total-1
             # avoids letting offset grow unboundedly between renders.
-            self.scroll_offset = min(
-                max(0, len(self.lines) - 1), self.scroll_offset + n
-            )
+            self.scroll_offset = min(max(0, len(self.lines) - 1), self.scroll_offset + n)
 
     def scroll_down(self, n: int = 1) -> None:
         with self._lock:
@@ -659,7 +650,7 @@ class ScrollbackWriter:
 # Used for the live "running command" line above the input. A bright white
 # "peak" cell sweeps across the line, flanked by warm-yellow cells, with the
 # rest in brand yellow — reads as a glow running along the command text.
-_SHIMMER_PEAK_PT  = "#FFFFFF"
+_SHIMMER_PEAK_PT = "#FFFFFF"
 _SHIMMER_FLANK_PT = "#FFE780"
 
 
@@ -688,9 +679,9 @@ def _shimmer_pt(text: str, position: int, base_color: str) -> list[tuple[str, st
 # ---------------------------------------------------------------------------
 
 
-def _walk_click_tree(cli_group: Any) -> tuple[
-    dict[str, str], dict[str, list[str]], set[str], dict[str, list[str]]
-]:
+def _walk_click_tree(
+    cli_group: Any,
+) -> tuple[dict[str, str], dict[str, list[str]], set[str], dict[str, list[str]]]:
     """Return (command_help, command_flags, bool_flags, choice_flags)."""
     import click
 
@@ -735,12 +726,12 @@ class SessionState:
 
     def __init__(self) -> None:
         self.last_command: str | None = None
-        self.last_status: str | None = None     # "ok" | "fail"
+        self.last_status: str | None = None  # "ok" | "fail"
         self.last_duration: float | None = None
         # Live account state — surfaced in the toolbar. None ⇒ unknown / N/A.
-        self.credits: int | None = None              # available = max - used
-        self.credits_total: int | None = None        # max_api_credit
-        self.used_credits: int | None = None         # used_api_credit (latest)
+        self.credits: int | None = None  # available = max - used
+        self.credits_total: int | None = None  # max_api_credit
+        self.used_credits: int | None = None  # used_api_credit (latest)
         self.used_credits_at_start: int | None = None  # snapshotted after first ok refresh
         self.max_concurrency: int | None = None
         self.current_concurrency: int | None = None
@@ -759,7 +750,7 @@ class SessionState:
         self.running_command: str | None = None
         self.running_command_text: str | None = None  # full line as typed
         self.run_start: float | None = None
-        self.tick: int = 0   # frame counter for the shimmer position
+        self.tick: int = 0  # frame counter for the shimmer position
         # Mouse mode toggle: "scroll" = mouse_support on (wheel scrolls the
         # virtual buffer, drag-select needs a per-terminal modifier);
         # "select" = mouse_support off (native drag-select works everywhere
@@ -871,9 +862,7 @@ class SessionState:
     def seconds_until_next_refresh(self) -> int | None:
         if self.last_usage_refresh_mono is None:
             return None
-        remaining = (
-            self.last_usage_refresh_mono + self.USAGE_REFRESH_INTERVAL - time.monotonic()
-        )
+        remaining = self.last_usage_refresh_mono + self.USAGE_REFRESH_INTERVAL - time.monotonic()
         return max(0, int(remaining + 0.999))  # ceil so the countdown never shows -1
 
 
@@ -953,11 +942,7 @@ def _make_lexer():
                         tokens.append(("class:lexer.flag", piece))
                     elif piece.startswith(("http://", "https://")):
                         tokens.append(("class:lexer.url", piece))
-                    elif (
-                        len(piece) > 1
-                        and piece[0] in ("'", '"')
-                        and piece[-1] == piece[0]
-                    ):
+                    elif len(piece) > 1 and piece[0] in ("'", '"') and piece[-1] == piece[0]:
                         tokens.append(("class:lexer.string", piece))
                     else:
                         # Inherit the app default style (`""`), which is set
@@ -1008,6 +993,7 @@ def _make_toolbar(state: SessionState):
             pass
         if not width:
             import shutil
+
             width = shutil.get_terminal_size((80, 24)).columns
         segs: list[tuple[str, str]] = [("class:toolbar", "  ")]
 
@@ -1022,10 +1008,12 @@ def _make_toolbar(state: SessionState):
 
         if state.is_running and state.run_start is not None:
             elapsed = time.monotonic() - state.run_start
-            fields.append([
-                ("class:toolbar.label", "Elapsed "),
-                ("class:toolbar.value", f"{elapsed:.1f}s"),
-            ])
+            fields.append(
+                [
+                    ("class:toolbar.label", "Elapsed "),
+                    ("class:toolbar.value", f"{elapsed:.1f}s"),
+                ]
+            )
 
         # Available Credits
         avail: list[tuple[str, str]] = [("class:toolbar.label", "Available Credits ")]
@@ -1042,9 +1030,7 @@ def _make_toolbar(state: SessionState):
         fields.append(avail)
 
         # Used (Current Session)
-        used_chunk: list[tuple[str, str]] = [
-            ("class:toolbar.label", "Used (Current Session) ")
-        ]
+        used_chunk: list[tuple[str, str]] = [("class:toolbar.label", "Used (Current Session) ")]
         scu = state.session_credits_used if state.api_key_set else None
         used_chunk.append(
             ("class:toolbar.value", _format_credits(scu) if scu is not None else "N/A")
@@ -1064,10 +1050,12 @@ def _make_toolbar(state: SessionState):
         if state.api_key_set:
             nxt = state.seconds_until_next_refresh
             if nxt is not None:
-                fields.append([
-                    ("class:toolbar.label", "Next Update "),
-                    ("class:toolbar.value", f"{nxt}s"),
-                ])
+                fields.append(
+                    [
+                        ("class:toolbar.label", "Next Update "),
+                        ("class:toolbar.value", f"{nxt}s"),
+                    ]
+                )
 
         # (Removed "last cmd" indicator — the typed command and its
         # ✓/✗ footer are already visible in the scrollback echo, so a
@@ -1093,9 +1081,7 @@ def _make_toolbar(state: SessionState):
             hint_text = "type `auth` to set API key"
             hint_chunk: list[tuple[str, str]] = [("class:toolbar.hint", hint_text)]
         else:
-            mode_label = (
-                "Scroll mode" if state.mouse_mode == "scroll" else "Select mode"
-            )
+            mode_label = "Scroll mode" if state.mouse_mode == "scroll" else "Select mode"
             hint_chunk = [("class:toolbar.value", mode_label)]
             if state.is_running:
                 hint_chunk.append(("class:toolbar.hint", "  ·  Ctrl+C to stop"))
@@ -1346,9 +1332,7 @@ _BEE_LETTERS = [
 # Combined "SCRAPING BEE" wordmark on a single row of letterforms — 6
 # lines tall, ~90 cols wide. Replaces the prior 4-row smblock SCRAPING
 # + 6-row BEE stack (10 logo rows) with this single 6-row version.
-_SCRAPINGBEE_LOGO = [
-    "  " + s + "  " + b for s, b in zip(_SCRAPING_LETTERS, _BEE_LETTERS)
-]
+_SCRAPINGBEE_LOGO = ["  " + s + "  " + b for s, b in zip(_SCRAPING_LETTERS, _BEE_LETTERS)]
 # Column at which "BEE" begins inside each combined row, used by the
 # pinned banner renderer to split the row into a yellow "SCRAPING" half
 # and a white "BEE" half.
@@ -1387,9 +1371,7 @@ def _render_banner(version: str) -> str:
     for line in _SCRAPINGBEE_LOGO:
         left = line[:_BEE_OFFSET]
         right = line[_BEE_OFFSET:]
-        c.print(
-            f"[bold {BEE_YELLOW}]{left}[/][bold white]{right}[/]"
-        )
+        c.print(f"[bold {BEE_YELLOW}]{left}[/][bold white]{right}[/]")
     c.print()
     # Version
     c.print(f"  [bold {BEE_YELLOW}]v{version}[/]")
@@ -1454,15 +1436,14 @@ def _print_help(commands: dict[str, str]) -> None:
 
     err_console.print()
     groups = {
-        "Pages":        ["scrape", "crawl"],
-        "Search":       ["google", "fast-search"],
-        "Marketplaces": ["amazon-product", "amazon-search",
-                         "walmart-product", "walmart-search"],
-        "Media":        ["youtube-search", "youtube-metadata"],
-        "AI":           ["chatgpt"],
-        "Learn":        ["tutorial"],
-        "Account":      ["auth", "logout"],
-        "Tools":        ["usage", "schedule", "export", "docs", "unsafe"],
+        "Pages": ["scrape", "crawl"],
+        "Search": ["google", "fast-search"],
+        "Marketplaces": ["amazon-product", "amazon-search", "walmart-product", "walmart-search"],
+        "Media": ["youtube-search", "youtube-metadata"],
+        "AI": ["chatgpt"],
+        "Learn": ["tutorial"],
+        "Account": ["auth", "logout"],
+        "Tools": ["usage", "schedule", "export", "docs", "unsafe"],
     }
     for i, (group_name, cmds) in enumerate(groups.items()):
         if i > 0:
@@ -1473,33 +1454,36 @@ def _print_help(commands: dict[str, str]) -> None:
     err_console.print()
     err_console.print(f"  [{BEE_DIM}]REPL[/]")
     for cmd, desc in [
-        (":help, :?",   "Show this command list"),
-        (":clear",      "Clear the screen"),
-        (":view",       "Scroll the last command's output (auto-picks crawl.log after crawl; pass a path to view any file)"),
+        (":help, :?", "Show this command list"),
+        (":clear", "Clear the screen"),
+        (
+            ":view",
+            "Scroll the last command's output (auto-picks crawl.log after crawl; pass a path to view any file)",
+        ),
         (":set K=V ...", "Set one or more session defaults"),
-        (":unset K",    "Remove a session default ('all' or '*' clears every)"),
-        (":reset",      "Clear every session default"),
+        (":unset K", "Remove a session default ('all' or '*' clears every)"),
+        (":reset", "Clear every session default"),
         (":show, :list", "Show current session defaults"),
-        ("!<cmd>",      "Run a shell command (requires unsafe mode)"),
-        (":q, :quit",   "Quit the REPL"),
+        ("!<cmd>", "Run a shell command (requires unsafe mode)"),
+        (":q, :quit", "Quit the REPL"),
     ]:
         _print_row(cmd, desc)
     err_console.print()
     err_console.print(f"  [{BEE_DIM}]Shortcuts[/]")
     for cmd, desc in [
-        ("Tab",          "Complete (inline if 1 match, popup if many, ghost word otherwise)"),
-        ("Shift+Tab",    "Cycle popup back / toggle Scroll ↔ Select mode"),
-        ("Esc",          "Close the completion popup"),
-        ("→",            "Accept the next word of the ghost suggestion"),
-        ("End",          "Accept the whole ghost suggestion"),
-        ("↑ / ↓",        "Walk history (single-line) / move cursor (multi-line)"),
-        ("PgUp / PgDn",  "Scroll the scrollback buffer up / down"),
-        ("Ctrl+Home/End","Jump to top / bottom of scrollback"),
-        ("Ctrl+J",       "Insert a newline (multi-line compose; also Alt/Option+Enter)"),
-        ("Ctrl+W",       "Delete the word before the cursor (also Alt/Option+⌫)"),
-        ("Click",        "Open a highlighted path in Finder / default app"),
-        ("Ctrl+C",       "Stop running command / cancel queue / clear multi-line / exit when idle"),
-        ("Ctrl+D",       "Exit the REPL (when no command is running)"),
+        ("Tab", "Complete (inline if 1 match, popup if many, ghost word otherwise)"),
+        ("Shift+Tab", "Cycle popup back / toggle Scroll ↔ Select mode"),
+        ("Esc", "Close the completion popup"),
+        ("→", "Accept the next word of the ghost suggestion"),
+        ("End", "Accept the whole ghost suggestion"),
+        ("↑ / ↓", "Walk history (single-line) / move cursor (multi-line)"),
+        ("PgUp / PgDn", "Scroll the scrollback buffer up / down"),
+        ("Ctrl+Home/End", "Jump to top / bottom of scrollback"),
+        ("Ctrl+J", "Insert a newline (multi-line compose; also Alt/Option+Enter)"),
+        ("Ctrl+W", "Delete the word before the cursor (also Alt/Option+⌫)"),
+        ("Click", "Open a highlighted path in Finder / default app"),
+        ("Ctrl+C", "Stop running command / cancel queue / clear multi-line / exit when idle"),
+        ("Ctrl+D", "Exit the REPL (when no command is running)"),
     ]:
         _print_row(cmd, desc)
     err_console.print()
@@ -1570,9 +1554,7 @@ def _open_pager(path: str) -> None:
     # matches neither, pretty is unavailable and we stick with raw.
     pretty_text: str | None
     try:
-        pretty_text = json.dumps(
-            json.loads(raw_text), indent=2, ensure_ascii=False
-        )
+        pretty_text = json.dumps(json.loads(raw_text), indent=2, ensure_ascii=False)
     except Exception:
         pretty_text = None
     if pretty_text is None:
@@ -1586,6 +1568,7 @@ def _open_pager(path: str) -> None:
                 # type checkers; import via ``importlib`` so the
                 # checker doesn't try to resolve them.
                 import importlib
+
                 _etree = importlib.import_module("lxml.etree")
                 _lxml_html = importlib.import_module("lxml.html")
                 tree = _lxml_html.fromstring(raw_text)
@@ -1624,11 +1607,11 @@ def _open_pager(path: str) -> None:
         # `r` toggles raw on/off. Hidden when there's no pretty version
         # available (non-JSON content) — there'd be nothing to toggle to.
         toggle_hint = (
-            ("r: pretty" if mode[0] == "raw" else "r: raw")
-            if pretty_text is not None else ""
+            ("r: pretty" if mode[0] == "raw" else "r: raw") if pretty_text is not None else ""
         )
         right_hint = (
-            "↑↓ PgUp/PgDn scroll" + (f"  ·  {toggle_hint}" if toggle_hint else "")
+            "↑↓ PgUp/PgDn scroll"
+            + (f"  ·  {toggle_hint}" if toggle_hint else "")
             + "  ·  q to exit"
         )
         return [
@@ -1710,10 +1693,10 @@ def _open_pager(path: str) -> None:
 
     style = Style.from_dict(
         {
-            "pager.bar":   f"bg:{_BG_CHIP} {BEE_DIM}",
+            "pager.bar": f"bg:{_BG_CHIP} {BEE_DIM}",
             "pager.value": f"bg:{_BG_CHIP} {BEE_YELLOW} bold",
             "pager.label": f"bg:{_BG_CHIP} {BEE_DIM}",
-            "pager.hint":  f"bg:{_BG_CHIP} {_DIM2}",
+            "pager.hint": f"bg:{_BG_CHIP} {_DIM2}",
         }
     )
 
@@ -1863,9 +1846,7 @@ def _handle_meta(
         else:
             err_console.print()
             for k, v in state.settings.items():
-                err_console.print(
-                    f"  [bold {BEE_YELLOW}]{k:<20}[/]  [dim]{v}[/]"
-                )
+                err_console.print(f"  [bold {BEE_YELLOW}]{k:<20}[/]  [dim]{v}[/]")
             err_console.print()
         return "ok"
     if head_low == ":view":
@@ -1908,8 +1889,7 @@ def _handle_meta(
         except Exception as e:
             err_console.print(f"  [bold {BEE_RED}]pager error:[/] {e}")
             err_console.print(
-                f"  [{BEE_DIM}]full output saved at[/] "
-                f"[bold {BEE_YELLOW}]{target_path}[/]"
+                f"  [{BEE_DIM}]full output saved at[/] [bold {BEE_YELLOW}]{target_path}[/]"
             )
         return "ok"
 
@@ -1921,9 +1901,7 @@ def _handle_meta(
     if head_low == ":unset":
         target = rest.strip()
         if not target:
-            err_console.print(
-                f"  [bold {BEE_RED}]usage:[/] :unset KEY  |  :unset *  |  :reset"
-            )
+            err_console.print(f"  [bold {BEE_RED}]usage:[/] :unset KEY  |  :unset *  |  :reset")
             return "ok"
         if target in {"*", "all"}:
             n = len(state.settings)
@@ -1935,20 +1913,14 @@ def _handle_meta(
         for key in keys:
             if key in state.settings:
                 del state.settings[key]
-                err_console.print(
-                    f"  [{BEE_DIM}]unset[/] [bold {BEE_YELLOW}]{key}[/]"
-                )
+                err_console.print(f"  [{BEE_DIM}]unset[/] [bold {BEE_YELLOW}]{key}[/]")
             else:
                 err_console.print(f"  [{BEE_DIM}]not set:[/] {key}")
         return "ok"
     if head_low == ":set":
         if not rest.strip():
-            err_console.print(
-                f"  [bold {BEE_RED}]usage:[/] :set KEY=VALUE [KEY=VALUE ...]"
-            )
-            err_console.print(
-                f"  [{BEE_DIM}]    or:[/] :set --KEY VALUE [--KEY VALUE ...]"
-            )
+            err_console.print(f"  [bold {BEE_RED}]usage:[/] :set KEY=VALUE [KEY=VALUE ...]")
+            err_console.print(f"  [{BEE_DIM}]    or:[/] :set --KEY VALUE [--KEY VALUE ...]")
             return "ok"
         parsed = _parse_set_args(rest)
         if isinstance(parsed, str):
@@ -1961,8 +1933,7 @@ def _handle_meta(
         for key, value in parsed:
             if key not in valid_keys:
                 err_console.print(
-                    f"  [bold {BEE_RED}]unknown option:[/] "
-                    f"[bold {BEE_YELLOW}]--{key}[/]"
+                    f"  [bold {BEE_RED}]unknown option:[/] [bold {BEE_YELLOW}]--{key}[/]"
                 )
                 suggestion = _suggest(key, valid_keys, threshold=2)
                 if suggestion:
@@ -1979,29 +1950,28 @@ def _handle_meta(
                     f"  [bold {BEE_RED}]invalid value for[/] "
                     f"[bold {BEE_YELLOW}]--{key}[/][bold {BEE_RED}]:[/] {value}"
                 )
-                err_console.print(
-                    f"  [{BEE_DIM}]  choices:[/] "
-                    + ", ".join(choice_flags[flag])
-                )
+                err_console.print(f"  [{BEE_DIM}]  choices:[/] " + ", ".join(choice_flags[flag]))
                 rejected.append(key)
                 continue
             # Validate bool values
             if flag in bool_flags and value.lower() not in (
-                "true", "false", "yes", "no", "1", "0", "on", "off"
+                "true",
+                "false",
+                "yes",
+                "no",
+                "1",
+                "0",
+                "on",
+                "off",
             ):
-                err_console.print(
-                    f"  [bold {BEE_RED}]--{key} expects a bool, got:[/] {value}"
-                )
+                err_console.print(f"  [bold {BEE_RED}]--{key} expects a bool, got:[/] {value}")
                 rejected.append(key)
                 continue
             state.settings[key] = value
             applied.append((key, value))
 
         for key, value in applied:
-            err_console.print(
-                f"  [{BEE_DIM}]set[/] [bold {BEE_YELLOW}]{key}[/] = "
-                f"[dim]{value}[/]"
-            )
+            err_console.print(f"  [{BEE_DIM}]set[/] [bold {BEE_YELLOW}]{key}[/] = [dim]{value}[/]")
         return "ok"
     return None
 
@@ -2021,8 +1991,17 @@ def _make_completer(
     from prompt_toolkit.completion import Completer, Completion
 
     meta_cmds = [
-        ":help", ":?", ":clear", ":view", ":set", ":unset", ":reset", ":show",
-        ":list", ":q", ":quit",
+        ":help",
+        ":?",
+        ":clear",
+        ":view",
+        ":set",
+        ":unset",
+        ":reset",
+        ":show",
+        ":list",
+        ":q",
+        ":quit",
     ]
 
     # Precompute the union of every flag known to any command. Used as a
@@ -2030,9 +2009,7 @@ def _make_completer(
     # recognised (typo, in-progress rename, etc.) — without this the
     # completer would silently stop suggesting anything as soon as the
     # first word is unknown, which is confusing UX.
-    _all_known_flags: list[str] = sorted({
-        f for flags in command_flags.values() for f in flags
-    })
+    _all_known_flags: list[str] = sorted({f for flags in command_flags.values() for f in flags})
 
     class BeeCompleter(Completer):
         def get_completions(self, document, complete_event):
@@ -2046,9 +2023,7 @@ def _make_completer(
                 pool.extend((m, "REPL meta") for m in meta_cmds)
                 for cmd, meta in sorted(pool):
                     if cmd.startswith(partial):
-                        yield Completion(
-                            cmd, start_position=-len(partial), display_meta=meta
-                        )
+                        yield Completion(cmd, start_position=-len(partial), display_meta=meta)
                 return
 
             cmd_name = words[0]
@@ -2057,9 +2032,7 @@ def _make_completer(
             # Display "(unknown command)" so they know completions may
             # not actually apply to what they typed.
             cmd_known = cmd_name in command_flags
-            flags_for_cmd = (
-                command_flags[cmd_name] if cmd_known else _all_known_flags
-            )
+            flags_for_cmd = command_flags[cmd_name] if cmd_known else _all_known_flags
             ends_with_space = text.endswith(" ")
             last_word = words[-1] if words else ""
             # When the buffer ends with a space the user has *finished*
@@ -2105,9 +2078,7 @@ def _make_completer(
                 meta_label = "" if cmd_known else "(unknown command)"
                 for flag in flags_for_cmd:
                     if flag.startswith(last):
-                        yield Completion(
-                            flag, start_position=-len(last), display_meta=meta_label
-                        )
+                        yield Completion(flag, start_position=-len(last), display_meta=meta_label)
 
     return BeeCompleter()
 
@@ -2292,6 +2263,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # the live honeycomb directly from ``_progress_state``, so the
     # scrollback path is no longer needed in REPL mode.
     from .theme import set_progress_renderer as _set_progress_renderer
+
     _set_progress_renderer(lambda _lines: None)
 
     # ── First-run API key state ─────────────────────────────────────────────
@@ -2317,8 +2289,11 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
             _buf = StringIO()
             _c = Console(
-                file=_buf, force_terminal=True, color_system="truecolor",
-                highlight=False, width=shutil.get_terminal_size((80, 24)).columns,
+                file=_buf,
+                force_terminal=True,
+                color_system="truecolor",
+                highlight=False,
+                width=shutil.get_terminal_size((80, 24)).columns,
             )
             _c.print(
                 f"  [{BEE_DIM}]Welcome! Enter your API key to get started — "
@@ -2522,6 +2497,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         """
         import platform
         import subprocess
+
         system = platform.system()
         try:
             if system == "Darwin":
@@ -2601,9 +2577,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             exists = False
         _path_exists_cache[path] = (now, exists)
         if len(_path_exists_cache) > 512:
-            cutoff = sorted(
-                _path_exists_cache.items(), key=lambda kv: kv[1][0]
-            )[:128]
+            cutoff = sorted(_path_exists_cache.items(), key=lambda kv: kv[1][0])[:128]
             for k, _ in cutoff:
                 _path_exists_cache.pop(k, None)
         return exists
@@ -2616,7 +2590,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         prefix resolves to an existing path.
         """
         end = start
-        while end < len(text) and text[end] not in '\n\r"\'<>|`':
+        while end < len(text) and text[end] not in "\n\r\"'<>|`":
             end += 1
         while end > start:
             candidate = text[start:end].rstrip(_path_trim_chars)
@@ -2748,6 +2722,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     def _has_crawl_status_safe() -> bool:
         try:
             from .theme import has_crawl_status
+
             return has_crawl_status()
         except Exception:
             return False
@@ -2761,6 +2736,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             return True
         try:
             from .theme import has_progress_state
+
             return has_progress_state()
         except Exception:
             return False
@@ -2778,6 +2754,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         """
         from . import theme as _theme  # live module reference
         from .theme import BEE_WHITE, format_honeycomb_grid, get_crawl_status
+
         cs = get_crawl_status()
         ps = getattr(_theme, "_progress_state", None)
         if cs is None and ps is None:
@@ -2841,6 +2818,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         cs_set = _has_crawl_status_safe()
         try:
             from .theme import has_progress_state
+
             ps_set = has_progress_state()
         except Exception:
             ps_set = False
@@ -2889,6 +2867,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                     cs_set = _has_crawl_status_safe()
                     try:
                         from .theme import has_progress_state
+
                         ps_set = has_progress_state()
                     except Exception:
                         ps_set = False
@@ -2987,6 +2966,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             return True
         try:
             from .theme import has_progress_state
+
             return has_progress_state()
         except Exception:
             return False
@@ -3007,8 +2987,11 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
             buf = StringIO()
             _c = Console(
-                file=buf, force_terminal=True, color_system="truecolor",
-                highlight=False, width=200,
+                file=buf,
+                force_terminal=True,
+                color_system="truecolor",
+                highlight=False,
+                width=200,
             )
             _c.print(t, end="")
             return list(_tft(_ANSI(buf.getvalue())))
@@ -3138,9 +3121,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             try:
                 save_api_key_to_dotenv(key)
             except Exception as e:
-                err_console.print(
-                    f"  [bold {BEE_RED}]Could not save:[/] [{BEE_DIM}]{e}[/]"
-                )
+                err_console.print(f"  [bold {BEE_RED}]Could not save:[/] [{BEE_DIM}]{e}[/]")
             os.environ[ENV_API_KEY] = key
             state.api_key_set = True
             _first_run_needs_key[0] = False
@@ -3200,9 +3181,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                     current_subprocess[0] = None
                 if code != 0:
                     status_ref[0] = "fail"
-                    err_console.print(
-                        f"  [{BEE_DIM}]exit code {code}[/]"
-                    )
+                    err_console.print(f"  [{BEE_DIM}]exit code {code}[/]")
             except KeyboardInterrupt:
                 # Ctrl+C: stop the child if it's still running, then mark
                 # the command as cancelled in the footer.
@@ -3238,8 +3217,11 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
                 _buf = StringIO()
                 _c = Console(
-                    file=_buf, force_terminal=True, color_system="truecolor",
-                    highlight=False, width=200,
+                    file=_buf,
+                    force_terminal=True,
+                    color_system="truecolor",
+                    highlight=False,
+                    width=200,
                 )
                 _echo_t = Text()
                 _echo_t.append("❯ ", style=BEE_DIM)
@@ -3310,9 +3292,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # reads the file every 100 ms and forwards updates into the
     # parent's own ``_crawl_status`` so the layout-window crawl status
     # display keeps showing live URL / fetched count.
-    def _execute_crawl_subprocess(
-        crawl_args: list[str], original_line: str, echo_idx: int
-    ) -> None:
+    def _execute_crawl_subprocess(crawl_args: list[str], original_line: str, echo_idx: int) -> None:
         import os as _os
         import subprocess
 
@@ -3325,8 +3305,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         state.run_start = start
 
         status_file = (
-            Path.home() / ".cache" / "scrapingbee-cli"
-            / f"crawl-status-{_os.getpid()}.json"
+            Path.home() / ".cache" / "scrapingbee-cli" / f"crawl-status-{_os.getpid()}.json"
         )
         try:
             status_file.parent.mkdir(parents=True, exist_ok=True)
@@ -3344,8 +3323,13 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # waiting for the child to fire its first signal.
         try:
             from .theme import update_crawl_status
+
             update_crawl_status(
-                current_url=None, fetched=0, queued=0, saved=0, phase="starting",
+                current_url=None,
+                fetched=0,
+                queued=0,
+                saved=0,
+                phase="starting",
             )
         except Exception:
             pass
@@ -3446,9 +3430,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                         status_ref[0] = "stopped"
                     else:
                         status_ref[0] = "fail"
-                        err_console.print(
-                            f"  [{BEE_DIM}]exit code {code}[/]"
-                        )
+                        err_console.print(f"  [{BEE_DIM}]exit code {code}[/]")
             except KeyboardInterrupt:
                 proc = current_subprocess[0]
                 if proc is not None:
@@ -3480,6 +3462,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 pass
             try:
                 from .theme import clear_crawl_status, clear_progress_state
+
                 clear_crawl_status()
                 clear_progress_state()
             except Exception:
@@ -3502,8 +3485,11 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
                 _buf = StringIO()
                 _c = Console(
-                    file=_buf, force_terminal=True, color_system="truecolor",
-                    highlight=False, width=200,
+                    file=_buf,
+                    force_terminal=True,
+                    color_system="truecolor",
+                    highlight=False,
+                    width=200,
                 )
                 _echo_t = Text()
                 _echo_t.append("❯ ", style=BEE_DIM)
@@ -3518,6 +3504,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             state.last_status = status_ref[0]
             state.last_duration = duration
             is_input_locked[0] = False
+
             # Buffer mutations have to run on the prompt_toolkit main
             # loop thread — this ``_finish`` is on the worker thread,
             # and calling ``input_buffer.reset()`` from here directly
@@ -3604,7 +3591,12 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # order: command, then its output.
         meta_echo_idx = scrollback.current_length()
         meta = _handle_meta(
-            line, state, command_help, all_known_flags, bool_flags, choice_flags,
+            line,
+            state,
+            command_help,
+            all_known_flags,
+            bool_flags,
+            choice_flags,
             scrollback=scrollback,
         )
         if meta == "ok":
@@ -3646,10 +3638,14 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                     to_formatted_text as _tft,
                 )
                 from rich.console import Console
+
                 _buf = StringIO()
                 _c = Console(
-                    file=_buf, force_terminal=True, color_system="truecolor",
-                    highlight=False, width=200,
+                    file=_buf,
+                    force_terminal=True,
+                    color_system="truecolor",
+                    highlight=False,
+                    width=200,
                 )
                 _echo_t = Text()
                 _echo_t.append("❯ ", style=BEE_DIM)
@@ -3678,10 +3674,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             shell_cmd = line[1:].strip()
             shell_echo_idx = scrollback.current_length()
             if not shell_cmd:
-                err_console.print(
-                    f"  [{BEE_DIM}]usage: ![/]"
-                    f"[bold {BEE_YELLOW}]<shell command>[/]"
-                )
+                err_console.print(f"  [{BEE_DIM}]usage: ![/][bold {BEE_YELLOW}]<shell command>[/]")
             else:
                 from .exec_gate import (
                     is_command_whitelisted,
@@ -3715,10 +3708,14 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                     to_formatted_text as _tft,
                 )
                 from rich.console import Console
+
                 _buf = StringIO()
                 _c = Console(
-                    file=_buf, force_terminal=True, color_system="truecolor",
-                    highlight=False, width=200,
+                    file=_buf,
+                    force_terminal=True,
+                    color_system="truecolor",
+                    highlight=False,
+                    width=200,
                 )
                 _echo_t = Text()
                 _echo_t.append("❯ ", style=BEE_DIM)
@@ -3732,7 +3729,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
         # Tolerate users typing `scrapingbee ...` out of muscle memory.
         if line.lower().startswith("scrapingbee "):
-            line = line[len("scrapingbee "):].strip()
+            line = line[len("scrapingbee ") :].strip()
 
         original_line = line  # what to echo after completion
 
@@ -3773,9 +3770,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 input_buffer.reset()
             except Exception:
                 pass
-            err_console.print(
-                f"  [{BEE_DIM}]Enter your API key below.[/]"
-            )
+            err_console.print(f"  [{BEE_DIM}]Enter your API key below.[/]")
             try:
                 app.invalidate()
             except Exception:
@@ -3803,9 +3798,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # Only inject session defaults that the target command actually
         # accepts; otherwise ``:set --json-response true`` would also
         # apply to ``usage``, which rejects it as an unknown option.
-        args = state.apply_settings_to_args(
-            args, accepted=set(command_flags.get(cmd_name, []))
-        )
+        args = state.apply_settings_to_args(args, accepted=set(command_flags.get(cmd_name, [])))
         # Let users type ``--verbose true|false`` (etc.) in the REPL
         # too — same normalisation as the CLI ``main()`` entry.
         try:
@@ -3813,9 +3806,8 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 collect_bool_flag_names,
                 normalize_bool_flag_args,
             )
-            args = normalize_bool_flag_args(
-                args, collect_bool_flag_names(cli_group)
-            )
+
+            args = normalize_bool_flag_args(args, collect_bool_flag_names(cli_group))
         except Exception:
             pass
 
@@ -3911,8 +3903,11 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
                 _buf = StringIO()
                 _c = Console(
-                    file=_buf, force_terminal=True, color_system="truecolor",
-                    highlight=False, width=200,
+                    file=_buf,
+                    force_terminal=True,
+                    color_system="truecolor",
+                    highlight=False,
+                    width=200,
                 )
                 _echo_t = Text()
                 _echo_t.append("❯ ", style=BEE_DIM)
@@ -3930,6 +3925,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             state.last_duration = duration
             state.refresh_credits_from_cache()
             is_input_locked[0] = False
+
             # State mutations triggered by auth/logout need to be visible to
             # the asyncio loop's _usage_refresher and the toolbar render —
             # both run on the main loop thread while we're in the worker
@@ -4154,6 +4150,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         if state.is_running and worker is not None and worker.is_alive():
             loop = _active_worker_loop[0]
             if loop is not None:
+
                 def _cancel_all_tasks() -> None:
                     try:
                         for task in _asyncio_mod.all_tasks(loop):
@@ -4161,6 +4158,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                                 task.cancel()
                     except Exception:
                         pass
+
                 try:
                     loop.call_soon_threadsafe(_cancel_all_tasks)
                 except Exception:
@@ -4175,6 +4173,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             # running Twisted reactor from outside.
             try:
                 from .crawl import stop_running_reactor
+
                 stop_running_reactor()
             except Exception:
                 pass
@@ -4217,9 +4216,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 # thread, the docs say to undo it — otherwise we leave a
                 # dangling pending exception on an unrelated thread.
                 if res > 1:
-                    ctypes.pythonapi.PyThreadState_SetAsyncExc(
-                        ctypes.c_ulong(tid), None
-                    )
+                    ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(tid), None)
             except Exception:
                 # ctypes path failed (PyPy? embedded?) — fall back to
                 # exiting; daemon worker dies with the process.
@@ -4313,10 +4310,12 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         buf = event.current_buffer
         try:
             from prompt_toolkit.completion import CompleteEvent
+
             cmps = list(buf.completer.get_completions(buf.document, CompleteEvent()))
         except Exception:
             buf.start_completion(select_first=False)
             return
+
         # Helper: accept the next word (up to & including next space) of
         # the ghost-text suggestion, mirroring what Right arrow does.
         def _accept_ghost_word() -> bool:
@@ -4338,9 +4337,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             # suggestion is showing, prefer advancing into the ghost —
             # that's what the user actually wants progress on.
             typed_before = buf.document.text_before_cursor
-            replaced = (
-                typed_before[c.start_position:] if c.start_position < 0 else ""
-            )
+            replaced = typed_before[c.start_position :] if c.start_position < 0 else ""
             if c.text == replaced and _accept_ghost_word():
                 return
             try:
@@ -4435,6 +4432,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # join with spaces. ``\r`` is always normalised (CR is never a
     # useful separator in our buffer).
     from prompt_toolkit.keys import Keys as _Keys
+
     _command_name_set = set(command_names)
 
     def _looks_like_command_line(line: str) -> bool:
@@ -4459,6 +4457,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         #     spaces/tabs to single spaces (handles soft-wrap in the
         #     source rendering), CR to space, and insert normally.
         import re as _re
+
         # Normalise line endings: CRLF (Windows), CR (classic Mac), and
         # LF all become a single ``\n``. Treating a lone CR as a space
         # would silently collapse multi-line paste into one line on
@@ -4473,9 +4472,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 # is the dominant intent). The user can edit any line
                 # and Enter submits the batch.
                 event.current_buffer.text = "\n".join(non_empty)
-                event.current_buffer.cursor_position = len(
-                    event.current_buffer.text
-                )
+                event.current_buffer.cursor_position = len(event.current_buffer.text)
             return
         text = _re.sub(r"[ \t]+", " ", text)
         event.current_buffer.insert_text(text)
@@ -4669,11 +4666,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             # the input lock is clear (previous command done) AND we're
             # not in the API-key prompt. Pop one per tick so each
             # command's footer renders before the next starts.
-            if (
-                _pending_commands
-                and not is_input_locked[0]
-                and not _first_run_needs_key[0]
-            ):
+            if _pending_commands and not is_input_locked[0] and not _first_run_needs_key[0]:
                 next_cmd = _pending_commands.pop(0)
                 try:
                     if history is not None:
@@ -4755,8 +4748,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 credits = cached.get("credits")
                 used_credit = (
                     int(max_credit) - int(credits)
-                    if isinstance(max_credit, (int, float))
-                    and isinstance(credits, (int, float))
+                    if isinstance(max_credit, (int, float)) and isinstance(credits, (int, float))
                     else None
                 )
                 synthetic = {
