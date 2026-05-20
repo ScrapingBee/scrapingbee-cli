@@ -8,9 +8,15 @@ from . import __version__
 from .commands import register_commands
 from .config import load_dotenv
 
+# Guard against REPL re-entry when cli.main(args) is called from within REPL
+_in_repl = False
+
 
 def _show_active_schedules_hint() -> None:
     """If there are active schedules, print a one-line hint to stderr."""
+    if _in_repl:
+        return  # Don't show on every REPL command
+
     import json
     import sys
     from pathlib import Path
@@ -63,10 +69,17 @@ def _show_active_schedules_hint() -> None:
     )
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.version_option(version=__version__)
+@click.option(
+    "--keep-bg",
+    is_flag=True,
+    default=False,
+    help="Keep the terminal's current background and theme colours instead "
+    "of forcing the REPL to black/light-grey.",
+)
 @click.pass_context
-def cli(ctx: click.Context) -> None:
+def cli(ctx: click.Context, keep_bg: bool) -> None:
     """ScrapingBee CLI - Web scraping API client.
 
     Commands: scrape (single or batch), crawl (Scrapy/quick-crawl), usage,
@@ -77,6 +90,15 @@ def cli(ctx: click.Context) -> None:
     load_dotenv()
     _show_active_schedules_hint()
     ctx.ensure_object(dict)
+    global _in_repl  # noqa: PLW0603
+    if ctx.invoked_subcommand is None and not _in_repl:
+        from .interactive import run_repl
+
+        _in_repl = True
+        try:
+            run_repl(cli, __version__, keep_bg=keep_bg)
+        finally:
+            _in_repl = False
 
 
 register_commands(cli)
@@ -168,6 +190,17 @@ def main() -> None:
     if _handle_resume():
         sys.exit(0)
     _handle_scraping_config()
+
+    # Let users write ``--verbose true`` / ``--verbose false`` in
+    # addition to the bare ``--verbose`` shortcut, so all boolean
+    # options behave like the scraping-side ones (--render-js, etc.).
+    try:
+        from .cli_utils import collect_bool_flag_names, normalize_bool_flag_args
+
+        _bool_flags = collect_bool_flag_names(cli)
+        sys.argv[1:] = normalize_bool_flag_args(sys.argv[1:], _bool_flags)
+    except Exception:
+        pass
 
     try:
         cli.main(standalone_mode=False)

@@ -431,17 +431,24 @@ def crawl_cmd(
     if not target:
         click.echo("Provide a spider name, one or more URLs, or --from-sitemap URL.", err=True)
         raise SystemExit(1)
+    usage_info: dict | None = None
     try:
         usage_info = get_batch_usage(None)
         concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, 1)
         from_concurrency = obj["concurrency"] > 0
         plan_concurrency = usage_info.get("max_concurrency") or 0
-    except Exception:
+    except Exception as e:
+        # The /usage endpoint is rate-limited; bursts of crawl runs can
+        # trip it. Surface the actual reason so the user can tell apart
+        # "rate limited, retry in a moment" from real network / auth
+        # problems.
+        reason = str(e).strip() or type(e).__name__
         click.echo(
-            "Warning: could not check plan concurrency. Defaulting to 1 concurrent request. "
-            "Use --concurrency to set explicitly.",
+            f"Warning: could not check plan concurrency ({reason}). "
+            "Defaulting to 1 concurrent request. Use --concurrency to set explicitly.",
             err=True,
         )
+        usage_info = None
         concurrency = 1
         from_concurrency = False
         plan_concurrency = 0
@@ -538,6 +545,23 @@ def crawl_cmd(
         if allowed_domains:
             allowed_list = [d.strip() for d in allowed_domains.split(",") if d.strip()]
         try:
+            # ``known_total`` enables a batch-style honeycomb
+            # progress bar in the REPL widget. Used when the total
+            # is bounded up front:
+            #   - sitemap mode (--from-sitemap) gives an exact list
+            #   - max_depth=1 stops at the seed URLs themselves
+            #   - --max-pages N caps the crawl, even when
+            #     link-following could otherwise discover more
+            # For genuinely open-ended crawls (max_pages=0) we fall
+            # back to a rolling "fetching: <url>" line driven by
+            # the spider signal handlers.
+            _kt: int | None = None
+            if from_sitemap:
+                _kt = len(urls)
+            elif max_depth == 1:
+                _kt = len(urls)
+            elif max_pages and max_pages > 0:
+                _kt = max_pages
             run_urls_spider(
                 urls,
                 key,
@@ -555,6 +579,7 @@ def crawl_cmd(
                 include_pattern=include_pattern,
                 exclude_pattern=exclude_pattern,
                 save_pattern=save_pattern,
+                known_total=_kt,
             )
         except ValueError as e:
             click.echo(str(e), err=True)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -17,6 +18,13 @@ import click
 
 from .client import Client, parse_usage
 from .config import BASE_URL, get_api_key
+from .theme import (
+    echo_warning,
+    is_repl_mode,
+    notify_completion,
+    print_completion_summary,
+    styled_echo,
+)
 
 # Map Content-Type (main part, lowercased) to file extension for batch output.
 CONTENT_TYPE_EXTENSION: dict[str, str] = {
@@ -392,18 +400,34 @@ def _release_usage_lock(lf: object) -> None:
 
 
 def get_batch_usage(api_key_flag: str | None) -> dict:
-    """Return usage info (max_concurrency, credits) from a live API call.
+    """Return usage info (max_concurrency, credits).
 
-    When SCRAPINGBEE_USAGE_CACHE=1 is set (test environments only), the file
-    cache is used to avoid 429 errors from repeated calls in the same session.
+    Inside the REPL the file cache (12 s TTL) is consulted first so the
+    several REPL-side callers (background refresher, batch / crawl
+    pre-flight) share a single live call per window and stay under the
+    ``/usage`` rate limit.
+
+    Direct CLI invocations (``scrapingbee crawl ...`` outside the REPL)
+    keep their original behaviour: a live call every time, unless the
+    legacy ``SCRAPINGBEE_USAGE_CACHE=1`` test escape hatch is set.
     """
     key = get_api_key(api_key_flag)
-    if os.environ.get("SCRAPINGBEE_USAGE_CACHE") == "1":
+    try:
+        from .theme import is_repl_mode
+
+        _in_repl = is_repl_mode()
+    except Exception:
+        _in_repl = False
+    cache_opt_in = _in_repl or os.environ.get("SCRAPINGBEE_USAGE_CACHE") == "1"
+    if cache_opt_in:
         cached = read_usage_file_cache(key)
         if cached is not None:
             return cached
         result = asyncio.run(_fetch_usage_async(key))
-        write_usage_file_cache(key, result)
+        try:
+            write_usage_file_cache(key, result)
+        except Exception:
+            pass
         return result
     return asyncio.run(_fetch_usage_async(key))
 
@@ -442,11 +466,17 @@ def resolve_batch_concurrency(
     if user_concurrency > 0:
         cap = min(from_usage, CONCURRENCY_CAP)
         if user_concurrency > cap and warn:
-            click.echo(
-                f"Warning: concurrency capped at {cap} (plan limit or max {CONCURRENCY_CAP}). "
-                "Very high concurrency can overload your network.",
-                err=True,
-            )
+            if is_repl_mode():
+                echo_warning(
+                    f"Concurrency capped at {cap} (plan limit or max {CONCURRENCY_CAP}). "
+                    "Very high concurrency can overload your network."
+                )
+            else:
+                click.echo(
+                    f"Warning: concurrency capped at {cap} (plan limit or max {CONCURRENCY_CAP}). "
+                    "Very high concurrency can overload your network.",
+                    err=True,
+                )
         return min(user_concurrency, cap)
     return max(1, from_usage)
 
@@ -524,11 +554,25 @@ async def run_batch_async(
     concurrency = min(max(1, concurrency), len(inputs))
     source = "from --concurrency" if from_user else "from usage API"
     total = len(inputs)
-    click.echo(f"Batch: {total} items, concurrency {concurrency} ({source})", err=True)
+    if is_repl_mode():
+        styled_echo(f"Batch: {total} items, concurrency {concurrency} ({source})", style="info")
+    else:
+        click.echo(f"Batch: {total} items, concurrency {concurrency} ({source})", err=True)
     sem = asyncio.Semaphore(concurrency)
     completed = 0
     failure_count = 0
     start_time = time.monotonic()
+    # Seed the REPL progress widget at 0/total so the user sees the
+    # honeycomb the moment the batch starts, not after the first item
+    # finishes. Without this, a slow first request can leave the user
+    # staring at silence for ~1s before any visual feedback.
+    if is_repl_mode() and show_progress and total > 0:
+        try:
+            from .theme import update_progress_state
+
+            update_progress_state(0, total, rps=None, eta=None, failure_pct=None)
+        except Exception:
+            pass
 
     async def run_one(i: int, inp: str) -> tuple[int, BatchResult]:
         nonlocal completed, failure_count
@@ -567,23 +611,57 @@ async def run_batch_async(
             failure_count += 1
         if show_progress:
             elapsed = time.monotonic() - start_time
-            parts = [f"[{completed}/{total}]"]
+            rps_val = None
+            eta_val = None
+            fail_pct = None
             if elapsed > 0:
-                rps = completed / elapsed
-                parts.append(f"{rps:.0f} req/s")
+                rps_val = completed / elapsed
                 remaining = total - completed
-                if rps > 0 and remaining > 0:
-                    parts.append(f"ETA {_format_eta(remaining / rps)}")
+                if rps_val > 0 and remaining > 0:
+                    eta_val = _format_eta(remaining / rps_val)
             if failure_count > 0:
-                pct = failure_count / completed * 100
-                parts.append(f"Failures: {pct:.0f}%")
-            click.echo(f"  {' | '.join(parts)}", err=True)
+                fail_pct = failure_count / completed * 100
+            if is_repl_mode():
+                # Push the latest counts/rates into the shared progress
+                # state. ``update_progress_state`` renders immediately
+                # AND the REPL ticker will keep re-rendering at ~10 Hz
+                # so the boundary hex shimmers between completions.
+                from .theme import update_progress_state
+
+                update_progress_state(
+                    completed,
+                    total,
+                    rps=rps_val,
+                    eta=eta_val,
+                    failure_pct=fail_pct,
+                )
+            else:
+                parts = [f"[{completed}/{total}]"]
+                if rps_val is not None:
+                    parts.append(f"{rps_val:.0f} req/s")
+                if eta_val is not None:
+                    parts.append(f"ETA {eta_val}")
+                if fail_pct is not None and fail_pct > 0:
+                    parts.append(f"Failures: {fail_pct:.0f}%")
+                click.echo(f"  {' | '.join(parts)}", err=True)
         if on_result is not None:
             on_result(result)
         return i, result
 
     tasks = [run_one(i, inp) for i, inp in enumerate(inputs)]
-    ordered = await asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        ordered = await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        # Stop the REPL's ticker from re-rendering the progress widget
+        # now that the batch is done (or cancelled). Safe to call even
+        # when state was never set.
+        if is_repl_mode():
+            try:
+                from .theme import clear_progress_state
+
+                clear_progress_state()
+            except Exception:
+                pass
     results: list[BatchResult] = []
     for i, item in enumerate(ordered):
         if isinstance(item, BaseException):
@@ -733,7 +811,6 @@ _BATCH_META_FILE = ".batch_meta.json"
 def _save_batch_meta(output_dir: str, total: int, succeeded: int, failed: int) -> None:
     """Save batch metadata for --resume discovery."""
     import json as _json
-    import sys
     from datetime import datetime, timezone
 
     meta_path = os.path.join(output_dir, _BATCH_META_FILE)
@@ -1072,6 +1149,25 @@ def write_batch_output_csv(
 ApiCallFn = Callable[[Client, str], Awaitable[tuple[bytes, dict, int]]]
 
 
+def _batch_done(
+    plain_msg: str,
+    *,
+    succeeded: int = 0,
+    failed: int = 0,
+    duration_s: float | None = None,
+    output_path: str | None = None,
+    err: bool = True,
+) -> None:
+    """Print batch completion — fancy panel in REPL, plain line otherwise."""
+    if is_repl_mode():
+        print_completion_summary(
+            succeeded=succeeded, failed=failed, duration_s=duration_s, output_path=output_path
+        )
+        notify_completion("ScrapingBee", plain_msg)
+    else:
+        click.echo(plain_msg, err=err)
+
+
 async def _run_api_batch_async(
     key: str,
     inputs: list[str],
@@ -1091,6 +1187,7 @@ async def _run_api_batch_async(
     extract_field: str | None = None,
     fields: str | None = None,
 ) -> None:
+    _batch_start = time.monotonic()
     ndjson_pp = post_process if output_format == "ndjson" else None
     ndjson_fh = None
     if output_format == "ndjson" and output_file:
@@ -1162,6 +1259,7 @@ async def _run_api_batch_async(
 
     out_dir_resolved = ""
     out_file_resolved = ""
+    _duration = time.monotonic() - _batch_start
     if update_csv_path:
         out_file_resolved, succeeded, failed = update_csv_with_results(
             update_csv_path,
@@ -1169,9 +1267,12 @@ async def _run_api_batch_async(
             results,
             output_file,
         )
-        click.echo(
+        _batch_done(
             f"CSV updated: {succeeded} succeeded, {failed} failed. Output: {out_file_resolved}",
-            err=True,
+            succeeded=succeeded,
+            failed=failed,
+            duration_s=_duration,
+            output_path=out_file_resolved,
         )
     elif output_format == "ndjson":
         if ndjson_fh:
@@ -1180,9 +1281,12 @@ async def _run_api_batch_async(
         failed = sum(1 for r in results if r.error and not r.skipped)
         out_file_resolved = output_file or ""
         out_label = out_file_resolved or "<stdout>"
-        click.echo(
+        _batch_done(
             f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_label}",
-            err=True,
+            succeeded=succeeded,
+            failed=failed,
+            duration_s=_duration,
+            output_path=out_file_resolved or None,
         )
     elif output_format == "csv":
         if post_process:
@@ -1192,9 +1296,12 @@ async def _run_api_batch_async(
         out_file_resolved, succeeded, failed = write_batch_output_csv(
             results, output_file, fields=fields
         )
-        click.echo(
+        _batch_done(
             f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_file_resolved}",
-            err=True,
+            succeeded=succeeded,
+            failed=failed,
+            duration_s=_duration,
+            output_path=out_file_resolved,
         )
     else:
         out_dir_resolved, succeeded, failed = write_batch_output_to_dir(
@@ -1203,9 +1310,12 @@ async def _run_api_batch_async(
             verbose,
             post_process=post_process,
         )
-        click.echo(
+        _batch_done(
             f"Batch complete: {succeeded} succeeded, {failed} failed. Output: {out_dir_resolved}",
-            err=True,
+            succeeded=succeeded,
+            failed=failed,
+            duration_s=_duration,
+            output_path=out_dir_resolved,
         )
     if on_complete:
         from .cli_utils import run_on_complete

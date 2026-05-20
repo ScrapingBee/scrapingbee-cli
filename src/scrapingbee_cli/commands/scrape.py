@@ -38,6 +38,7 @@ from ..cli_utils import (
 from ..client import Client, pretty_json
 from ..config import BASE_URL, get_api_key
 from ..crawl import _preferred_extension_from_scrape_params
+from ..theme import echo_error, is_repl_mode
 
 
 def _apply_chunking(url: str, data: bytes, chunk_size: int, chunk_overlap: int) -> bytes:
@@ -726,7 +727,10 @@ def scrape_cmd(
             else:
                 data, resp_headers, status_code = await client.scrape(scrape_url, **scrape_kwargs)
         if not scrape_kwargs.get("transparent_status_code") and status_code >= 400:
-            click.echo(f"Error: HTTP {status_code}", err=True)
+            if is_repl_mode():
+                echo_error(f"Error: HTTP {status_code}")
+            else:
+                click.echo(f"Error: HTTP {status_code}", err=True)
             try:
                 click.echo(pretty_json(data), err=True)
             except Exception:
