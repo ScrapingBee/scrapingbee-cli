@@ -74,7 +74,7 @@ def is_repl_mode() -> bool:
 # in REPL mode it overwrites the previous frame; outside the REPL it
 # falls back to printing the lines normally.
 
-_progress_renderer = None  # type: ignore[var-annotated]
+_progress_renderer = None
 
 
 def set_progress_renderer(fn) -> None:
@@ -439,7 +439,8 @@ def tick_crawl_render() -> None:
     if _crawl_status is None:
         return
     import io
-    from rich.console import Console as _RC
+
+    from rich.console import Console
 
     lines_text: list[Text] = []
     progress = _progress_state
@@ -478,7 +479,7 @@ def tick_crawl_render() -> None:
     rendered: list[str] = []
     for row in lines_text:
         buf = io.StringIO()
-        _c = _RC(
+        _c = Console(
             file=buf, force_terminal=True, color_system="truecolor",
             highlight=False, width=200,
         )
@@ -585,12 +586,13 @@ def tick_progress_render() -> None:
         animate=True,
     )
     import io
-    from rich.console import Console as _RC
+
+    from rich.console import Console
 
     rendered: list[str] = []
     for row in rows:
         buf = io.StringIO()
-        _c = _RC(
+        _c = Console(
             file=buf, force_terminal=True, color_system="truecolor",
             highlight=False, width=200,
         )

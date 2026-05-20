@@ -20,7 +20,6 @@ from .theme import (
     styled_echo,
 )
 
-
 _REPL_PREVIEW_MAX_LINES = 30
 _REPL_PREVIEW_MAX_BYTES = 4000
 
@@ -137,19 +136,19 @@ def normalize_bool_flag_args(
       ``--verbose``       → unchanged
       ``--no-verbose``    → unchanged (Click's own ``--no-x`` form)
     """
-    _TRUE = {"true", "1", "yes", "on"}
-    _FALSE = {"false", "0", "no", "off"}
+    _true = {"true", "1", "yes", "on"}
+    _false = {"false", "0", "no", "off"}
     out: list[str] = []
     i = 0
     while i < len(args):
         tok = args[i]
         if tok in flag_names and i + 1 < len(args):
             next_lv = args[i + 1].strip().lower()
-            if next_lv in _TRUE:
+            if next_lv in _true:
                 out.append(tok)
                 i += 2
                 continue
-            if next_lv in _FALSE:
+            if next_lv in _false:
                 # Skip the flag entirely; default value applies.
                 i += 2
                 continue

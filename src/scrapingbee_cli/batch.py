@@ -20,8 +20,6 @@ from .client import Client, parse_usage
 from .config import BASE_URL, get_api_key
 from .theme import (
     echo_warning,
-    err_console,
-    format_honeycomb_trail,
     is_repl_mode,
     notify_completion,
     print_completion_summary,
@@ -809,7 +807,6 @@ _BATCH_META_FILE = ".batch_meta.json"
 def _save_batch_meta(output_dir: str, total: int, succeeded: int, failed: int) -> None:
     """Save batch metadata for --resume discovery."""
     import json as _json
-    import sys
     from datetime import datetime, timezone
 
     meta_path = os.path.join(output_dir, _BATCH_META_FILE)

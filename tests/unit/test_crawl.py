@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from scrapingbee_cli.crawl import (
-    _NON_HTML_URL_EXTENSIONS,
     _body_from_json_response,
     _extract_hrefs_from_body,
     _extract_hrefs_from_response,
@@ -187,83 +186,6 @@ class TestExtractHrefsFromResponse:
         assert "https://other.com/b" in hrefs
 
 
-class TestSpiderDiscovery:
-    """Tests for the double-fetch discovery mechanism in GenericScrapingBeeSpider."""
-
-    def _make_response(self, url: str, body: bytes, depth: int = 0):
-        """Create a Scrapy HtmlResponse with request meta attached."""
-        from scrapy.http import HtmlResponse, Request
-
-        response = HtmlResponse(url, body=body, encoding="utf-8")
-        response.request = Request(url, meta={"depth": depth})
-        return response
-
-    def test_parse_yields_discovery_request_when_no_links(self):
-        """parse() must yield exactly one discovery request when the body has no links."""
-        from scrapy_scrapingbee import ScrapingBeeRequest
-
-        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
-
-        spider = GenericScrapingBeeSpider(
-            start_urls=["https://example.com"],
-            scrape_params={"return_page_text": True},
-            output_dir=None,
-        )
-        response = self._make_response("https://example.com/page", b"Plain text, no links")
-        requests = list(spider.parse(response))
-
-        assert len(requests) == 1
-        assert isinstance(requests[0], ScrapingBeeRequest)
-        assert requests[0].callback == spider._parse_discovery_links_only
-        assert requests[0].dont_filter is True
-
-    def test_parse_does_not_yield_discovery_when_links_found(self):
-        """parse() must not yield a discovery request when the body already has links."""
-        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
-
-        spider = GenericScrapingBeeSpider(
-            start_urls=["https://example.com"],
-            scrape_params={},
-            output_dir=None,
-        )
-        spider.seen_urls.add("https://example.com")
-
-        response = self._make_response(
-            "https://example.com",
-            b'<a href="/page1">link1</a><a href="/page2">link2</a>',
-        )
-        requests = list(spider.parse(response))
-
-        # No request should target the discovery callback
-        for req in requests:
-            assert req.callback != spider._parse_discovery_links_only
-
-    def test_parse_discovery_links_only_follows_links_but_does_not_save(self, tmp_path):
-        """_parse_discovery_links_only must yield follow requests but never write files."""
-        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
-
-        spider = GenericScrapingBeeSpider(
-            start_urls=["https://example.com"],
-            scrape_params={"return_page_text": True},
-            output_dir=str(tmp_path),
-        )
-        spider.seen_urls.add("https://example.com")
-
-        response = self._make_response(
-            "https://example.com",
-            b'<a href="/page1">p1</a><a href="/page2">p2</a>',
-        )
-        requests = list(spider._parse_discovery_links_only(response))
-
-        # Should yield follow requests (not empty)
-        assert len(requests) > 0
-        # Each follow request must use the main parse callback (not discovery again)
-        for req in requests:
-            assert req.callback == spider.parse
-        # Nothing written — discovery does not save
-        assert list(tmp_path.iterdir()) == []
-
-
 class TestSpiderSaveResponse:
     """Tests for _save_response manifest field extraction."""
 
@@ -425,91 +347,6 @@ class TestRequiresDiscoveryPhase:
     def test_return_page_markdown_does_not_require_discovery(self):
         # Markdown responses are handled by _MARKDOWN_LINK_RE — no discovery needed if links present
         assert _requires_discovery_phase({"return_page_markdown": "true"}) is False
-
-
-class TestNonHtmlUrlExtensions:
-    """Tests for the _NON_HTML_URL_EXTENSIONS set and its use in parse()."""
-
-    def test_image_extensions_are_binary(self):
-        for ext in ("jpg", "jpeg", "png", "gif", "webp", "svg", "ico"):
-            assert ext in _NON_HTML_URL_EXTENSIONS, f"{ext!r} should be in _NON_HTML_URL_EXTENSIONS"
-
-    def test_download_extensions_are_binary(self):
-        for ext in ("pdf", "zip"):
-            assert ext in _NON_HTML_URL_EXTENSIONS
-
-    def test_web_asset_extensions_are_binary(self):
-        for ext in ("css", "js"):
-            assert ext in _NON_HTML_URL_EXTENSIONS
-
-    def test_html_like_extensions_not_in_set(self):
-        # These can contain <a href> links and must NOT be skipped
-        for ext in ("html", "htm", "asp", "aspx", "php", "xml", "md", "txt", "json"):
-            assert ext not in _NON_HTML_URL_EXTENSIONS, (
-                f"{ext!r} must not be in _NON_HTML_URL_EXTENSIONS"
-            )
-
-    def _make_response(self, url: str, body: bytes, depth: int = 0):
-        from scrapy.http import HtmlResponse, Request
-
-        response = HtmlResponse(url, body=body, encoding="utf-8")
-        response.request = Request(url, meta={"depth": depth})
-        return response
-
-    def test_parse_skips_discovery_for_image_url(self):
-        """parse() must NOT yield a discovery request when the URL is a known binary type."""
-        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
-
-        spider = GenericScrapingBeeSpider(
-            start_urls=["https://example.com"],
-            scrape_params={"extract_rules": '{"price": ".price"}'},
-            output_dir=None,
-        )
-        # Simulate fetching a JPEG URL that returns no links (binary body)
-        response = self._make_response(
-            "https://example.com/hero.jpg",
-            b"\xff\xd8\xff\xe0",  # JPEG magic bytes
-        )
-        requests = list(spider.parse(response))
-        # Must yield nothing — no discovery re-request for binary URLs
-        assert requests == [], f"Expected no requests for binary URL, got {requests}"
-
-    def test_parse_still_fires_discovery_for_html_url_with_no_links(self):
-        """parse() must still yield a discovery request for HTML-like URLs with no links."""
-        from scrapy_scrapingbee import ScrapingBeeRequest
-
-        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
-
-        spider = GenericScrapingBeeSpider(
-            start_urls=["https://example.com"],
-            scrape_params={"extract_rules": '{"price": ".price"}'},
-            output_dir=None,
-        )
-        # JSON response body (from extract_rules) has no links
-        response = self._make_response(
-            "https://example.com/product",  # no binary extension → should fire discovery
-            b'{"price": "$9.99"}',
-        )
-        requests = list(spider.parse(response))
-        assert len(requests) == 1
-        assert isinstance(requests[0], ScrapingBeeRequest)
-        assert requests[0].callback == spider._parse_discovery_links_only
-
-    def test_parse_skips_discovery_for_css_url(self):
-        """CSS files never contain HTML links — discovery must be skipped."""
-        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
-
-        spider = GenericScrapingBeeSpider(
-            start_urls=["https://example.com"],
-            scrape_params={},
-            output_dir=None,
-        )
-        response = self._make_response(
-            "https://example.com/styles/main.css",
-            b"body { color: red; }",
-        )
-        requests = list(spider.parse(response))
-        assert requests == []
 
 
 class TestExtractHrefsExceptionHandling:

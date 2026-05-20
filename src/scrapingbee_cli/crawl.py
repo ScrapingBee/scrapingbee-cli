@@ -30,7 +30,7 @@ SCRAPINGBEE_MIDDLEWARE = "scrapy_scrapingbee.ScrapingBeeMiddleware"
 MIDDLEWARE_PRIORITY = 725
 
 
-class _CrawlerReactorAlreadyUsed(RuntimeError):
+class _CrawlerReactorAlreadyUsedError(RuntimeError):
     """Raised when Twisted's reactor has already been started + stopped
     in this Python process and can't be re-used for another crawl. The
     REPL surfaces a friendly message asking the user to restart the
@@ -53,13 +53,21 @@ def stop_running_reactor() -> bool:
     thread, where ``reactor.stop()`` can run safely.
     """
     try:
-        from twisted.internet import reactor  # type: ignore[import-not-found]
+        from twisted.internet import reactor
     except Exception:
         return False
     if not getattr(reactor, "running", False):
         return False
     try:
-        reactor.callFromThread(reactor.stop)
+        # ``callFromThread`` / ``stop`` are populated dynamically when
+        # the reactor is installed; the static module stub doesn't
+        # carry them. ``getattr`` keeps the type checker quiet without
+        # rerouting the runtime hot path.
+        cft = getattr(reactor, "callFromThread", None)
+        stop = getattr(reactor, "stop", None)
+        if cft is None or stop is None:
+            return False
+        cft(stop)
         return True
     except Exception:
         return False
@@ -93,7 +101,7 @@ def _ensure_reactor_usable() -> None:
     if reactor is None:
         return  # No reactor has been installed yet, nothing to check.
     if getattr(reactor, "_startedBefore", False):
-        raise _CrawlerReactorAlreadyUsed(
+        raise _CrawlerReactorAlreadyUsedError(
             "Crawls in this REPL session have ended. Twisted's reactor "
             "is single-shot per process — please run ``:q`` and relaunch "
             "scrapingbee to crawl again."
@@ -458,13 +466,15 @@ class GenericScrapingBeeSpider(Spider):
         spider = super().from_crawler(crawler, *args, **kwargs)
         try:
             from scrapy import signals as _scrapy_signals
+
             from .theme import is_repl_mode
 
             # Stash the crawler so signal handlers can dispatch new
             # requests via ``crawler.engine.crawl`` (needed from
             # ``spider_idle`` to flush the pool when discovery exhausts
-            # without saturating).
-            spider._crawler = crawler
+            # without saturating). ``Spider`` doesn't declare this slot
+            # so we use ``setattr`` to keep the type checker happy.
+            setattr(spider, "_crawler", crawler)
 
             # The pool-based discovery flow needs to flush queued URLs
             # at spider_idle (when discovery exhausts before reaching

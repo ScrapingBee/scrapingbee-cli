@@ -32,7 +32,8 @@ import shlex
 import sys
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Iterable
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
 
@@ -145,9 +146,7 @@ class _BinaryAdapter:
 try:
     from prompt_toolkit.auto_suggest import AutoSuggest as _PTKAutoSuggest
 except Exception:  # pragma: no cover — prompt_toolkit should always be present
-    _PTKAutoSuggest = object  # type: ignore[assignment,misc]
-
-
+    _PTKAutoSuggest = object  # type: ignore[misc,assignment]
 class BeeAutoSuggest(_PTKAutoSuggest):
     """Context-aware ghost-text autosuggest for the REPL prompt.
 
@@ -339,9 +338,9 @@ def _make_capped_history(filename: str, max_entries: int = 10_000):
                 try:
                     with open(tmp, "wb") as f:
                         for s in keep_oldest_first:
-                            f.write(f"\n# {now}\n".encode("utf-8"))
+                            f.write(f"\n# {now}\n".encode())
                             for line in s.split("\n"):
-                                f.write(f"+{line}\n".encode("utf-8"))
+                                f.write(f"+{line}\n".encode())
                     _os.replace(tmp, filename)
                 except Exception:
                     try:
@@ -415,8 +414,12 @@ class ScrollbackBuffer:
         self.scroll_offset = 0
         self._lock = threading.Lock()
 
-    def append_fragments(self, fragments: list[tuple[str, str]]) -> None:
-        """Append one rendered line (already styled) as the final entry."""
+    def append_fragments(self, fragments: list) -> None:
+        """Append one rendered line (already styled) as the final entry.
+        ``fragments`` is the prompt_toolkit ``StyleAndTextTuples``
+        shape — either ``(style, text)`` or ``(style, text, handler)``.
+        Typed loosely so callers using either variant are accepted.
+        """
         with self._lock:
             self.lines.append(list(fragments))
             if len(self.lines) > self.MAX_LINES:
@@ -425,7 +428,7 @@ class ScrollbackBuffer:
                 drop = self.MAX_LINES // 10
                 del self.lines[:drop]
 
-    def replace_last_line(self, fragments: list[tuple[str, str]]) -> None:
+    def replace_last_line(self, fragments: list) -> None:
         """Overwrite the most recent line. Used for in-place progress
         updates via the standard terminal ``\\r`` idiom — write
         ``\\r<content>\\n`` and the previous line gets replaced rather
@@ -437,9 +440,7 @@ class ScrollbackBuffer:
             else:
                 self.lines.append(list(fragments))
 
-    def replace_last_n_lines(
-        self, n: int, lines: list[list[tuple[str, str]]]
-    ) -> None:
+    def replace_last_n_lines(self, n: int, lines: list) -> None:
         """Replace the most recent ``n`` lines with the given ``lines``.
         If fewer than ``n`` lines exist, the remainder is appended.
         Used for multi-line in-place progress widgets (e.g. the
@@ -586,7 +587,7 @@ class ScrollbackBuffer:
         with self._lock:
             return self.scroll_offset == 0
 
-    def insert_line(self, index: int, fragments: list[tuple[str, str]]) -> None:
+    def insert_line(self, index: int, fragments: list) -> None:
         """Insert a single line at ``index`` (clamped to current length).
 
         Used to retroactively splice the command-echo line in front of a
@@ -1077,9 +1078,9 @@ def _make_toolbar(state: SessionState):
         # multi-step ``--js-scenario`` JSON blob) are truncated so a
         # single chip never overflows the toolbar line.
         if state.settings:
-            _MAX_CHIP_VALUE = 28
+            _max_chip_value = 28
             for k, v in state.settings.items():
-                display_v = v if len(v) <= _MAX_CHIP_VALUE else v[: _MAX_CHIP_VALUE - 1] + "…"
+                display_v = v if len(v) <= _max_chip_value else v[: _max_chip_value - 1] + "…"
                 fields.append([("class:toolbar.chip", f" {k}={display_v} ")])
 
         # Hint chunk pinned bottom-right. Always shows the active mouse
@@ -1099,9 +1100,9 @@ def _make_toolbar(state: SessionState):
             if state.is_running:
                 hint_chunk.append(("class:toolbar.hint", "  ·  Ctrl+C to stop"))
 
-        LEADING = "  "
-        SEP = "  ·  "
-        PAGE_SECONDS = 5  # how long each page is displayed before rotating
+        _leading = "  "
+        _sep = "  ·  "
+        _page_seconds = 5  # how long each page is displayed before rotating
 
         def _seg_len(chunk: list[tuple[str, str]]) -> int:
             return sum(len(t) for _, t in chunk)
@@ -1116,19 +1117,19 @@ def _make_toolbar(state: SessionState):
         # Reserve room for hint + separator on every page. If the hint alone
         # is wider than the budget, we'll still try to render it (final
         # hard-truncate at the bottom of this function will clip).
-        field_budget = max(0, budget - hint_len - len(SEP))
+        field_budget = max(0, budget - hint_len - len(_sep))
 
         # Greedy-pack the non-hint fields into pages, each ≤ field_budget.
         pages: list[list[list[tuple[str, str]]]] = []
         cur: list[list[tuple[str, str]]] = []
-        cur_len = len(LEADING)
+        cur_len = len(_leading)
         for chunk in fields:
             chunk_len = _seg_len(chunk)
-            added = chunk_len + (len(SEP) if cur else 0)
+            added = chunk_len + (len(_sep) if cur else 0)
             if cur and cur_len + added > field_budget:
                 pages.append(cur)
                 cur = [chunk]
-                cur_len = len(LEADING) + chunk_len
+                cur_len = len(_leading) + chunk_len
             else:
                 cur.append(chunk)
                 cur_len += added
@@ -1143,14 +1144,14 @@ def _make_toolbar(state: SessionState):
         if len(pages) == 1:
             page_idx = 0
         else:
-            page_idx = int(time.monotonic() / PAGE_SECONDS) % len(pages)
+            page_idx = int(time.monotonic() / _page_seconds) % len(pages)
         page = pages[page_idx]
 
         # Compose the chosen page.
-        segs: list[tuple[str, str]] = [("class:toolbar", LEADING)]
+        segs: list[tuple[str, str]] = [("class:toolbar", _leading)]
         for i, chunk in enumerate(page):
             if i > 0:
-                segs.append(("class:toolbar", SEP))
+                segs.append(("class:toolbar", _sep))
             segs.extend(chunk)
 
         # Page indicator (e.g. "1/3") trailing — only when rotating.
@@ -1210,7 +1211,7 @@ def _build_application(state: SessionState, completer: Any, history_path: str):
     try:
         history = FileHistory(history_path)
     except Exception:
-        history = None  # type: ignore[assignment]
+        history = None
 
     buffer = Buffer(
         history=history,
@@ -1581,7 +1582,12 @@ def _open_pager(path: str) -> None:
         stripped = raw_text.lstrip()
         if stripped.startswith("<"):
             try:
-                from lxml import etree as _etree, html as _lxml_html
+                # lxml's compiled submodules aren't visible to static
+                # type checkers; import via ``importlib`` so the
+                # checker doesn't try to resolve them.
+                import importlib
+                _etree = importlib.import_module("lxml.etree")
+                _lxml_html = importlib.import_module("lxml.html")
                 tree = _lxml_html.fromstring(raw_text)
                 pretty_text = _etree.tostring(
                     tree, pretty_print=True, encoding="unicode", method="html"
@@ -1596,7 +1602,7 @@ def _open_pager(path: str) -> None:
     def _set_text(s: str) -> None:
         buffer.set_document(Document(text=s, cursor_position=0), bypass_readonly=True)
 
-    _set_text(pretty_text if mode[0] == "pretty" else raw_text)
+    _set_text(pretty_text if (mode[0] == "pretty" and pretty_text is not None) else raw_text)
 
     def _current_line_count() -> int:
         return buffer.document.line_count
@@ -2134,11 +2140,8 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     import click
     from prompt_toolkit.application import Application
     from prompt_toolkit.application.run_in_terminal import run_in_terminal
-    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
     from prompt_toolkit.buffer import Buffer
-    from prompt_toolkit.document import Document
     from prompt_toolkit.filters import Condition, has_completions
-    from prompt_toolkit.history import FileHistory
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.layout import Layout
     from prompt_toolkit.layout.containers import ConditionalContainer, HSplit, Window
@@ -2189,17 +2192,23 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # Same guard on the cleanup side — only clear the worker-loop
         # ref if THIS call was a worker-thread call. If we're on the main
         # thread we never touched the ref in the first place.
+        # ``loop_factory`` was added to ``asyncio.run`` in Python 3.12;
+        # we pass it through ``**kwargs`` so the call works on both 3.11
+        # (no kwarg) and 3.12+, and so the type checker doesn't reject
+        # the kwarg against the older stub.
         try:
-            return _original_asyncio_run(
-                main,
-                debug=debug,
-                loop_factory=loop_factory or _tracking_loop_factory,
-            )
+            kwargs: dict = {"debug": debug}
+            factory = loop_factory or _tracking_loop_factory
+            kwargs["loop_factory"] = factory
+            return _original_asyncio_run(main, **kwargs)
         finally:
             if _threading_mod.current_thread() is not _main_thread:
                 _active_worker_loop[0] = None
 
-    _asyncio_mod.run = _tracking_asyncio_run
+    # Monkey-patch asyncio.run via setattr so the type checker doesn't
+    # complain about the wrapper's slightly broader signature (it also
+    # accepts ``loop_factory`` for forward-compat with Python 3.12+).
+    setattr(_asyncio_mod, "run", _tracking_asyncio_run)
 
     # ── Click tree introspection ────────────────────────────────────────────
     command_help, command_flags, bool_flags, choice_flags = _walk_click_tree(cli_group)
@@ -2220,7 +2229,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     try:
         history = _make_capped_history(history_path, max_entries=10_000)
     except Exception:
-        history = None  # type: ignore[assignment]
+        history = None
 
     completer = _make_completer(
         command_names, command_flags, bool_flags, choice_flags, command_help
@@ -2252,10 +2261,10 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # large window isn't disrupted.
     try:
         _cur_cols, _cur_rows = shutil.get_terminal_size((80, 24))
-        _MIN_COLS, _MIN_ROWS = 150, 50
-        if _cur_cols < _MIN_COLS or _cur_rows < _MIN_ROWS:
-            _new_cols = max(_cur_cols, _MIN_COLS)
-            _new_rows = max(_cur_rows, _MIN_ROWS)
+        _min_cols, _min_rows = 150, 50
+        if _cur_cols < _min_cols or _cur_rows < _min_rows:
+            _new_cols = max(_cur_cols, _min_cols)
+            _new_rows = max(_cur_rows, _min_rows)
             sys.stdout.write(f"\033[8;{_new_rows};{_new_cols}t")
             sys.stdout.flush()
     except Exception:
@@ -2270,7 +2279,6 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # surface visible (their explicit ask: "when scraping banner should
     # not disappear").
     scrollback = ScrollbackBuffer()
-    rows = shutil.get_terminal_size((80, 24)).lines  # kept for API-key prompt sizing
 
     # ── Multi-line in-place progress renderer ───────────────────────────────
     # Wired so batch operations (``scrape --input-file ...``) can update a
@@ -2303,11 +2311,12 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # path doesn't work yet — patch_stdout isn't installed until
         # ``app.run()`` starts).
         try:
-            from io import StringIO as _SIO
-            from rich.console import Console as _RC
+            from io import StringIO
 
-            _buf = _SIO()
-            _c = _RC(
+            from rich.console import Console
+
+            _buf = StringIO()
+            _c = Console(
                 file=_buf, force_terminal=True, color_system="truecolor",
                 highlight=False, width=shutil.get_terminal_size((80, 24)).columns,
             )
@@ -2473,11 +2482,10 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # where their mouse pointer is — without this, mouse events that
     # land on the fixed widgets get dropped because those windows
     # don't have their own scroll handler.
+    from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.mouse_events import (
-        MouseEventType as _MET,
-        MouseModifier as _MM,
+        MouseEventType,
     )
-    from prompt_toolkit.layout.controls import FormattedTextControl as _PTFTC
 
     # ── Path detection for Ctrl/Alt+Click open ───────────────────────────────
     # Matches just the *start* of a path candidate — absolute (``/``),
@@ -2490,8 +2498,8 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # disk. This is what lets real-world paths with spaces work —
     # ``/Applications/Some App.app``, ``~/Library/Application Support/...``,
     # ``/var/folders/.../Screenshot 2026-05-18 at 11.44.12 PM.png``.
-    _PATH_START_RE = re.compile(r"(?<![\w:])((?:\.{1,2}|~)?/)")
-    _PATH_TRIM_CHARS = ".,;:!?)]}> '\"\t"
+    _path_start_re = re.compile(r"(?<![\w:])((?:\.{1,2}|~)?/)")
+    _path_trim_chars = ".,;:!?)]}> '\"\t"
 
     def _resolve_path_str(raw: str) -> str:
         if raw.startswith("~/"):
@@ -2519,7 +2527,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             if system == "Darwin":
                 subprocess.Popen(["open", path])
             elif system == "Windows":
-                os.startfile(path)  # type: ignore[attr-defined]
+                getattr(os, "startfile")(path)  # noqa: B009
             else:
                 subprocess.Popen(["xdg-open", path])
         except Exception:
@@ -2530,7 +2538,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # re-running expensive layout calculations.
     _last_scrollback_view: dict[str, list] = {"rows": []}
 
-    class _ScrollForwardingFTC(_PTFTC):
+    class _ScrollForwardingFTC(FormattedTextControl):
         """Wheel forwarder + optional modifier+click → path opener.
 
         ``click_handler`` is invoked on MOUSE_DOWN events that carry a
@@ -2545,21 +2553,21 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
         def mouse_handler(self, mouse_event):
             et = mouse_event.event_type
-            if et == _MET.SCROLL_UP:
+            if et == MouseEventType.SCROLL_UP:
                 scrollback.scroll_up(1)
                 try:
                     app.invalidate()
                 except Exception:
                     pass
                 return None
-            if et == _MET.SCROLL_DOWN:
+            if et == MouseEventType.SCROLL_DOWN:
                 scrollback.scroll_down(1)
                 try:
                     app.invalidate()
                 except Exception:
                     pass
                 return None
-            if et == _MET.MOUSE_DOWN and self._click_handler is not None:
+            if et == MouseEventType.MOUSE_DOWN and self._click_handler is not None:
                 # Plain click opens highlighted paths. The scrollback is
                 # read-only so a click has no other purpose there. The
                 # click handler returns NotImplemented when the click
@@ -2580,12 +2588,12 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # 30 s — long enough to be cheap, short enough that a file written
     # during a crawl shows up as clickable within half a minute.
     _path_exists_cache: dict[str, tuple[float, bool]] = {}
-    _PATH_EXISTS_TTL = 30.0
+    _path_exists_ttl = 30.0
 
     def _path_exists_cached(path: str) -> bool:
         now = time.monotonic()
         hit = _path_exists_cache.get(path)
-        if hit is not None and (now - hit[0]) < _PATH_EXISTS_TTL:
+        if hit is not None and (now - hit[0]) < _path_exists_ttl:
             return hit[1]
         try:
             exists = os.path.exists(path)
@@ -2611,7 +2619,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         while end < len(text) and text[end] not in '\n\r"\'<>|`':
             end += 1
         while end > start:
-            candidate = text[start:end].rstrip(_PATH_TRIM_CHARS)
+            candidate = text[start:end].rstrip(_path_trim_chars)
             if len(candidate) < 2:
                 return (start, None)
             resolved = _resolve_path_str(candidate)
@@ -2641,7 +2649,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         """
         i = 0
         while i < len(text):
-            m = _PATH_START_RE.search(text, i)
+            m = _path_start_re.search(text, i)
             if not m:
                 break
             start = m.start()
@@ -2823,7 +2831,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             frags.append((f"{BEE_DIM}", suffix))
         return frags
 
-    def _crawl_status_height() -> "D":
+    def _crawl_status_height() -> D:
         """Compute widget height based on what's shown.
         Cases:
           • crawl only (no progress)            → 1 row (URL line)
@@ -2983,19 +2991,22 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         except Exception:
             return False
 
-    def _text_to_fragments(t: "Text") -> list[tuple[str, str]]:
+    def _text_to_fragments(t: Text) -> list:
         """Render a rich Text object to the (style, text) fragment list
         prompt_toolkit's ``FormattedTextControl`` expects."""
         try:
+            from io import StringIO
+
             from prompt_toolkit.formatted_text import (
                 ANSI as _ANSI,
+            )
+            from prompt_toolkit.formatted_text import (
                 to_formatted_text as _tft,
             )
-            from io import StringIO as _SIO
-            from rich.console import Console as _RC
+            from rich.console import Console
 
-            buf = _SIO()
-            _c = _RC(
+            buf = StringIO()
+            _c = Console(
                 file=buf, force_terminal=True, color_system="truecolor",
                 highlight=False, width=200,
             )
@@ -3004,7 +3015,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         except Exception:
             return [("", t.plain)]
 
-    def _banner_height() -> "D":
+    def _banner_height() -> D:
         # Compact one-liner while a crawl / batch is active; full ASCII
         # banner otherwise.
         if _active_job_in_progress():
@@ -3215,15 +3226,18 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             state.run_start = None
             # Splice the dim echo line above the streamed output.
             try:
+                from io import StringIO
+
                 from prompt_toolkit.formatted_text import (
                     ANSI as _ANSI,
+                )
+                from prompt_toolkit.formatted_text import (
                     to_formatted_text as _tft,
                 )
-                from io import StringIO as _SIO
-                from rich.console import Console as _RC
+                from rich.console import Console
 
-                _buf = _SIO()
-                _c = _RC(
+                _buf = StringIO()
+                _c = Console(
                     file=_buf, force_terminal=True, color_system="truecolor",
                     highlight=False, width=200,
                 )
@@ -3350,6 +3364,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             learns to show the honeycomb above the URL line.
             """
             import json as _json
+
             from .theme import update_crawl_status, update_progress_state
 
             last_mtime = 0.0
@@ -3475,15 +3490,18 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 pass
             # Splice the dim echo line above the streamed output.
             try:
+                from io import StringIO
+
                 from prompt_toolkit.formatted_text import (
                     ANSI as _ANSI,
+                )
+                from prompt_toolkit.formatted_text import (
                     to_formatted_text as _tft,
                 )
-                from io import StringIO as _SIO
-                from rich.console import Console as _RC
+                from rich.console import Console
 
-                _buf = _SIO()
-                _c = _RC(
+                _buf = StringIO()
+                _c = Console(
                     file=_buf, force_terminal=True, color_system="truecolor",
                     highlight=False, width=200,
                 )
@@ -3597,8 +3615,14 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             # main-screen scrollback.
             if line.strip().lower().startswith(":view"):
                 try:
-                    sys.__stdout__.write("\x1b[?1049h")
-                    sys.__stdout__.flush()
+                    # ``sys.__stdout__`` is ``Optional[TextIO]`` in the
+                    # stdlib stubs; in practice it's set for any TTY
+                    # invocation we care about. Guard against the rare
+                    # None case rather than juggling type-ignores.
+                    out = sys.__stdout__
+                    if out is not None:
+                        out.write("\x1b[?1049h")
+                        out.flush()
                 except Exception:
                     pass
                 try:
@@ -3613,14 +3637,17 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             # printed during its run. Fall back to appending if the
             # rich-render or insert path fails.
             try:
+                from io import StringIO
+
                 from prompt_toolkit.formatted_text import (
                     ANSI as _ANSI,
+                )
+                from prompt_toolkit.formatted_text import (
                     to_formatted_text as _tft,
                 )
-                from io import StringIO as _SIO
-                from rich.console import Console as _RC
-                _buf = _SIO()
-                _c = _RC(
+                from rich.console import Console
+                _buf = StringIO()
+                _c = Console(
                     file=_buf, force_terminal=True, color_system="truecolor",
                     highlight=False, width=200,
                 )
@@ -3679,14 +3706,17 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                     return True
             # Echo the typed line above whatever error we just printed.
             try:
+                from io import StringIO
+
                 from prompt_toolkit.formatted_text import (
                     ANSI as _ANSI,
+                )
+                from prompt_toolkit.formatted_text import (
                     to_formatted_text as _tft,
                 )
-                from io import StringIO as _SIO
-                from rich.console import Console as _RC
-                _buf = _SIO()
-                _c = _RC(
+                from rich.console import Console
+                _buf = StringIO()
+                _c = Console(
                     file=_buf, force_terminal=True, color_system="truecolor",
                     highlight=False, width=200,
                 )
@@ -3869,15 +3899,18 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             # rows past that index belong to this command. Inserting at
             # that index puts the echo right above its output.
             try:
+                from io import StringIO
+
                 from prompt_toolkit.formatted_text import (
                     ANSI as _ANSI,
+                )
+                from prompt_toolkit.formatted_text import (
                     to_formatted_text as _tft,
                 )
-                from io import StringIO as _SIO
-                from rich.console import Console as _RC
+                from rich.console import Console
 
-                _buf = _SIO()
-                _c = _RC(
+                _buf = StringIO()
+                _c = Console(
                     file=_buf, force_terminal=True, color_system="truecolor",
                     highlight=False, width=200,
                 )
@@ -4017,7 +4050,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         return True
 
     # ── Key bindings ────────────────────────────────────────────────────────
-    _QUIT_TOKENS = {":q", ":quit", "exit", "quit", "q"}
+    _quit_tokens = {":q", ":quit", "exit", "quit", "q"}
 
     kb = KeyBindings()
 
@@ -4048,7 +4081,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             input_buffer.reset()
             _handle_first_run_key(stripped, text)
             return
-        if stripped.lower() in _QUIT_TOKENS:
+        if stripped.lower() in _quit_tokens:
             input_buffer.reset()
             event.app.exit()
             return
@@ -4279,8 +4312,8 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # binding handler.
         buf = event.current_buffer
         try:
-            from prompt_toolkit.completion import CompleteEvent as _CE
-            cmps = list(buf.completer.get_completions(buf.document, _CE()))
+            from prompt_toolkit.completion import CompleteEvent
+            cmps = list(buf.completer.get_completions(buf.document, CompleteEvent()))
         except Exception:
             buf.start_completion(select_first=False)
             return
@@ -4788,7 +4821,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         scheduled 30s tick.
         """
         try:
-            loop = app.loop  # type: ignore[attr-defined]
+            loop = app.loop
             if loop is not None:
                 loop.call_soon_threadsafe(_refresh_event.set)
         except Exception:
@@ -4830,19 +4863,19 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
     sb_writer = ScrollbackWriter(scrollback, on_write=_on_buffer_write)
     original_stdout, original_stderr = sys.stdout, sys.stderr
-    sys.stdout = sb_writer  # type: ignore[assignment]
-    sys.stderr = sb_writer  # type: ignore[assignment]
+    sys.stdout = sb_writer
+    sys.stderr = sb_writer
     # Some callers (cli_utils.write_output) call ``sys.stdout.buffer.write(bytes)``.
     # Expose a binary-decoding adapter so those routes still land in our
     # scrollback as text. Truly binary output is decoded with errors=replace.
     if not hasattr(sys.stdout, "buffer"):
-        sys.stdout.buffer = _BinaryAdapter(sys.stdout)  # type: ignore[attr-defined]
+        setattr(sys.stdout, "buffer", _BinaryAdapter(sys.stdout))
     if not hasattr(sys.stderr, "buffer"):
-        sys.stderr.buffer = _BinaryAdapter(sys.stderr)  # type: ignore[attr-defined]
+        setattr(sys.stderr, "buffer", _BinaryAdapter(sys.stderr))
     # err_console (rich.Console used by theme.py) caches a file= reference
     # at module import time — point it at our buffer too.
     _orig_err_console_file = err_console.file
-    err_console.file = sb_writer  # type: ignore[assignment]
+    setattr(err_console, "file", sb_writer)
     try:
         app.run(pre_run=_pre_run)
     finally:
