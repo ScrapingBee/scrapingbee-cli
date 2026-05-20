@@ -320,6 +320,13 @@ def confirm_overwrite(path: str | None, overwrite: bool = False) -> None:
     from pathlib import Path
 
     if Path(path).exists() and not overwrite:
+        # In REPL mode, prompt_toolkit owns the TTY (full-screen / alt-buffer),
+        # so click.confirm reads from sys.stdin and blocks forever. Surface
+        # the conflict as an error and tell the user to pass --overwrite.
+        if is_repl_mode():
+            raise click.UsageError(
+                f"'{path}' already exists. Re-run with --overwrite to replace it."
+            )
         if not click.confirm(f"'{path}' already exists. Overwrite?"):
             click.echo("Cancelled.", err=True)
             raise SystemExit(0)
