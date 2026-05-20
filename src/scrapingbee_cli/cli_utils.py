@@ -107,6 +107,57 @@ def _maybe_repl_preview(data: bytes) -> tuple[bytes, str | None, str | None]:
     return preview.encode("utf-8"), summary, full_path
 
 
+def collect_bool_flag_names(cli_group: click.Group) -> set[str]:
+    """Walk a click group + every subcommand and return the set of all
+    option strings declared as ``is_flag=True``. Used by
+    ``normalize_bool_flag_args`` to extend bool flags so they ALSO
+    accept ``true``/``false`` values for consistency with the
+    scraping-side flags that already take string bools
+    (``--render-js true`` etc.).
+    """
+    flags: set[str] = set()
+    try:
+        for cmd in cli_group.commands.values():
+            for p in cmd.params:
+                if getattr(p, "is_flag", False):
+                    for opt in p.opts:
+                        flags.add(opt)
+    except Exception:
+        pass
+    return flags
+
+
+def normalize_bool_flag_args(
+    args: list[str], flag_names: set[str]
+) -> list[str]:
+    """Pre-parse boolean flags so they accept an explicit true/false
+    value in addition to the bare flag form:
+      ``--verbose true``  → ``--verbose`` (value dropped, flag kept)
+      ``--verbose false`` → flag dropped entirely (default = False)
+      ``--verbose``       → unchanged
+      ``--no-verbose``    → unchanged (Click's own ``--no-x`` form)
+    """
+    _TRUE = {"true", "1", "yes", "on"}
+    _FALSE = {"false", "0", "no", "off"}
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if tok in flag_names and i + 1 < len(args):
+            next_lv = args[i + 1].strip().lower()
+            if next_lv in _TRUE:
+                out.append(tok)
+                i += 2
+                continue
+            if next_lv in _FALSE:
+                # Skip the flag entirely; default value applies.
+                i += 2
+                continue
+        out.append(tok)
+        i += 1
+    return out
+
+
 class NormalizedChoice(click.Choice):
     """Choice type that accepts both hyphens and underscores.
 

@@ -1,14 +1,10 @@
-"""ScrapingBee CLI theme: colors, styled output, and flapping-bee spinner.
-
-The spinner shows a single-line coloured bee with flapping wings and rotating
-fun status messages tailored to each command.
-"""
+"""ScrapingBee CLI theme: colours and styled output helpers used by the
+REPL renderer."""
 
 from __future__ import annotations
 
 import os
 import sys
-import threading
 
 from rich.console import Console
 from rich.text import Text
@@ -107,6 +103,415 @@ def emit_progress_lines(lines: list[str]) -> None:
     sys.stderr.flush()
 
 
+# -- Bee facts (rotating trivia shown while a command is in flight) ---------
+# Surfaced on the dim row above the input in the REPL. Kept short so they
+# fit on a single line even on narrow terminals.
+
+BEE_FACTS: list[str] = [
+    "Did you know? Bees can fly up to 15 mph.",
+    "Did you know? A bee visits 50–100 flowers per trip.",
+    "Did you know? Bees have 5 eyes — two compound, three simple.",
+    "Did you know? Honey never spoils — jars from ancient Egypt are still edible.",
+    "Did you know? Bees communicate by dancing — the famous waggle dance.",
+    "Did you know? A single hive can house up to 60,000 bees.",
+    "Did you know? Bees flap their wings about 200 times per second.",
+    "Did you know? Bees can recognize individual human faces.",
+    "Did you know? One bee makes about 1/12 of a teaspoon of honey in its life.",
+    "Did you know? Bees navigate using the sun's position in the sky.",
+    "Did you know? Bees pollinate about one third of the food we eat.",
+    "Did you know? A queen bee can lay up to 2,000 eggs per day.",
+    "Did you know? Worker bees are all female.",
+    "Did you know? Bees see ultraviolet patterns we can't.",
+    "Did you know? Honeycomb hexagons tile flat space using the least wax — a property mathematicians proved only in 1999.",
+    "Did you know? Worker bees in a hive are about 75% genetically related to each other — human siblings are only 50%.",
+    "Did you know? A bee's brain is the size of a sesame seed.",
+    "Did you know? Bees have been around for more than 100 million years — older than most flowering plants.",
+    "Did you know? The buzzing sound is the rapid beat of a bee's wings.",
+    "Did you know? Bees can sense the Earth's magnetic field.",
+    "Did you know? In ancient Babylon, newlyweds drank honey-wine for a month — the likely origin of the word 'honeymoon'.",
+    "Did you know? A queen bee can live up to 5 years; a worker, only 6 weeks in summer.",
+    "Did you know? Drones (male bees) have no stinger.",
+    "Did you know? Bees fan their wings to cool the hive on hot days.",
+    "Did you know? Bees can tell time using internal circadian rhythms.",
+    "Did you know? A foraging bee can carry nectar weighing nearly half her body weight.",
+    "Did you know? Bumblebees can fly in the rain.",
+    "Did you know? Honeybees evolved from ancient predatory wasps.",
+    "Did you know? A swarm of bees can contain over 50,000 individuals.",
+    "Did you know? Bees regulate hive temperature within a degree of 35°C / 95°F.",
+    "Did you know? The queen's pheromones hold a colony together.",
+    "Did you know? Bees can recognize the smell of TNT — they're used in landmine detection.",
+    "Did you know? Bees make beeswax from special glands on their abdomen.",
+    "Did you know? Royal jelly is what turns a regular larva into a queen.",
+    "Did you know? Bees do a 'cleansing flight' after winter to relieve themselves.",
+    "Did you know? Honey is naturally antibacterial.",
+    "Did you know? Bees can travel up to 6 miles from their hive in a single trip.",
+    "Did you know? A bee colony collectively visits about 2 million flowers to make one pound of honey.",
+    "Did you know? Bees have hair on their eyes to collect more pollen.",
+    "Did you know? Worker bees switch jobs as they age — nurse, builder, guard, then forager.",
+    "Did you know? The bee was a heraldic emblem of Napoleon's imperial regime.",
+    "Did you know? Honey has been found preserved in pharaohs' tombs.",
+    "Did you know? Bees can be trained to detect cancer in human breath.",
+    "Did you know? The phrase 'busy as a bee' first appeared in Chaucer's Canterbury Tales.",
+    "Did you know? Stingless bees exist — about 500 species worldwide.",
+    "Did you know? The mason bee is a far more efficient pollinator than honeybees.",
+    "Did you know? Bees produce six different products: honey, beeswax, pollen, propolis, royal jelly, and venom.",
+    "Did you know? 'Propolis' is Greek for 'before the city' — bees seal the hive entrance with it to keep out invaders.",
+    "Did you know? Bees prefer flowers with caffeine — it boosts their memory.",
+    "Did you know? Bees actually build round cells first — surface tension in the warm wax reshapes them into hexagons.",
+    "Did you know? Worker bees flap their wings to evaporate water from nectar, making honey.",
+    "Did you know? Bumblebees are excellent at 'buzz pollination' — vibrating flowers to release pollen.",
+    "Did you know? Honey's color depends on which flowers the bees visited.",
+    "Did you know? A bee's stomach holds 70 mg of nectar — nearly its own weight.",
+    "Did you know? Africanized 'killer' bees came from a 1957 lab accident in Brazil.",
+    "Did you know? Honeybees are not native to the Americas — they were brought from Europe.",
+    "Did you know? A bee's alarm pheromone smells like banana — isoamyl acetate, the very same compound.",
+    "Did you know? The smallest bee in the world is just 2 mm long (Perdita minima).",
+    "Did you know? The largest bee is Wallace's giant bee, about the length of a thumb.",
+    "Did you know? Foraging bees find efficient routes between flowers using simple flight-rule heuristics.",
+    "Did you know? Honey takes 7 days to ripen from nectar inside the hive.",
+    "Did you know? Bees were used in ancient warfare — Greeks catapulted hives over castle walls.",
+    "Did you know? Bees use 'undertakers' — workers whose job is to remove dead bees from the hive.",
+    "Did you know? Bees can count up to four.",
+    "Did you know? A single bee can produce only about half a gram of wax in her lifetime.",
+    "Did you know? Bumblebees can carry a load close to their own body weight in pollen and nectar.",
+    "Did you know? In Mycenaean Greece, priestesses of the goddess Demeter were called 'Melissai' — the bees.",
+    "Did you know? Mead — honey wine — may be humanity's oldest fermented drink.",
+    "Did you know? A worker bee can sting only once; the stinger is barbed.",
+    "Did you know? Honey contains hydrogen peroxide, produced by an enzyme bees add to nectar.",
+    "Did you know? Bees can be left-handed or right-handed when entering flowers.",
+    "Did you know? Beekeeping appears in Egyptian wall art dating back 4,500 years.",
+    "Did you know? The 'Queen of the Hive' is actually selected by worker bees in larval stage.",
+    "Did you know? Without bees, most almonds, blueberries, and apples wouldn't exist as we know them.",
+    "Did you know? A bee's wings beat fast enough to generate static electricity, which attracts pollen.",
+    "Did you know? Bees have two stomachs — one for eating, one for storing nectar.",
+    "Did you know? Killer bees are not particularly venomous — they're just very aggressive.",
+    "Did you know? Honey crystallization is normal — gentle warming returns it to liquid.",
+    "Did you know? Bees prefer blue, purple, and yellow flowers — red appears black to them.",
+    "Did you know? Nearly 90% of wild plants depend on animal pollinators, mostly bees.",
+    "Did you know? Bees take orientation flights before becoming foragers, memorizing landmarks.",
+    "Did you know? Some bee species are solitary — they don't form colonies at all.",
+    "Did you know? A bee scientist is called a melittologist.",
+    "Did you know? Bees were the totem of the Egyptian pharaohs.",
+    "Did you know? The Mayans practiced beekeeping with stingless Melipona bees.",
+    "Did you know? Bees use propolis to mummify intruders they can't carry out of the hive.",
+    "Did you know? In rural England, 'telling the bees' of a death in the family was tradition — leave them out and they'd reportedly abandon the hive.",
+    "Did you know? A queen bee mates with up to 20 drones in a single flight.",
+    "Did you know? Honey from different regions tastes completely different — manuka, acacia, clover, lavender.",
+    "Did you know? Bees can teach each other to use tools.",
+    "Did you know? Some bees sleep — even with their tongues sticking out.",
+    "Did you know? Honeycomb cells tilt slightly upward — about 13 degrees — so liquid honey doesn't drip out before it ripens.",
+    "Did you know? Drones die immediately after mating with the queen.",
+    "Did you know? Bee venom is being researched as a cancer treatment.",
+    "Did you know? In Slovenia, beekeeping is so culturally important it's on UNESCO's heritage list.",
+    "Did you know? Bees can be tracked individually using tiny radio tags.",
+    "Did you know? The waggle dance can encode distance, direction, and quality of a food source.",
+    "Did you know? Bees can perceive flower humidity to estimate nectar quality.",
+    "Did you know? Hive bees fan their wings in coordinated rows to ventilate the colony.",
+    "Did you know? Pollen is the bee's only source of protein.",
+    "Did you know? Bees are the only insects that produce food eaten by humans.",
+    "Did you know? Some orchids look and smell like female bees to trick males into pollinating them.",
+    "Did you know? Bees recognize their hive entrance by its exact location, not by smell alone.",
+    "Did you know? Aristotle wrote one of the earliest scientific treatises on beekeeping.",
+    "Did you know? The hum of a healthy hive is around 250 Hz.",
+    "Did you know? Bees prefer warm nectar — they're cold-blooded but warm their flight muscles to 35°C.",
+    "Did you know? Honey contains pinocembrin, an antioxidant studied for its links to brain health.",
+    "Did you know? In winter, honeybees cluster tightly and shiver their wing muscles to keep the hive warm.",
+    "Did you know? A worker bee's lifespan in winter is up to 6 months — much longer than summer bees.",
+    "Did you know? The queen bee produces over 30 different pheromones to manage the colony.",
+    "Did you know? A pound of honey requires bees to fly the equivalent of three orbits around Earth.",
+]
+
+
+def current_bee_fact(tick: int, period_ticks: int = 50) -> str:
+    """Pick a bee fact from the list, rotating once every ``period_ticks``
+    ticks of the REPL's 10 Hz ticker. Default 50 → a new fact every 5s.
+    """
+    if not BEE_FACTS:
+        return ""
+    return BEE_FACTS[(tick // max(1, period_ticks)) % len(BEE_FACTS)]
+
+
+# -- Bee-themed action verbs (rotate in place of the static "running") ------
+# Used as the toolbar status label while a command is in flight. Plain
+# -ing verbs so they slot grammatically into ``<verb>  ·  12.3s``.
+
+BEE_VERBS: list[str] = [
+    "pollinating",
+    "buzzing",
+    "foraging",
+    "gathering nectar",
+    "scouting flowers",
+    "waggle-dancing",
+    "tending the hive",
+    "building combs",
+    "harvesting honey",
+    "on the wing",
+    "working the field",
+    "humming along",
+    "fanning the hive",
+    "guarding the entrance",
+    "swarming",
+    "courting flowers",
+    "loading pollen baskets",
+    "patrolling petals",
+    "communing with clover",
+    "sipping nectar",
+    "weaving wax",
+    "circling the queen",
+    "ferrying nectar",
+    "cleaning cells",
+    "warming brood",
+    "deciphering scent trails",
+    "navigating by sun",
+    "feeding the queen",
+    "polishing the comb",
+    "humming homeward",
+    "tasting petals",
+    "marking flowers",
+    "scouting territories",
+    "buzzing through HTML",
+    "extracting honey",
+    "pollinating pages",
+    "harvesting data",
+    "chasing redirects",
+    "weaving CSS",
+    "decoding selectors",
+    "rendering blossoms",
+    "sniffing user agents",
+    "scrubbing trackers",
+]
+
+
+def current_bee_verb(tick: int, period_ticks: int = 25) -> str:
+    """Pick a bee verb from the list, rotating once every ``period_ticks``
+    ticks. Default 25 → a new verb every 2.5s on the 10 Hz ticker — fast
+    enough to feel alive on quick scrapes, slow enough not to flicker.
+    """
+    if not BEE_VERBS:
+        return "running"
+    return BEE_VERBS[(tick // max(1, period_ticks)) % len(BEE_VERBS)]
+
+
+def current_bee_blurb(tick: int, period_ticks: int = 50) -> str:
+    """Pick the dim-row content while a command is in flight, alternating
+    between a "…" bee verb and a "Did you know? ..." fact every
+    ``period_ticks`` ticks (default 50 → a 5-second switch on the 10 Hz
+    ticker). The FIRST slot is always a verb so quick commands
+    (``usage``, ``docs``, fast scrapes) show a natural action label
+    rather than a flash of trivia. Subsequent slots alternate
+    verb → fact → verb → fact for the user to read while they wait.
+
+    The fact index and verb index are independent, so the rotation
+    doesn't cycle the same fact/verb pair together — the lists have
+    different lengths and advance on their own slot counters.
+    """
+    slot = tick // max(1, period_ticks)
+    if slot % 2 == 0:
+        if not BEE_VERBS:
+            return ""
+        verb_idx = (slot // 2) % len(BEE_VERBS)
+        return BEE_VERBS[verb_idx] + "…"
+    if not BEE_FACTS:
+        return ""
+    fact_idx = (slot // 2) % len(BEE_FACTS)
+    return BEE_FACTS[fact_idx]
+
+
+# -- Crawl live-status state (current URL, fetched count, phase) ------------
+# The Scrapy spider's signal handlers push updates here from the worker
+# thread; the REPL's ticker reads them on the main thread to repaint the
+# dim row above the input. ``_crawl_status`` is intentionally a plain
+# dict mutation since (a) Python dict assignments are atomic and (b) the
+# update pattern is single-key writes from one writer at a time, so no
+# explicit lock is needed.
+
+_crawl_status: dict | None = None
+
+
+def update_crawl_status(
+    *,
+    current_url: str | None = None,
+    fetched: int | None = None,
+    queued: int | None = None,
+    saved: int | None = None,
+    phase: str | None = None,
+) -> None:
+    """Update one or more fields of the crawl status. Any field left as
+    ``None`` keeps its previous value (so a per-signal handler can update
+    just the field it knows about).
+
+    Subprocess crawl mode: the REPL parent runs each crawl in a child
+    Python process so it gets a fresh Twisted reactor. The child has no
+    way to push into the parent's in-memory ``_crawl_status``, so when
+    the env var ``SCRAPINGBEE_CRAWL_STATUS_FILE`` is set we *also*
+    mirror the current dict to that JSON file. The parent's ticker
+    polls the file and forwards updates back into its own
+    ``_crawl_status`` so the layout window keeps showing live progress.
+    """
+    global _crawl_status  # noqa: PLW0603
+    if _crawl_status is None:
+        _crawl_status = {
+            "current_url": None,
+            "fetched": 0,
+            "queued": 0,
+            "saved": 0,
+            "phase": "starting",
+        }
+    if current_url is not None:
+        _crawl_status["current_url"] = current_url
+    if fetched is not None:
+        _crawl_status["fetched"] = fetched
+    if queued is not None:
+        _crawl_status["queued"] = queued
+    if saved is not None:
+        _crawl_status["saved"] = saved
+    if phase is not None:
+        _crawl_status["phase"] = phase
+    _maybe_mirror_to_status_file()
+
+
+def _maybe_mirror_to_status_file() -> None:
+    """Atomic write of ``_crawl_status`` + progress state to
+    ``$SCRAPINGBEE_CRAWL_STATUS_FILE`` so a polling parent process sees
+    updates without read/write races. Atomic-rename pattern (write to
+    ``.tmp``, ``os.replace``) keeps the parent from ever reading a
+    half-flushed JSON file.
+
+    Progress data (``_progress_state``) rides on the same payload —
+    that's how the parent learns about a known total (sitemap mode,
+    ``--max-pages N``) and can show the honeycomb bar above the URL
+    line in its fixed widget.
+    """
+    sf = os.environ.get("SCRAPINGBEE_CRAWL_STATUS_FILE")
+    if not sf:
+        return
+    if _crawl_status is None and _progress_state is None:
+        return
+    try:
+        import json as _json
+        payload: dict = {}
+        if _crawl_status is not None:
+            payload.update(_crawl_status)
+        if _progress_state is not None:
+            payload["progress_completed"] = _progress_state.get("completed")
+            payload["progress_total"] = _progress_state.get("total")
+            payload["progress_rps"] = _progress_state.get("rps")
+            payload["progress_eta"] = _progress_state.get("eta")
+            payload["progress_failure_pct"] = _progress_state.get("failure_pct")
+        tmp = sf + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            _json.dump(payload, fh)
+        os.replace(tmp, sf)
+    except Exception:
+        pass
+
+
+def get_crawl_status() -> dict | None:
+    return _crawl_status
+
+
+def has_crawl_status() -> bool:
+    return _crawl_status is not None
+
+
+def clear_crawl_status() -> None:
+    global _crawl_status  # noqa: PLW0603
+    _crawl_status = None
+    sf = os.environ.get("SCRAPINGBEE_CRAWL_STATUS_FILE")
+    if sf:
+        try:
+            os.unlink(sf)
+        except Exception:
+            pass
+
+
+def tick_crawl_render() -> None:
+    """Re-render the dedicated crawl status widget in scrollback. Same
+    in-place mechanism as the batch honeycomb (``emit_progress_lines``
+    replaces the last N lines), but rendering the crawl-specific
+    content: a status line with ``<phase>: <url>  (X fetched[/Y])``
+    plus, when a total is known (sitemap mode), the honeycomb
+    progress bar above it.
+
+    Safe to call when no crawl is in flight — early-exits if
+    ``_crawl_status`` is None.
+    """
+    if _crawl_status is None:
+        return
+    import io
+    from rich.console import Console as _RC
+
+    lines_text: list[Text] = []
+    progress = _progress_state
+    if progress is not None:
+        # Sitemap-mode batch-style bar, identical to the batch widget.
+        rows = format_honeycomb_grid(
+            completed=progress["completed"],
+            total=progress["total"],
+            rps=progress.get("rps"),
+            eta=progress.get("eta"),
+            failure_pct=progress.get("failure_pct"),
+            animate=True,
+        )
+        lines_text.extend(rows)
+
+    # Always include the live URL / fetched-count line below the bar.
+    status_text = Text()
+    status_text.append("  ")
+    phase = _crawl_status.get("phase") or "fetching"
+    url = _crawl_status.get("current_url")
+    fetched = _crawl_status.get("fetched") or 0
+    saved = _crawl_status.get("saved") or 0
+    if url and len(url) > 80:
+        url = url[:48] + "…" + url[-25:]
+    status_text.append(f"{phase}: ", style=f"bold {BEE_YELLOW}")
+    if url:
+        status_text.append(url, style=BEE_WHITE)
+    else:
+        status_text.append("…", style="dim")
+    status_text.append(f"  ({fetched} fetched", style="dim")
+    if saved:
+        status_text.append(f", {saved} saved", style="dim")
+    status_text.append(")", style="dim")
+    lines_text.append(status_text)
+
+    rendered: list[str] = []
+    for row in lines_text:
+        buf = io.StringIO()
+        _c = _RC(
+            file=buf, force_terminal=True, color_system="truecolor",
+            highlight=False, width=200,
+        )
+        _c.print(row, end="")
+        rendered.append(buf.getvalue())
+    emit_progress_lines(rendered)
+
+
+def crawl_status_line() -> str | None:
+    """Build a single-line status string. Kept around for any caller
+    that wants a one-line crawl summary; the live in-scrollback widget
+    uses ``tick_crawl_render`` instead.
+    """
+    if _crawl_status is None:
+        return None
+    phase = _crawl_status.get("phase") or "fetching"
+    url = _crawl_status.get("current_url")
+    fetched = _crawl_status.get("fetched") or 0
+    saved = _crawl_status.get("saved") or 0
+    # Trim very long URLs so the line fits on narrow terminals — keep the
+    # prefix (scheme + host + start of path) and the tail (last 25 chars)
+    # so users can still recognise the page.
+    if url and len(url) > 80:
+        url = url[:48] + "…" + url[-25:]
+    if url:
+        suffix = f"  ({fetched} fetched"
+        if saved:
+            suffix += f", {saved} saved"
+        suffix += ")"
+        return f"{phase}: {url}{suffix}"
+    return f"{phase}…  ({fetched} fetched)"
+
+
 # -- Shared progress state for the REPL ticker animation ---------------------
 # batch.py calls ``update_progress_state`` on each completion to record
 # latest counts/rates. The REPL ticker calls ``tick_progress_render`` at
@@ -133,6 +538,25 @@ def update_progress_state(
         "eta": eta,
         "failure_pct": failure_pct,
     }
+    # In the crawl subprocess we hand state to the parent via the
+    # status file (``_maybe_mirror_to_status_file`` reads
+    # ``_progress_state`` alongside ``_crawl_status``). Rendering here
+    # would emit honeycomb rows via ``emit_progress_lines`` → the
+    # stderr fallback (no ``_progress_renderer`` is installed in the
+    # child), and the parent would then ingest those rows into
+    # scrollback as duplicates because each Scrapy log line displaces
+    # the ``replace_last_n_lines`` anchor.
+    if os.environ.get("SCRAPINGBEE_CRAWL_STATUS_FILE"):
+        _maybe_mirror_to_status_file()
+        return
+    # In the REPL parent during a crawl (``_crawl_status`` non-None),
+    # the fixed crawl_status widget reads ``_progress_state`` directly
+    # and renders the honeycomb in place. Rendering through
+    # ``tick_progress_render`` here would ALSO write to scrollback
+    # (the batch path), giving the same duplicate-rows problem the
+    # child fix already solved.
+    if _crawl_status is not None:
+        return
     tick_progress_render()
 
 
@@ -228,164 +652,6 @@ def _render_inline_bee(frame_idx: int) -> Text:
     return text
 
 
-# -- Spinner -----------------------------------------------------------------
-
-
-# Hex bloom — a "honey crystallising" cycle expressed as a 3-cell-wide
-# animation that radiates from the centre outward. Pure geometry, no
-# mascot: dot grows into a honeycomb cell, peaks at a four-pointed
-# sparkle (the moment crystals form), then drains back.
-#
-# The middle cell is the focal point and stays anchored; "halo" cells
-# appear and disappear symmetrically so the bloom feels like it's growing
-# in all directions, not rightward.
-#
-# Each frame pairs a 3-character composition with a colour from a
-# dim→bright→warm gradient so the eye reads a glowing, breathing shape.
-#
-# Frames (centre + halo, always 3 cells wide):
-#   " · "  dust        (dim grey)
-#   " • "  speck       (dim amber)
-#   "·⬡·"  outline + halo  (amber)
-#   "·⬢·"  honeycomb + halo (bright yellow)
-#   "⬡✦⬡"  sparkle + halo   (warm yellow-orange — PEAK / crystallised)
-#   "·⬢·"  descending
-#   "·⬡·"
-#   " • "
-_HEX_BLOOM_FRAMES: list[tuple[str, str]] = [
-    (" · ", "#555555"),
-    (" • ", "#886600"),
-    ("·⬡·", "#BAA000"),
-    ("·⬢·", "#FFCD23"),
-    ("⬡✦⬡", "#FFB13D"),
-    ("·⬢·", "#FFCD23"),
-    ("·⬡·", "#BAA000"),
-    (" • ", "#886600"),
-]
-
-# Per-command verbs that rotate during the pulse — keep them short and active.
-_PHRASES: dict[str, list[str]] = {
-    "scrape":           ["Fetching", "Rendering", "Extracting"],
-    "crawl":            ["Crawling", "Following links", "Discovering"],
-    "google":           ["Searching", "Querying"],
-    "fast-search":      ["Searching"],
-    "amazon-product":   ["Fetching product"],
-    "amazon-search":    ["Searching Amazon"],
-    "walmart-product":  ["Fetching product"],
-    "walmart-search":   ["Searching Walmart"],
-    "youtube-search":   ["Searching"],
-    "youtube-metadata": ["Fetching metadata"],
-    "chatgpt":          ["Querying", "Thinking"],
-    "usage":            ["Checking credits"],
-    "sitemap":          ["Fetching sitemap"],
-}
-
-_FRAME_INTERVAL = 0.08          # seconds per frame ⇒ ~12 fps, smooth bloom
-_PHRASE_DURATION_FRAMES = 30    # rotate verb every ~2.4s
-_SHIMMER_DIVISOR = 2            # shimmer advances every N bloom frames
-
-# Shimmer palette — one bright "peak" cell sweeps across the verb, with two
-# flank cells receiving softer highlights so the glim feels like a wave
-# instead of a hard cursor.
-_SHIMMER_PEAK  = "#FFFFFF"
-_SHIMMER_FLANK = "#FFE780"
-
-
-def _shimmer_text(text: str, position: int, base_color: str) -> Text:
-    """Render `text` with a glimmer of light at `position`.
-
-    The character at `position` is bright white; characters at ±1 are warm
-    light yellow; everything else uses `base_color`. Combined with a position
-    that advances each frame, this reads as a glow sweeping across the word.
-    """
-    out = Text()
-    for i, ch in enumerate(text):
-        distance = abs(i - position)
-        if distance == 0:
-            style = f"bold {_SHIMMER_PEAK}"
-        elif distance == 1:
-            style = f"bold {_SHIMMER_FLANK}"
-        else:
-            style = f"bold {base_color}"
-        out.append(ch, style=style)
-    return out
-
-
-class MiniBeeSpinner:
-    """Single-line pulsing-asterisk spinner with a rotating command verb.
-
-    Usage::
-
-        with MiniBeeSpinner("scrape"):
-            await do_request()
-
-    Renders one line: a Claude-style asterisk that blooms (· → ✻ → ·), a
-    short verb that rotates every ~2.4s ("Fetching" / "Rendering" / ...),
-    and an elapsed-time counter once the operation passes 0.5s.
-    """
-
-    def __init__(self, message: str = "") -> None:
-        self._label = message
-        # Resolve the verb cycle: per-command phrases if known, else just the
-        # label as a single static verb.
-        self._phrases = _PHRASES.get(message, [message] if message else ["Working"])
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def _animate(self) -> None:
-        import time
-
-        start = time.monotonic()
-        idx = 0
-        while not self._stop.is_set():
-            glyph, color = _HEX_BLOOM_FRAMES[idx % len(_HEX_BLOOM_FRAMES)]
-            phrase = self._phrases[(idx // _PHRASE_DURATION_FRAMES) % len(self._phrases)]
-            shimmer_pos = (idx // _SHIMMER_DIVISOR) % max(1, len(phrase))
-            elapsed = time.monotonic() - start
-
-            line = Text()
-            line.append(" ")
-            line.append(glyph, style=f"bold {color}")
-            line.append("  ")
-            line.append_text(_shimmer_text(phrase, shimmer_pos, BEE_YELLOW))
-            if elapsed >= 0.5:
-                line.append(f"  · {elapsed:.1f}s", style="dim")
-
-            with err_console.capture() as capture:
-                err_console.print(line, end="")
-            sys.stderr.write("\r\033[K" + capture.get())
-            sys.stderr.flush()
-
-            idx += 1
-            self._stop.wait(_FRAME_INTERVAL)
-
-        # Clear the spinner line.
-        sys.stderr.write("\r\033[K")
-        sys.stderr.flush()
-
-    def start(self) -> None:
-        # Disabled inside the REPL: the spinner's `\r`-rewrites would flow
-        # through patch_stdout and trigger a bottom-strip redraw on every
-        # frame, causing visible flicker. The REPL's toolbar conveys the
-        # "running" state instead.
-        if _repl_mode:
-            return
-        if not sys.stderr.isatty():
-            return
-        self._thread = threading.Thread(target=self._animate, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=1)
-
-    def __enter__(self) -> MiniBeeSpinner:
-        self.start()
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.stop()
 
 
 # -- Styled output helpers ---------------------------------------------------
@@ -453,113 +719,6 @@ def format_progress_line(
     if failure_pct is not None and failure_pct > 0:
         text.append(f"  Failures: {failure_pct:.0f}%", style=f"bold {BEE_RED}")
     return text
-
-
-# -- Live credit tracker (polls usage API during batch/crawl) ----------------
-
-
-class LiveCreditTracker:
-    """Background thread that polls the usage API every 20 seconds and prints
-    an updating honeycomb credit line to stderr.  Only active in REPL mode.
-
-    Usage::
-
-        with LiveCreditTracker(api_key, initial_remaining=33_000_000, total=50_000_000):
-            run_batch(...)
-    """
-
-    _POLL_INTERVAL = 20  # seconds (safe: 3× per minute, limit is 6×)
-
-    def __init__(
-        self,
-        api_key: str,
-        *,
-        initial_remaining: int | None = None,
-        total: int | None = None,
-    ) -> None:
-        self._api_key = api_key
-        self._remaining = initial_remaining
-        self._total = total
-        self._start_remaining = initial_remaining
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    # -- internal ------------------------------------------------------------
-
-    def _fetch(self) -> tuple[int, int] | None:
-        """Return (remaining, total) or None on error."""
-        import asyncio
-        import json as _json
-
-        from .client import Client
-        from .config import BASE_URL
-
-        try:
-            async def _go() -> tuple[int, int] | None:
-                async with Client(self._api_key, BASE_URL, timeout=10) as c:
-                    body, _, code = await c.usage()
-                    if code == 200:
-                        raw = _json.loads(body)
-                        used = raw.get("used_api_credit", 0) or 0
-                        total = raw.get("max_api_credit", 0) or 0
-                        return total - used, total
-                return None
-
-            return asyncio.run(_go())
-        except Exception:
-            return None
-
-    def _print_meter(self) -> None:
-        if self._remaining is None or self._total is None:
-            return
-        line = Text()
-        line.append("  ⬡ Credits: ", style=f"bold {BEE_YELLOW}")
-        line.append_text(format_honeycomb_meter(
-            self._total - self._remaining, self._total
-        ))
-        if self._start_remaining is not None:
-            consumed = self._start_remaining - self._remaining
-            if consumed > 0:
-                line.append(f"  (−{consumed:,} this session)", style="dim")
-        err_console.print(line)
-
-    def _run(self) -> None:
-        while not self._stop.wait(self._POLL_INTERVAL):
-            if self._stop.is_set():
-                break
-            result = self._fetch()
-            if result:
-                self._remaining, self._total = result
-                self._print_meter()
-
-    # -- public --------------------------------------------------------------
-
-    def start(self) -> None:
-        # Disabled inside the REPL. The REPL's bottom toolbar already shows
-        # credits + a usage gauge; running this thread additionally would
-        # repaint the bottom strip every ~0.5s via `\r`-rewrites that flow
-        # through patch_stdout, which is exactly what we see as flicker
-        # during a scrape. (Direct CLI mode — `scrapingbee scrape ...` outside
-        # the REPL — still gets the live meter on stderr as before.)
-        if _repl_mode:
-            return
-        # Print initial meter immediately if we have data
-        if self._remaining is not None:
-            self._print_meter()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2)
-
-    def __enter__(self) -> LiveCreditTracker:
-        self.start()
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.stop()
 
 
 # -- Honeycomb credit meter --------------------------------------------------

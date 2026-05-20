@@ -19,7 +19,6 @@ import click
 from .client import Client, parse_usage
 from .config import BASE_URL, get_api_key
 from .theme import (
-    LiveCreditTracker,
     echo_warning,
     err_console,
     format_honeycomb_trail,
@@ -403,18 +402,36 @@ def _release_usage_lock(lf: object) -> None:
 
 
 def get_batch_usage(api_key_flag: str | None) -> dict:
-    """Return usage info (max_concurrency, credits) from a live API call.
+    """Return usage info (max_concurrency, credits).
 
-    When SCRAPINGBEE_USAGE_CACHE=1 is set (test environments only), the file
-    cache is used to avoid 429 errors from repeated calls in the same session.
+    Inside the REPL the file cache (12 s TTL) is consulted first so the
+    several REPL-side callers (background refresher, batch / crawl
+    pre-flight) share a single live call per window and stay under the
+    ``/usage`` rate limit.
+
+    Direct CLI invocations (``scrapingbee crawl ...`` outside the REPL)
+    keep their original behaviour: a live call every time, unless the
+    legacy ``SCRAPINGBEE_USAGE_CACHE=1`` test escape hatch is set.
     """
     key = get_api_key(api_key_flag)
-    if os.environ.get("SCRAPINGBEE_USAGE_CACHE") == "1":
+    try:
+        from .theme import is_repl_mode
+        _in_repl = is_repl_mode()
+    except Exception:
+        _in_repl = False
+    cache_opt_in = (
+        _in_repl
+        or os.environ.get("SCRAPINGBEE_USAGE_CACHE") == "1"
+    )
+    if cache_opt_in:
         cached = read_usage_file_cache(key)
         if cached is not None:
             return cached
         result = asyncio.run(_fetch_usage_async(key))
-        write_usage_file_cache(key, result)
+        try:
+            write_usage_file_cache(key, result)
+        except Exception:
+            pass
         return result
     return asyncio.run(_fetch_usage_async(key))
 
@@ -549,6 +566,16 @@ async def run_batch_async(
     completed = 0
     failure_count = 0
     start_time = time.monotonic()
+    # Seed the REPL progress widget at 0/total so the user sees the
+    # honeycomb the moment the batch starts, not after the first item
+    # finishes. Without this, a slow first request can leave the user
+    # staring at silence for ~1s before any visual feedback.
+    if is_repl_mode() and show_progress and total > 0:
+        try:
+            from .theme import update_progress_state
+            update_progress_state(0, total, rps=None, eta=None, failure_pct=None)
+        except Exception:
+            pass
 
     async def run_one(i: int, inp: str) -> tuple[int, BatchResult]:
         nonlocal completed, failure_count
@@ -1321,31 +1348,26 @@ def run_api_batch(
     output_file: str | None = None,
     extract_field: str | None = None,
     fields: str | None = None,
-    usage_info: dict | None = None,
 ) -> None:
     """Run a batch of single-item API calls and write results."""
-    # In REPL mode show live credit updates every 20s during the batch.
-    initial_remaining = usage_info.get("credits") if usage_info else None
-    initial_total = usage_info.get("max_api_credit") if usage_info else None
-    with LiveCreditTracker(key, initial_remaining=initial_remaining, total=initial_total):
-        asyncio.run(
-            _run_api_batch_async(
-                key=key,
-                inputs=inputs,
-                concurrency=concurrency,
-                from_user=from_user,
-                skip_n=skip_n,
-                output_dir=output_dir,
-                verbose=verbose,
-                show_progress=show_progress,
-                api_call=api_call,
-                on_complete=on_complete,
-                output_format=output_format,
-                post_process=post_process,
-                update_csv_path=update_csv_path,
-                input_column=input_column,
-                output_file=output_file,
-                extract_field=extract_field,
-                fields=fields,
-            )
+    asyncio.run(
+        _run_api_batch_async(
+            key=key,
+            inputs=inputs,
+            concurrency=concurrency,
+            from_user=from_user,
+            skip_n=skip_n,
+            output_dir=output_dir,
+            verbose=verbose,
+            show_progress=show_progress,
+            api_call=api_call,
+            on_complete=on_complete,
+            output_format=output_format,
+            post_process=post_process,
+            update_csv_path=update_csv_path,
+            input_column=input_column,
+            output_file=output_file,
+            extract_field=extract_field,
+            fields=fields,
         )
+    )

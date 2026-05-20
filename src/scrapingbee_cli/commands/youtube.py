@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-from contextlib import nullcontext
 
 import click
 from click_option_group import optgroup
@@ -29,7 +28,6 @@ from ..cli_utils import (
 )
 from ..client import Client
 from ..config import BASE_URL, get_api_key
-from ..theme import MiniBeeSpinner, is_repl_mode
 
 YOUTUBE_UPLOAD_DATE = ["today", "last-hour", "this-week", "this-month", "this-year"]
 
@@ -252,7 +250,6 @@ def youtube_search_cmd(
             output_file=obj.get("output_file") or None,
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
-            usage_info=usage_info,
         )
         return
 
@@ -261,29 +258,27 @@ def youtube_search_cmd(
         raise SystemExit(1)
 
     async def _single() -> None:
-        _spinner = MiniBeeSpinner("youtube-search") if is_repl_mode() else nullcontext()
-        with _spinner:
-            async with Client(key, BASE_URL) as client:
-                data, headers, status_code = await client.youtube_search(
-                    query,
-                    upload_date=norm_val(upload_date),
-                    type=type_,
-                    duration=duration,
-                    sort_by=norm_val(sort_by),
-                    hd=parse_bool(hd),
-                    is_4k=parse_bool(is_4k),
-                    subtitles=parse_bool(subtitles),
-                    creative_commons=parse_bool(creative_commons),
-                    live=parse_bool(live),
-                    is_360=parse_bool(is_360),
-                    is_3d=parse_bool(is_3d),
-                    hdr=parse_bool(hdr),
-                    location=parse_bool(location),
-                    vr180=parse_bool(vr180),
-                    purchased=parse_bool(purchased),
-                    retries=int(obj.get("retries") or 3),
-                    backoff=float(obj.get("backoff") or 2.0),
-                )
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.youtube_search(
+                query,
+                upload_date=norm_val(upload_date),
+                type=type_,
+                duration=duration,
+                sort_by=norm_val(sort_by),
+                hd=parse_bool(hd),
+                is_4k=parse_bool(is_4k),
+                subtitles=parse_bool(subtitles),
+                creative_commons=parse_bool(creative_commons),
+                live=parse_bool(live),
+                is_360=parse_bool(is_360),
+                is_3d=parse_bool(is_3d),
+                hdr=parse_bool(hdr),
+                location=parse_bool(location),
+                vr180=parse_bool(vr180),
+                purchased=parse_bool(purchased),
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
+            )
         check_api_response(data, status_code)
         data = _normalize_youtube_search(data)
         write_output(
@@ -367,7 +362,6 @@ def youtube_metadata_cmd(
             output_file=obj.get("output_file") or None,
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
-            usage_info=usage_info,
         )
         return
 
@@ -376,14 +370,12 @@ def youtube_metadata_cmd(
         raise SystemExit(1)
 
     async def _single() -> None:
-        _spinner = MiniBeeSpinner("youtube-metadata") if is_repl_mode() else nullcontext()
-        with _spinner:
-            async with Client(key, BASE_URL) as client:
-                data, headers, status_code = await client.youtube_metadata(
-                    _extract_video_id(video_id),
-                    retries=int(obj.get("retries") or 3),
-                    backoff=float(obj.get("backoff") or 2.0),
-                )
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.youtube_metadata(
+                _extract_video_id(video_id),
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
+            )
         check_api_response(data, status_code)
         write_output(
             data,

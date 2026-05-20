@@ -765,7 +765,17 @@ class SessionState:
         # without a modifier, but wheel scroll stops). Alt+S toggles.
         self.mouse_mode: str = "scroll"
 
-    def apply_settings_to_args(self, args: list[str]) -> list[str]:
+    def apply_settings_to_args(
+        self, args: list[str], accepted: set[str] | None = None
+    ) -> list[str]:
+        """Append session defaults to ``args`` for any flag that:
+          - is not already present on the command line, AND
+          - is accepted by the target command (when ``accepted`` is given).
+
+        Without the ``accepted`` filter, session defaults would leak into
+        commands that don't take them (e.g. ``--json-response`` into
+        ``usage``), causing "No such option" errors.
+        """
         if not self.settings:
             return args
         present = {a for a in args if a.startswith("--")}
@@ -773,6 +783,8 @@ class SessionState:
         for key, value in self.settings.items():
             flag = f"--{key}"
             if flag in present:
+                continue
+            if accepted is not None and flag not in accepted:
                 continue
             out.extend([flag, value])
         return out
@@ -998,94 +1010,21 @@ def _make_toolbar(state: SessionState):
             width = shutil.get_terminal_size((80, 24)).columns
         segs: list[tuple[str, str]] = [("class:toolbar", "  ")]
 
-        # --- In-flight: running label + elapsed + rotating usage stats ───
-        # Layout: ``running · 12.3s`` pinned on the left, ``Ctrl+C to stop``
-        # pinned on the right, and a rotating stat (Used Session / Concurrency
-        # / Next Update) in the middle. The rotation cycles every 5s so the
-        # user can monitor credits being consumed during a long scrape
-        # without leaving the command.
-        if state.is_running:
-            segs.append(("class:toolbar.label", "running"))
-            if state.run_start is not None:
-                elapsed = time.monotonic() - state.run_start
-                segs.append(("class:toolbar", f"  ·  {elapsed:.1f}s"))
-
-            # Build rotating stat chunks (subset of the idle toolbar's info).
-            stat_chunks: list[list[tuple[str, str]]] = []
-            if state.api_key_set and state.credits is not None:
-                stat_chunks.append([
-                    ("class:toolbar.label", "Available "),
-                    ("class:toolbar.value", _format_credits(state.credits)),
-                ])
-            scu = state.session_credits_used if state.api_key_set else None
-            stat_chunks.append([
-                ("class:toolbar.label", "Used (Session) "),
-                ("class:toolbar.value", _format_credits(scu) if scu is not None else "N/A"),
-            ])
-            if state.api_key_set and state.max_concurrency is not None:
-                cur = state.current_concurrency if state.current_concurrency is not None else 0
-                stat_chunks.append([
-                    ("class:toolbar.label", "Concurrency "),
-                    ("class:toolbar.value", f"{cur}/{state.max_concurrency}"),
-                ])
-            if state.api_key_set:
-                nxt = state.seconds_until_next_refresh
-                if nxt is not None:
-                    stat_chunks.append([
-                        ("class:toolbar.label", "Next Update "),
-                        ("class:toolbar.value", f"{nxt}s"),
-                    ])
-
-            stop_hint = "Ctrl+C to stop"
-            stop_hint_len = len(stop_hint)
-            so_far = sum(len(t) for _, t in segs)
-            # Reserve room for: "  ·  <stat>  ..." + right-aligned stop hint
-            available = max(0, width - so_far - stop_hint_len - 6)
-
-            # Pick the stat chunk for this rotation tick — only if it fits.
-            if stat_chunks and available > 8:
-                idx = int(time.monotonic() / 5) % len(stat_chunks)
-                chunk = stat_chunks[idx]
-                chunk_len = sum(len(t) for _, t in chunk)
-                if chunk_len + 5 <= available:
-                    segs.append(("class:toolbar", "  ·  "))
-                    segs.extend(chunk)
-
-            # Setting chips still show below if any room remains
-            if state.settings:
-                so_far = sum(len(t) for _, t in segs)
-                budget = max(0, width - so_far - stop_hint_len - 4)
-                shown = 0
-                for k, v in state.settings.items():
-                    chip = f" {k}={v} "
-                    if budget < len(chip) + 2 and shown > 0:
-                        break
-                    segs.append(("class:toolbar", "  "))
-                    segs.append(("class:toolbar.chip", chip))
-                    budget -= len(chip) + 2
-                    shown += 1
-                remaining = len(state.settings) - shown
-                if remaining > 0:
-                    segs.append(("class:toolbar", "  "))
-                    segs.append(("class:toolbar.hint", f"+{remaining} more"))
-
-            # Right-align "Ctrl+C to stop" hint
-            used = sum(len(t) for _, t in segs)
-            if width - used > stop_hint_len + 4:
-                segs.append(("class:toolbar", " " * max(2, width - used - stop_hint_len - 2)))
-                segs.append(("class:toolbar.hint", stop_hint))
-            return segs
-
-        # --- Idle: build all fields, then either render statically or paginate
-        # When the joined toolbar text exceeds the terminal width we'd
-        # otherwise emit a line longer than the screen — the terminal soft-
-        # wraps it into a phantom 2nd row that prompt_toolkit doesn't know
-        # about, leaving a ghost-toolbar in scrollback on resize. To keep
-        # everything visible without scrolling jitter, we greedy-pack fields
-        # into "pages" that each fit, then cycle pages every PAGE_SECONDS.
-        # Each page is rendered statically — no per-frame motion — so it
-        # reads cleanly and doesn't waste redraws.
+        # Unified toolbar pipeline for both idle and in-flight modes:
+        # build fields → greedy-pack into pages → render the current
+        # page with a pinned hint on the right. While running we
+        # prepend a live ``12.3s`` elapsed-time field so the user can
+        # see how long the command has been going; the bee verb that
+        # used to live here now alternates with bee facts in the dim
+        # row above the input.
         fields: list[list[tuple[str, str]]] = []
+
+        if state.is_running and state.run_start is not None:
+            elapsed = time.monotonic() - state.run_start
+            fields.append([
+                ("class:toolbar.label", "Elapsed "),
+                ("class:toolbar.value", f"{elapsed:.1f}s"),
+            ])
 
         # Available Credits
         avail: list[tuple[str, str]] = [("class:toolbar.label", "Available Credits ")]
@@ -1133,19 +1072,22 @@ def _make_toolbar(state: SessionState):
         # ✓/✗ footer are already visible in the scrollback echo, so a
         # toolbar copy doesn't add information and just consumes width.)
 
-        # Session setting chips
+        # Session setting chips — one chunk PER setting so the pagination
+        # loop below can split them across pages. Long values (e.g. a
+        # multi-step ``--js-scenario`` JSON blob) are truncated so a
+        # single chip never overflows the toolbar line.
         if state.settings:
-            chip_segs: list[tuple[str, str]] = []
+            _MAX_CHIP_VALUE = 28
             for k, v in state.settings.items():
-                if chip_segs:
-                    chip_segs.append(("class:toolbar", " "))
-                chip_segs.append(("class:toolbar.chip", f" {k}={v} "))
-            fields.append(chip_segs)
+                display_v = v if len(v) <= _MAX_CHIP_VALUE else v[: _MAX_CHIP_VALUE - 1] + "…"
+                fields.append([("class:toolbar.chip", f" {k}={display_v} ")])
 
-        # Hint chunk — surfaces the active mouse mode and how to switch.
-        # Replaces the older "tab · ↑↓ · :help · :q" cheat-sheet, since the
-        # mode toggle is the one keybinding the user might actually need
-        # to *change* during a session. The other shortcuts are in :help.
+        # Hint chunk pinned bottom-right. Always shows the active mouse
+        # mode label (Scroll / Select) so the user can see what mouse
+        # behaviour they have at a glance — even while a command is
+        # running. The Shift+Tab toggle is documented in ``:help`` to
+        # keep this strip clean. While running we additionally append
+        # ``Ctrl+C to stop`` so the cancel affordance stays visible.
         if not state.api_key_set:
             hint_text = "type `auth` to set API key"
             hint_chunk: list[tuple[str, str]] = [("class:toolbar.hint", hint_text)]
@@ -1153,10 +1095,9 @@ def _make_toolbar(state: SessionState):
             mode_label = (
                 "Scroll mode" if state.mouse_mode == "scroll" else "Select mode"
             )
-            hint_chunk = [
-                ("class:toolbar.value", mode_label),
-                ("class:toolbar.hint", "  ·  Shift+Tab to switch"),
-            ]
+            hint_chunk = [("class:toolbar.value", mode_label)]
+            if state.is_running:
+                hint_chunk.append(("class:toolbar.hint", "  ·  Ctrl+C to stop"))
 
         LEADING = "  "
         SEP = "  ·  "
@@ -1533,13 +1474,31 @@ def _print_help(commands: dict[str, str]) -> None:
     for cmd, desc in [
         (":help, :?",   "Show this command list"),
         (":clear",      "Clear the screen"),
-        (":view",       "Scroll the last command's output ('crawl' = crawl log, or pass a path)"),
+        (":view",       "Scroll the last command's output (auto-picks crawl.log after crawl; pass a path to view any file)"),
         (":set K=V ...", "Set one or more session defaults"),
         (":unset K",    "Remove a session default ('all' or '*' clears every)"),
         (":reset",      "Clear every session default"),
-        (":show",       "Show current session defaults"),
+        (":show, :list", "Show current session defaults"),
         ("!<cmd>",      "Run a shell command (requires unsafe mode)"),
         (":q, :quit",   "Quit the REPL"),
+    ]:
+        _print_row(cmd, desc)
+    err_console.print()
+    err_console.print(f"  [{BEE_DIM}]Shortcuts[/]")
+    for cmd, desc in [
+        ("Tab",          "Complete (inline if 1 match, popup if many, ghost word otherwise)"),
+        ("Shift+Tab",    "Cycle popup back / toggle Scroll ↔ Select mode"),
+        ("Esc",          "Close the completion popup"),
+        ("→",            "Accept the next word of the ghost suggestion"),
+        ("End",          "Accept the whole ghost suggestion"),
+        ("↑ / ↓",        "Walk history (single-line) / move cursor (multi-line)"),
+        ("PgUp / PgDn",  "Scroll the scrollback buffer up / down"),
+        ("Ctrl+Home/End","Jump to top / bottom of scrollback"),
+        ("Ctrl+J",       "Insert a newline (multi-line compose; also Alt/Option+Enter)"),
+        ("Ctrl+W",       "Delete the word before the cursor (also Alt/Option+⌫)"),
+        ("Click",        "Open a highlighted path in Finder / default app"),
+        ("Ctrl+C",       "Stop running command / cancel queue / clear multi-line / exit when idle"),
+        ("Ctrl+D",       "Exit the REPL (when no command is running)"),
     ]:
         _print_row(cmd, desc)
     err_console.print()
@@ -1603,11 +1562,11 @@ def _open_pager(path: str) -> None:
 
     raw_text = Path(path).read_text(encoding="utf-8", errors="replace")
 
-    # If the cached output is valid JSON, prepare a pretty-printed
-    # version up-front. We default to pretty mode so the user sees the
-    # human-readable form first; `r` toggles raw if they need to grep
-    # the original bytes. When the content isn't JSON, pretty is
-    # unavailable and we stick with raw.
+    # If the cached output is valid JSON or recognisable HTML, prepare
+    # a pretty-printed version up-front. We default to pretty mode so
+    # the user sees the human-readable form first; ``r`` toggles raw
+    # if they need to grep the original bytes. When the content
+    # matches neither, pretty is unavailable and we stick with raw.
     pretty_text: str | None
     try:
         pretty_text = json.dumps(
@@ -1615,6 +1574,20 @@ def _open_pager(path: str) -> None:
         )
     except Exception:
         pretty_text = None
+    if pretty_text is None:
+        # Cheap heuristic: looks like HTML if a leading non-whitespace
+        # chunk starts with ``<``. lxml accepts both well-formed XML
+        # and tag-soup HTML, so this stays fast and lenient.
+        stripped = raw_text.lstrip()
+        if stripped.startswith("<"):
+            try:
+                from lxml import etree as _etree, html as _lxml_html
+                tree = _lxml_html.fromstring(raw_text)
+                pretty_text = _etree.tostring(
+                    tree, pretty_print=True, encoding="unicode", method="html"
+                )
+            except Exception:
+                pretty_text = None
 
     mode = ["pretty" if pretty_text is not None else "raw"]
 
@@ -1878,7 +1851,7 @@ def _handle_meta(
             sys.stderr.write("\033[2J\033[H")
             sys.stderr.flush()
         return "ok"
-    if head_low == ":show":
+    if head_low in (":show", ":list"):
         if not state.settings:
             err_console.print(f"  [{BEE_DIM}]No session defaults set.[/]")
         else:
@@ -1894,38 +1867,27 @@ def _handle_meta(
 
         cache_dir = Path.home() / ".cache" / "scrapingbee-cli"
         crawl_log = cache_dir / "crawl.log"
+        last_output = cache_dir / "last-output"
         target_arg = rest.strip()
-        # `:view`                  → last command's output
-        # `:view crawl`            → the crawl log written by the most recent
-        #                            `crawl` run in REPL mode
-        # `:view crawl <log-path>` → also alias-mode, but ONLY when the
-        #                            path after ``crawl`` resolves to the
-        #                            actual crawl.log on disk. This lets
-        #                            users copy the full hint line ("crawl
-        #                            /Users/.../crawl.log") into the
-        #                            prompt; random text after ``crawl``
-        #                            falls through to "file not found"
-        #                            instead of silently opening the log.
-        # `:view <path>`           → arbitrary file (must exist)
+        # `:view`         → whatever the most-recent command produced.
+        #                   ``crawl`` writes a Scrapy log to crawl.log; every
+        #                   other API command (scrape, google, batch items,
+        #                   …) writes its response body to last-output. So
+        #                   the routing key is ``state.last_command``.
+        # `:view crawl`   → backwards-compat shortcut for crawl.log; still
+        #                   useful when the user just wants to peek at the
+        #                   log without having re-run crawl most recently.
+        # `:view <path>`  → arbitrary file (must exist).
         if not target_arg:
-            target_path = cache_dir / "last-output"
-            missing_msg = "no recent output to view"
+            if state.last_command == "crawl" and crawl_log.exists():
+                target_path = crawl_log
+                missing_msg = "no crawl log yet — run `crawl ...` first"
+            else:
+                target_path = last_output
+                missing_msg = "no recent output to view"
         elif target_arg.lower() == "crawl":
             target_path = crawl_log
             missing_msg = "no crawl log yet — run `crawl ...` first"
-        elif target_arg.lower().startswith("crawl "):
-            after = target_arg[len("crawl "):].strip()
-            try:
-                supplied_path = Path(after).expanduser().resolve(strict=False)
-                if supplied_path == crawl_log.resolve(strict=False):
-                    target_path = crawl_log
-                    missing_msg = "no crawl log yet — run `crawl ...` first"
-                else:
-                    target_path = Path(target_arg).expanduser()
-                    missing_msg = f"file not found: {target_arg}"
-            except Exception:
-                target_path = Path(target_arg).expanduser()
-                missing_msg = f"file not found: {target_arg}"
         else:
             target_path = Path(target_arg).expanduser()
             missing_msg = f"file not found: {target_arg}"
@@ -2054,7 +2016,7 @@ def _make_completer(
 
     meta_cmds = [
         ":help", ":?", ":clear", ":view", ":set", ":unset", ":reset", ":show",
-        ":q", ":quit",
+        ":list", ":q", ":quit",
     ]
 
     # Precompute the union of every flag known to any command. Used as a
@@ -2092,18 +2054,31 @@ def _make_completer(
             flags_for_cmd = (
                 command_flags[cmd_name] if cmd_known else _all_known_flags
             )
-            last = words[-1] if words else ""
-            prev = words[-2] if len(words) >= 2 else ""
+            ends_with_space = text.endswith(" ")
+            last_word = words[-1] if words else ""
+            # When the buffer ends with a space the user has *finished*
+            # typing the previous arg and is starting a new one. The
+            # "current partial" is empty; the "previous arg" (used for
+            # bool/choice value suggestions) shifts to the last typed
+            # word. Earlier this was off-by-one and would cause Tab to
+            # replace the wrong span — e.g. ``--verbose `` + Tab would
+            # corrupt to ``---verbose``.
+            if ends_with_space:
+                last = ""
+                prev = last_word
+            else:
+                last = last_word
+                prev = words[-2] if len(words) >= 2 else ""
 
-            if text.endswith(" ") and prev in bool_flags:
+            if ends_with_space and prev in bool_flags:
                 yield Completion("true", display_meta="enable")
                 yield Completion("false", display_meta="disable")
                 return
-            if text.endswith(" ") and prev in choice_flags:
+            if ends_with_space and prev in choice_flags:
                 for v in choice_flags[prev]:
                     yield Completion(v)
                 return
-            if len(words) >= 2 and not last.startswith("-"):
+            if (not ends_with_space) and len(words) >= 2 and not last.startswith("-"):
                 if prev in bool_flags:
                     for v in ("true", "false"):
                         if v.startswith(last.lower()):
@@ -2114,7 +2089,13 @@ def _make_completer(
                         if v.startswith(last.lower()):
                             yield Completion(v, start_position=-len(last))
                     return
-            if last.startswith("-"):
+            # Flag completions: either the user is typing a partial flag
+            # (``--ver``), or they're at a trailing space ready for a
+            # new flag (``last == ""`` here matches every flag). In both
+            # cases start_position is ``-len(last)`` — which is 0 in
+            # the trailing-space case, so flags get inserted at the
+            # cursor without disturbing previous text.
+            if last.startswith("-") or (ends_with_space and last == ""):
                 meta_label = "" if cmd_known else "(unknown command)"
                 for flag in flags_for_cmd:
                     if flag.startswith(last):
@@ -2184,16 +2165,30 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # ``CancelledError`` on the await, which propagates out cleanly
     # (the worker's except clause turns it into "stopped").
     import asyncio as _asyncio_mod
+    import threading as _threading_mod
 
     _active_worker_loop: list[Any] = [None]
     _original_asyncio_run = _asyncio_mod.run
+    _main_thread = _threading_mod.main_thread()
 
     def _tracking_loop_factory():
         loop = _asyncio_mod.new_event_loop()
+        # CRITICAL: only track loops that belong to *worker* threads. The
+        # main thread's loop is prompt_toolkit's own — cancelling tasks
+        # on it kills the entire REPL. ``app.run()`` calls
+        # ``asyncio.run`` (which routes through us here), so without this
+        # guard the very first call at REPL startup registers the main
+        # loop as the "worker" loop and any subsequent Ctrl+C tears the
+        # REPL down with a CancelledError.
+        if _threading_mod.current_thread() is _main_thread:
+            return loop
         _active_worker_loop[0] = loop
         return loop
 
     def _tracking_asyncio_run(main, *, debug=None, loop_factory=None):
+        # Same guard on the cleanup side — only clear the worker-loop
+        # ref if THIS call was a worker-thread call. If we're on the main
+        # thread we never touched the ref in the first place.
         try:
             return _original_asyncio_run(
                 main,
@@ -2201,7 +2196,8 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 loop_factory=loop_factory or _tracking_loop_factory,
             )
         finally:
-            _active_worker_loop[0] = None
+            if _threading_mod.current_thread() is not _main_thread:
+                _active_worker_loop[0] = None
 
     _asyncio_mod.run = _tracking_asyncio_run
 
@@ -2256,7 +2252,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # large window isn't disrupted.
     try:
         _cur_cols, _cur_rows = shutil.get_terminal_size((80, 24))
-        _MIN_COLS, _MIN_ROWS = 100, 30
+        _MIN_COLS, _MIN_ROWS = 150, 50
         if _cur_cols < _MIN_COLS or _cur_rows < _MIN_ROWS:
             _new_cols = max(_cur_cols, _MIN_COLS)
             _new_rows = max(_cur_rows, _MIN_ROWS)
@@ -2281,31 +2277,14 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # 3-row honeycomb progress widget in place rather than appending a new
     # row per completion. The renderer keeps track of how many lines the
     # previous frame consumed so the next frame overwrites the same band.
+    # Install a no-op progress renderer in the REPL. ``emit_progress_lines``
+    # would otherwise fall back to writing the honeycomb directly to
+    # stderr — which lands in scrollback via patch_stdout and causes
+    # duplicate rows. The fixed ``crawl_status_window`` widget renders
+    # the live honeycomb directly from ``_progress_state``, so the
+    # scrollback path is no longer needed in REPL mode.
     from .theme import set_progress_renderer as _set_progress_renderer
-
-    _progress_line_count = [0]
-
-    def _render_progress(rendered_lines: list[str]) -> None:
-        from prompt_toolkit.formatted_text import ANSI, to_formatted_text
-
-        fragments_per_line: list[list[tuple[str, str]]] = []
-        for raw in rendered_lines:
-            try:
-                fragments_per_line.append(list(to_formatted_text(ANSI(raw))))
-            except Exception:
-                fragments_per_line.append([("", raw)])
-        n = len(fragments_per_line)
-        prev = _progress_line_count[0]
-        if prev > 0 and prev == n:
-            scrollback.replace_last_n_lines(prev, fragments_per_line)
-        else:
-            # First frame, or row-count changed (rare): append fresh and
-            # remember how many lines to overwrite next time.
-            for f in fragments_per_line:
-                scrollback.append_fragments(f)
-        _progress_line_count[0] = n
-
-    _set_progress_renderer(_render_progress)
+    _set_progress_renderer(lambda _lines: None)
 
     # ── First-run API key state ─────────────────────────────────────────────
     # When no API key is configured we open the REPL UI in a "first-run"
@@ -2356,6 +2335,23 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # KeyboardInterrupt into the worker thread alone doesn't fire while the
     # thread is blocked reading the subprocess's stdout in a C-level read().
     current_subprocess: list[Any] = [None]
+    # Monotonic timestamp of the most recent Ctrl+C while a command was
+    # running. Lets the next Ctrl+C escalate from SIGTERM → SIGKILL if
+    # the user is impatient (subprocess didn't exit within 2 s).
+    _last_ctrl_c_time: list[float] = [0.0]
+    # Queue of pending commands. Populated when ``_submit`` receives a
+    # buffer with newlines (typically from a multi-line paste) — only
+    # the first line runs immediately, the rest wait their turn.
+    # ``_ticker`` drains the queue once the input lock clears.
+    _pending_commands: list[str] = []
+    # ``_multiline_visible[0]`` toggles the input buffer between single-
+    # line and multi-line mode. Default False (single-line). Multi-line
+    # paste flips it True so the pasted commands stick in the buffer
+    # (otherwise prompt_toolkit's single-line buffer would strip the
+    # newlines on insert). The user can then edit each line and press
+    # Enter to submit the whole batch — ``_submit`` already splits
+    # multi-line text into the queue. Reset on submit / Ctrl+C.
+    _multiline_visible: list[bool] = [False]
 
     input_buffer = Buffer(
         history=history,
@@ -2369,16 +2365,21 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             history=history,
             is_disabled=lambda: _first_run_needs_key[0],
         ),
-        multiline=False,
+        multiline=Condition(lambda: _multiline_visible[0]),
         read_only=Condition(lambda: is_input_locked[0]),
     )
 
-    def _line_prefix(line_no, _wrap_count):
-        if line_no == 0:
-            if _first_run_needs_key[0]:
-                return [("class:promptmark", "API key: ")]
-            return [("class:promptmark", "❯ ")]
-        return [("", "  ")]
+    def _line_prefix(line_no, wrap_count):
+        # ``❯`` marks the START of a logical command line — both the
+        # first line and any subsequent line introduced by an explicit
+        # newline (multi-line paste or Alt+Enter). Visual wraps of a
+        # single long command get the continuation indent instead, so
+        # one long command stays visually one command.
+        if wrap_count > 0:
+            return [("", "  ")]
+        if line_no == 0 and _first_run_needs_key[0]:
+            return [("class:promptmark", "API key: ")]
+        return [("class:promptmark", "❯ ")]
 
     # While a command is in flight we collapse the input window's height to
     # 0 — instead of hiding it via ConditionalContainer. Hiding via Conditional
@@ -2451,6 +2452,402 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         filter=Condition(lambda: state.is_running),
     )
 
+    # ── Bee-blurb row (only while a command is running) ─────────────────────
+    # A single dim italic line just above the input that alternates every
+    # ~5 seconds between a bee fact ("Did you know? Bees have 5 eyes.")
+    # and a bee verb ("pollinating…"). Adds personality during long
+    # scrapes / crawls without competing with the shimmering command
+    # line right above it. Hidden when idle so the prompt is the only
+    # thing below the scrollback.
+    def _bee_fact_text() -> list[tuple[str, str]]:
+        if not state.is_running:
+            return []
+        from .theme import current_bee_blurb
+
+        blurb = current_bee_blurb(state.tick)
+        return [(f"italic {BEE_DIM}", f"  {blurb}")]
+
+    # Shared FormattedTextControl that forwards wheel-scroll events to
+    # the scrollback buffer. Used for every fixed-area Window (banner,
+    # crawl status, bee facts) so the user can scroll regardless of
+    # where their mouse pointer is — without this, mouse events that
+    # land on the fixed widgets get dropped because those windows
+    # don't have their own scroll handler.
+    from prompt_toolkit.mouse_events import (
+        MouseEventType as _MET,
+        MouseModifier as _MM,
+    )
+    from prompt_toolkit.layout.controls import FormattedTextControl as _PTFTC
+
+    # ── Path detection for Ctrl/Alt+Click open ───────────────────────────────
+    # Matches just the *start* of a path candidate — absolute (``/``),
+    # home-relative (``~/``), or directory-relative (``./``, ``../``).
+    # The lookbehind excludes word chars and ``:`` so URLs like
+    # ``http://...`` don't match their ``//path`` suffix as a path
+    # start. From each matched start, ``_find_path_at`` greedily
+    # extends to end of line and trims back at whitespace / slash
+    # boundaries until it finds the longest substring that exists on
+    # disk. This is what lets real-world paths with spaces work —
+    # ``/Applications/Some App.app``, ``~/Library/Application Support/...``,
+    # ``/var/folders/.../Screenshot 2026-05-18 at 11.44.12 PM.png``.
+    _PATH_START_RE = re.compile(r"(?<![\w:])((?:\.{1,2}|~)?/)")
+    _PATH_TRIM_CHARS = ".,;:!?)]}> '\"\t"
+
+    def _resolve_path_str(raw: str) -> str:
+        if raw.startswith("~/"):
+            return os.path.expanduser(raw)
+        if raw.startswith(("./", "../")):
+            return os.path.abspath(raw)
+        return raw
+
+    def _resolve_clicked_path(raw: str) -> str | None:
+        """Backwards-compat single-string resolver: return the resolved
+        absolute path if it exists, else ``None``.
+        """
+        resolved = _resolve_path_str(raw)
+        return resolved if os.path.exists(resolved) else None
+
+    def _open_path(path: str) -> None:
+        """Open ``path`` with the OS default handler (Finder, Explorer,
+        ``xdg-open``). Non-blocking; failures are silently swallowed so
+        a broken handler doesn't crash the REPL.
+        """
+        import platform
+        import subprocess
+        system = platform.system()
+        try:
+            if system == "Darwin":
+                subprocess.Popen(["open", path])
+            elif system == "Windows":
+                os.startfile(path)  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception:
+            pass
+
+    # The scrollback renderer caches the visible visual rows here so the
+    # click handler can find what text was at the click position without
+    # re-running expensive layout calculations.
+    _last_scrollback_view: dict[str, list] = {"rows": []}
+
+    class _ScrollForwardingFTC(_PTFTC):
+        """Wheel forwarder + optional modifier+click → path opener.
+
+        ``click_handler`` is invoked on MOUSE_DOWN events that carry a
+        modifier (Ctrl, Alt, or Shift). Plain clicks are ignored so the
+        terminal's native drag-select stays functional.
+        """
+
+        _click_handler = None
+
+        def set_click_handler(self, handler) -> None:
+            self._click_handler = handler
+
+        def mouse_handler(self, mouse_event):
+            et = mouse_event.event_type
+            if et == _MET.SCROLL_UP:
+                scrollback.scroll_up(1)
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+                return None
+            if et == _MET.SCROLL_DOWN:
+                scrollback.scroll_down(1)
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+                return None
+            if et == _MET.MOUSE_DOWN and self._click_handler is not None:
+                # Plain click opens highlighted paths. The scrollback is
+                # read-only so a click has no other purpose there. The
+                # click handler returns NotImplemented when the click
+                # didn't land on a path, which falls through to default
+                # mouse handling — drag-to-select still works in Select
+                # mode (toggle with Shift+Tab) because that mode turns
+                # mouse capture off entirely.
+                try:
+                    return self._click_handler(mouse_event)
+                except Exception:
+                    pass
+            return NotImplemented
+
+    # ── Path-existence cache for render-time linkification ───────────────────
+    # Path detection runs on every invalidate (10 Hz ticker + every
+    # keystroke), so a naive ``os.path.exists`` per match would issue
+    # thousands of stat() syscalls per second. Cache the result for
+    # 30 s — long enough to be cheap, short enough that a file written
+    # during a crawl shows up as clickable within half a minute.
+    _path_exists_cache: dict[str, tuple[float, bool]] = {}
+    _PATH_EXISTS_TTL = 30.0
+
+    def _path_exists_cached(path: str) -> bool:
+        now = time.monotonic()
+        hit = _path_exists_cache.get(path)
+        if hit is not None and (now - hit[0]) < _PATH_EXISTS_TTL:
+            return hit[1]
+        try:
+            exists = os.path.exists(path)
+        except Exception:
+            exists = False
+        _path_exists_cache[path] = (now, exists)
+        if len(_path_exists_cache) > 512:
+            cutoff = sorted(
+                _path_exists_cache.items(), key=lambda kv: kv[1][0]
+            )[:128]
+            for k, _ in cutoff:
+                _path_exists_cache.pop(k, None)
+        return exists
+
+    def _find_path_at(text: str, start: int) -> tuple[int, str | None]:
+        """Greedy-then-shrink: starting at ``start``, take everything up
+        to end-of-line / clear delimiter, then trim back at whitespace
+        and slash boundaries until the substring exists on disk.
+        Returns ``(end_index, raw_match)`` or ``(start, None)`` if no
+        prefix resolves to an existing path.
+        """
+        end = start
+        while end < len(text) and text[end] not in '\n\r"\'<>|`':
+            end += 1
+        while end > start:
+            candidate = text[start:end].rstrip(_PATH_TRIM_CHARS)
+            if len(candidate) < 2:
+                return (start, None)
+            resolved = _resolve_path_str(candidate)
+            if _path_exists_cached(resolved):
+                return (start + len(candidate), candidate)
+            # Shrink at the rightmost of whitespace or colon — both are
+            # common boundaries between a real path and trailing text:
+            #   "/tmp/foo bar baz"   → trim at last space
+            #   "/tmp/foo.py:42:10"  → trim at the colon (line/col suffix)
+            # Then fall back to the last slash if neither produced a hit.
+            last_space = max(candidate.rfind(" "), candidate.rfind("\t"))
+            last_colon = candidate.rfind(":")
+            last_punct = max(last_space, last_colon)
+            if last_punct > 0:
+                end = start + last_punct
+                continue
+            last_slash = candidate.rfind("/")
+            if last_slash > 0:
+                end = start + last_slash
+                continue
+            return (start, None)
+        return (start, None)
+
+    def _existing_paths_in(text: str):
+        """Yield ``(start, end, raw)`` for every existing path substring
+        in ``text``. Non-overlapping; resumes scanning past each match.
+        """
+        i = 0
+        while i < len(text):
+            m = _PATH_START_RE.search(text, i)
+            if not m:
+                break
+            start = m.start()
+            end, raw = _find_path_at(text, start)
+            if raw is not None:
+                yield (start, end, raw)
+                i = end
+            else:
+                # No existing path here — advance past the ``/`` so we
+                # don't infinite-loop on the same candidate start.
+                i = m.end()
+
+    def _scrollback_click_handler(mouse_event):
+        """Resolve a modifier-click on the scrollback to a path open.
+        Looks at the visual row at click.y and the existing path-like
+        substring spanning click.x — opens it if found.
+        """
+        rows = _last_scrollback_view.get("rows") or []
+        pos = mouse_event.position
+        y, x = pos.y, pos.x
+        if y < 0 or y >= len(rows):
+            return NotImplemented
+        text = "".join(t for _, t in rows[y])
+        for start, end, raw in _existing_paths_in(text):
+            if start <= x < end:
+                _open_path(_resolve_path_str(raw))
+                return None
+        return NotImplemented
+
+    def _styled_with_links(
+        fragments: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        """Re-emit each fragment with brand-yellow + underline applied
+        to any path-like substring that exists on disk. The detection
+        runs on the concatenated text of the row so paths split across
+        style boundaries (e.g. when ANSI styling colours just the
+        filename) still get caught.
+        """
+        if not fragments:
+            return fragments
+        text = "".join(t for _, t in fragments)
+        if "/" not in text and "~" not in text:
+            return fragments
+        # Build an offset map: position → (fragment_index, char_offset_in_fragment).
+        # Used to split fragments at path boundaries.
+        spans = list(_existing_paths_in(text))
+        if not spans:
+            return fragments
+        # Walk fragments + spans together, splitting where needed.
+        out: list[tuple[str, str]] = []
+        cursor = 0  # absolute offset in concatenated text
+        span_iter = iter(spans)
+        cur_span = next(span_iter, None)
+        for style, frag_text in fragments:
+            if not frag_text:
+                out.append((style, frag_text))
+                continue
+            frag_end = cursor + len(frag_text)
+            i = 0
+            while i < len(frag_text):
+                # Skip past consumed spans.
+                while cur_span is not None and cur_span[1] <= cursor + i:
+                    cur_span = next(span_iter, None)
+                if cur_span is None or cur_span[0] >= frag_end:
+                    out.append((style, frag_text[i:]))
+                    i = len(frag_text)
+                    break
+                span_start, span_end, _raw = cur_span
+                local_start = max(0, span_start - cursor)
+                local_end = min(len(frag_text), span_end - cursor)
+                if local_start > i:
+                    out.append((style, frag_text[i:local_start]))
+                link_style = f"{style} underline fg:{BEE_YELLOW}".strip()
+                out.append((link_style, frag_text[local_start:local_end]))
+                i = local_end
+            cursor = frag_end
+        return out
+
+    bee_fact_window = ConditionalContainer(
+        content=Window(
+            content=_ScrollForwardingFTC(_bee_fact_text),
+            height=D.exact(1),
+        ),
+        filter=Condition(lambda: state.is_running),
+    )
+
+    # ── Crawl status line (fixed Window, not scrollback) ────────────────────
+    # Originally we rendered this via ``emit_progress_lines`` which
+    # APPENDS / REPLACES tail rows of the scrollback. That works for
+    # batch (writes between ticks are file writes), but crawl pumps
+    # Scrapy logs into stderr → scrollback constantly. Every Scrapy
+    # log line invalidated the "last N lines are mine" assumption,
+    # causing the widget to multiply into ghost copies interleaved
+    # with logs. A fixed layout Window sits at a known position and
+    # gets re-rendered each frame — no scrollback noise.
+    def _has_crawl_status_safe() -> bool:
+        try:
+            from .theme import has_crawl_status
+            return has_crawl_status()
+        except Exception:
+            return False
+
+    def _has_active_job_status() -> bool:
+        """True when the fixed task widget should be visible — either a
+        crawl is in flight (``_crawl_status``) or a batch is reporting
+        progress (``_progress_state``). Used as the ConditionalContainer
+        filter for ``crawl_status_window``."""
+        if _has_crawl_status_safe():
+            return True
+        try:
+            from .theme import has_progress_state
+            return has_progress_state()
+        except Exception:
+            return False
+
+    def _crawl_status_text() -> list[tuple[str, str]]:
+        """Build the fragments for the active-job status widget pinned
+        right below the (compact) banner.
+
+        Layout:
+          - Honeycomb progress bar + counter, when ``_progress_state``
+            is set (crawl-with-known-total or any batch).
+          - ``<phase>: <url>  (X fetched[, Y saved])`` line ONLY when a
+            crawl is in flight (``_crawl_status`` is set). Batch has no
+            per-item URL to show, so its widget is honeycomb-only.
+        """
+        from . import theme as _theme  # live module reference
+        from .theme import BEE_WHITE, format_honeycomb_grid, get_crawl_status
+        cs = get_crawl_status()
+        ps = getattr(_theme, "_progress_state", None)
+        if cs is None and ps is None:
+            return []
+
+        frags: list[tuple[str, str]] = []
+
+        # Honeycomb row when progress total is known.
+        if ps is not None:
+            try:
+                rows = format_honeycomb_grid(
+                    completed=ps["completed"],
+                    total=ps["total"],
+                    rps=ps.get("rps"),
+                    eta=ps.get("eta"),
+                    failure_pct=ps.get("failure_pct"),
+                    animate=True,
+                )
+                for i, row_text in enumerate(rows):
+                    if i > 0 or (cs is not None):
+                        frags.append(("", "\n"))
+                    if i == 0 and cs is None:
+                        # First (and usually only) honeycomb row for
+                        # batch-only mode — no preceding \n.
+                        pass
+                    frags.extend(_text_to_fragments(row_text))
+                if cs is not None:
+                    # Separator between honeycomb and URL row.
+                    frags.append(("", "\n"))
+            except Exception:
+                pass
+
+        # URL / fetched-count line — crawl only.
+        if cs is not None:
+            phase = cs.get("phase") or "fetching"
+            url = cs.get("current_url")
+            fetched = cs.get("fetched") or 0
+            saved = cs.get("saved") or 0
+            if url and len(url) > 80:
+                url = url[:48] + "…" + url[-25:]
+            frags.append(("", "  "))
+            frags.append((f"bold {BEE_YELLOW}", f"{phase}: "))
+            if url:
+                frags.append((BEE_WHITE, url))
+            else:
+                frags.append((f"{BEE_DIM}", "…"))
+            suffix = f"  ({fetched} fetched"
+            if saved:
+                suffix += f", {saved} saved"
+            suffix += ")"
+            frags.append((f"{BEE_DIM}", suffix))
+        return frags
+
+    def _crawl_status_height() -> "D":
+        """Compute widget height based on what's shown.
+        Cases:
+          • crawl only (no progress)            → 1 row (URL line)
+          • crawl + progress (known total)      → 2 rows
+          • batch only (progress, no crawl URL) → 1 row (honeycomb only)
+        """
+        cs_set = _has_crawl_status_safe()
+        try:
+            from .theme import has_progress_state
+            ps_set = has_progress_state()
+        except Exception:
+            ps_set = False
+        if cs_set and ps_set:
+            return D.exact(2)
+        return D.exact(1)
+
+    crawl_status_window = ConditionalContainer(
+        content=Window(
+            content=_ScrollForwardingFTC(_crawl_status_text),
+            height=_crawl_status_height,
+        ),
+        filter=Condition(_has_active_job_status),
+    )
+
     # ── Scrollback Window — virtual buffer rendered as the top section ─────
     # This Window fills the vertical space above the running line / input /
     # toolbar. It renders whatever ScrollbackBuffer says is visible based
@@ -2464,11 +2861,30 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             _app = _get_app()
             if getattr(_app, "is_running", False):
                 size = _app.output.get_size()
-                # Reserve rows for the full banner + everything below the
-                # scrollback in the layout: banner_visual + spacer_top(1)
+                # Reserve rows for the banner + everything below the
+                # scrollback in the layout: banner_height + spacer_top(1)
                 # + separator(1) + running_or_input(1) + spacer_bottom(1)
-                # + toolbar(1) = banner_visual + 5.
-                reserved = _banner_visual_height + 5
+                # + toolbar(1) = banner + 5. Banner is now dynamic
+                # (full ASCII when idle, single line during crawl /
+                # batch), so we ask ``_banner_height`` for the live
+                # value rather than using the static visual height.
+                banner_h = 1 if _active_job_in_progress() else _banner_visual_height
+                reserved = banner_h + 5
+                if state.is_running:
+                    # bee_fact_window row above the (collapsed) input.
+                    reserved += 1
+                if _has_active_job_status():
+                    # The active-job status widget is pinned right under
+                    # the banner — 2 rows when both crawl URL and
+                    # honeycomb are shown, otherwise 1 row (URL-only
+                    # crawl, or honeycomb-only batch).
+                    cs_set = _has_crawl_status_safe()
+                    try:
+                        from .theme import has_progress_state
+                        ps_set = has_progress_state()
+                    except Exception:
+                        ps_set = False
+                    reserved += 2 if (cs_set and ps_set) else 1
                 height = max(1, size.rows - reserved)
                 width = max(1, size.columns)
         except Exception:
@@ -2479,6 +2895,14 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # full-width row never accidentally pushes the cursor onto the
         # next terminal row (which some terminals do at col == width).
         visual_rows = scrollback.get_visible_visual(height, max(1, width - 1))
+        # Re-style each row so path-like substrings that exist on disk
+        # are rendered in brand-yellow with an underline — a visible
+        # affordance for the Ctrl/Alt+Click open-in-Finder feature.
+        visual_rows = [_styled_with_links(row) for row in visual_rows]
+        # Cache so the modifier+click handler on the scrollback Window
+        # can look up what text was at the click position without
+        # recomputing wrap/scroll math.
+        _last_scrollback_view["rows"] = visual_rows
         out: list[tuple[str, str]] = []
         for i, row in enumerate(visual_rows):
             if i > 0:
@@ -2486,39 +2910,14 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             out.extend(row)
         return out
 
-    # FormattedTextControl subclass that routes mouse wheel / trackpad
-    # scroll events to our virtual buffer. prompt_toolkit's default mouse
-    # mode (1000) captures button events but NOT motion, so the terminal
-    # still handles drag-select natively (or with a modifier — Option on
-    # Mac, Shift on most Linux terminals — depending on the terminal).
-    from prompt_toolkit.mouse_events import MouseEventType
-    from prompt_toolkit.layout.controls import FormattedTextControl as _PTFTC
-
-    class _ScrollbackControl(_PTFTC):
-        def mouse_handler(self, mouse_event):
-            et = mouse_event.event_type
-            # 1 line per wheel/trackpad event keeps motion smooth — trackpads
-            # send a flurry of small events per gesture, so a tight step
-            # tracks the user's finger movement closely. Larger steps (3+)
-            # feel jumpy / snap-y.
-            if et == MouseEventType.SCROLL_UP:
-                scrollback.scroll_up(1)
-                try:
-                    app.invalidate()
-                except Exception:
-                    pass
-                return None
-            if et == MouseEventType.SCROLL_DOWN:
-                scrollback.scroll_down(1)
-                try:
-                    app.invalidate()
-                except Exception:
-                    pass
-                return None
-            return NotImplemented
-
+    # The scrollback window uses the same scroll-forwarding control as
+    # the rest of the fixed-area widgets so a wheel event anywhere on
+    # screen feeds the scrollback buffer. The click_handler hook
+    # additionally opens path-like substrings under Ctrl/Alt/Shift+Click.
+    _scrollback_ftc = _ScrollForwardingFTC(_scrollback_render)
+    _scrollback_ftc.set_click_handler(_scrollback_click_handler)
     scrollback_window = Window(
-        content=_ScrollbackControl(_scrollback_render),
+        content=_scrollback_ftc,
         # We pre-wrap content ourselves (see _split_fragments_to_width) so
         # each line passed to prompt_toolkit is already ≤ terminal width.
         # Disable prompt_toolkit's own line-wrapping so it doesn't try to
@@ -2536,6 +2935,16 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     _banner_visual_height = len(_SCRAPINGBEE_LOGO) + 5  # logo + 5 text rows
 
     def _banner_render() -> list[tuple[str, str]]:
+        # While a long-running command (crawl / batch scrape) is in
+        # flight, collapse the ASCII wordmark to a single-line
+        # ``ScrapingBee v1.5.0`` so the freed rows above scrollback can
+        # show the live task widget — URL, fetched count, honeycomb
+        # progress bar. The big banner returns once the run ends.
+        if _active_job_in_progress():
+            line = Text()
+            line.append("  ScrapingBee ", style=f"bold {BEE_YELLOW}")
+            line.append(f"v{version}", style="bold white")
+            return _text_to_fragments(line)
         out: list[tuple[str, str]] = []
         # SCRAPING half in brand yellow, BEE half in white — matches the
         # wordmark in the official brand assets.
@@ -2563,11 +2972,47 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         out.append((f"{BEE_DIM}", " to quit"))
         return out
 
+    def _active_job_in_progress() -> bool:
+        """True while a crawl or batch is running — used to collapse
+        the banner so the live task widget gets prominent placement."""
+        if _has_crawl_status_safe():
+            return True
+        try:
+            from .theme import has_progress_state
+            return has_progress_state()
+        except Exception:
+            return False
+
+    def _text_to_fragments(t: "Text") -> list[tuple[str, str]]:
+        """Render a rich Text object to the (style, text) fragment list
+        prompt_toolkit's ``FormattedTextControl`` expects."""
+        try:
+            from prompt_toolkit.formatted_text import (
+                ANSI as _ANSI,
+                to_formatted_text as _tft,
+            )
+            from io import StringIO as _SIO
+            from rich.console import Console as _RC
+
+            buf = _SIO()
+            _c = _RC(
+                file=buf, force_terminal=True, color_system="truecolor",
+                highlight=False, width=200,
+            )
+            _c.print(t, end="")
+            return list(_tft(_ANSI(buf.getvalue())))
+        except Exception:
+            return [("", t.plain)]
+
     def _banner_height() -> "D":
+        # Compact one-liner while a crawl / batch is active; full ASCII
+        # banner otherwise.
+        if _active_job_in_progress():
+            return D.exact(1)
         return D.exact(_banner_visual_height)
 
     banner_window = Window(
-        content=FormattedTextControl(_banner_render),
+        content=_ScrollForwardingFTC(_banner_render),
         height=_banner_height,
         wrap_lines=False,
         always_hide_cursor=True,
@@ -2612,10 +3057,12 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     main_split = HSplit(
         [
             banner_window,
+            crawl_status_window,
             scrollback_window,
             spacer_top,
             separator,
             running_window,
+            bee_fact_window,
             input_window,
             spacer_bottom,
             toolbar_window,
@@ -2793,10 +3240,292 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             state.last_status = status_ref[0]
             state.last_duration = duration
             is_input_locked[0] = False
+            # Clear the typed ``!cmd`` only when it ran cleanly. A
+            # non-zero exit or Ctrl+C-stopped run leaves the line in the
+            # buffer so the user can tweak it and retry without retyping.
+            if status_ref[0] == "ok":
+                try:
+                    input_buffer.reset()
+                except Exception:
+                    pass
             try:
                 app.invalidate()
             except Exception:
                 pass
+
+        is_input_locked[0] = True
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+        def _worker() -> None:
+            try:
+                _run()
+            finally:
+                current_worker[0] = None
+                try:
+                    _finish()
+                except Exception:
+                    state.is_running = False
+                    state.running_command = None
+                    state.running_command_text = None
+                    state.run_start = None
+                    is_input_locked[0] = False
+                    try:
+                        app.invalidate()
+                    except Exception:
+                        pass
+
+        worker_thread = threading.Thread(target=_worker, daemon=True)
+        current_worker[0] = worker_thread
+        worker_thread.start()
+
+    # ── Crawl execution via subprocess ──────────────────────────────────────
+    # Twisted's reactor is a single-shot process-wide singleton. Once
+    # ``reactor.run()`` has been entered and returned, the same Python
+    # process can never call it again. Running each crawl in a fresh
+    # ``python -m scrapingbee_cli.cli crawl ...`` subprocess gives us
+    # a brand-new reactor per crawl, so the user can issue many
+    # crawls in one REPL session.
+    #
+    # IPC for live status: the parent sets ``SCRAPINGBEE_CRAWL_STATUS_FILE``
+    # to a per-pid path; the child's spider signal handlers atomically
+    # mirror ``theme._crawl_status`` to that file via
+    # ``_maybe_mirror_to_status_file``. A polling thread on the parent
+    # reads the file every 100 ms and forwards updates into the
+    # parent's own ``_crawl_status`` so the layout-window crawl status
+    # display keeps showing live URL / fetched count.
+    def _execute_crawl_subprocess(
+        crawl_args: list[str], original_line: str, echo_idx: int
+    ) -> None:
+        import os as _os
+        import subprocess
+
+        output_start_index = echo_idx
+        start = time.monotonic()
+        status_ref = ["ok"]
+        state.is_running = True
+        state.running_command = "crawl"
+        state.running_command_text = original_line
+        state.run_start = start
+
+        status_file = (
+            Path.home() / ".cache" / "scrapingbee-cli"
+            / f"crawl-status-{_os.getpid()}.json"
+        )
+        try:
+            status_file.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        # Clear any leftover state file from a prior run.
+        try:
+            status_file.unlink()
+        except Exception:
+            pass
+
+        # Pre-populate the parent's _crawl_status so the layout window
+        # shows "starting…" the instant the user submits, rather than
+        # waiting for the child to fire its first signal.
+        try:
+            from .theme import update_crawl_status
+            update_crawl_status(
+                current_url=None, fetched=0, queued=0, saved=0, phase="starting",
+            )
+        except Exception:
+            pass
+
+        _stop_poll = threading.Event()
+
+        def _poll_status_file() -> None:
+            """Watch the child's status JSON file and forward updates
+            into the parent's in-memory state. 100 ms cadence so URL +
+            counter changes feel live in the fixed status widget.
+
+            The payload also carries the child's progress state
+            (``progress_total``, ``progress_completed``) when a known
+            total is in play — sitemap mode, ``--max-depth 1``, or
+            ``--max-pages N``. That's how the parent's fixed widget
+            learns to show the honeycomb above the URL line.
+            """
+            import json as _json
+            from .theme import update_crawl_status, update_progress_state
+
+            last_mtime = 0.0
+            while not _stop_poll.wait(0.1):
+                try:
+                    stat = status_file.stat()
+                except FileNotFoundError:
+                    continue
+                except Exception:
+                    continue
+                if stat.st_mtime == last_mtime:
+                    continue
+                last_mtime = stat.st_mtime
+                try:
+                    with open(status_file, encoding="utf-8") as fh:
+                        data = _json.load(fh)
+                    update_crawl_status(
+                        current_url=data.get("current_url"),
+                        fetched=data.get("fetched"),
+                        queued=data.get("queued"),
+                        saved=data.get("saved"),
+                        phase=data.get("phase"),
+                    )
+                    pt = data.get("progress_total")
+                    pc = data.get("progress_completed")
+                    if isinstance(pt, int) and pt > 0 and isinstance(pc, int):
+                        # ``update_progress_state`` no-ops on the
+                        # scrollback render path when ``_crawl_status``
+                        # is set, so we just set state — the fixed
+                        # widget will pick it up next frame.
+                        update_progress_state(
+                            pc,
+                            pt,
+                            rps=data.get("progress_rps"),
+                            eta=data.get("progress_eta"),
+                            failure_pct=data.get("progress_failure_pct"),
+                        )
+                except Exception:
+                    pass
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+
+        poll_thread = threading.Thread(target=_poll_status_file, daemon=True)
+        poll_thread.start()
+
+        def _run() -> None:
+            try:
+                env = _os.environ.copy()
+                env["SCRAPINGBEE_CRAWL_STATUS_FILE"] = str(status_file)
+                # Mark the child as "spawned by REPL" so it can adjust
+                # output (no colors / no spinner) if we ever want that.
+                env["SCRAPINGBEE_FROM_REPL"] = "1"
+                cmd = [sys.executable, "-m", "scrapingbee_cli.cli"] + crawl_args
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    env=env,
+                )
+                current_subprocess[0] = proc
+                try:
+                    assert proc.stdout is not None
+                    for chunk in iter(proc.stdout.readline, ""):
+                        sys.stdout.write(chunk)
+                finally:
+                    code = proc.wait()
+                    current_subprocess[0] = None
+                if code != 0:
+                    # ``terminate()`` from Ctrl+C exits with -SIGTERM
+                    # (-15 on POSIX). A second Ctrl+C escalates to
+                    # ``proc.kill()`` which exits with -SIGKILL (-9).
+                    # Treat any of these as a deliberate stop rather
+                    # than a failure so the footer reads ■ stopped.
+                    if code in (-15, -9, -2):
+                        status_ref[0] = "stopped"
+                    else:
+                        status_ref[0] = "fail"
+                        err_console.print(
+                            f"  [{BEE_DIM}]exit code {code}[/]"
+                        )
+            except KeyboardInterrupt:
+                proc = current_subprocess[0]
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                err_console.print(f"  [{BEE_DIM}]stopped[/]")
+                status_ref[0] = "stopped"
+            except Exception as e:
+                err_console.print(f"  [bold {BEE_RED}]error:[/] {e}")
+                status_ref[0] = "fail"
+
+        def _finish() -> None:
+            duration = time.monotonic() - start
+            state.is_running = False
+            state.running_command = None
+            state.running_command_text = None
+            state.run_start = None
+            # Stop polling BEFORE clearing in-memory state. Join the poll
+            # thread so it can't race past the event check, read the file
+            # one last time, and resurrect ``_crawl_status`` after we
+            # cleared it — the bug that left the crawl status window
+            # visible after Ctrl+C.
+            _stop_poll.set()
+            try:
+                poll_thread.join(timeout=0.5)
+            except Exception:
+                pass
+            try:
+                from .theme import clear_crawl_status, clear_progress_state
+                clear_crawl_status()
+                clear_progress_state()
+            except Exception:
+                pass
+            try:
+                status_file.unlink()
+            except Exception:
+                pass
+            # Splice the dim echo line above the streamed output.
+            try:
+                from prompt_toolkit.formatted_text import (
+                    ANSI as _ANSI,
+                    to_formatted_text as _tft,
+                )
+                from io import StringIO as _SIO
+                from rich.console import Console as _RC
+
+                _buf = _SIO()
+                _c = _RC(
+                    file=_buf, force_terminal=True, color_system="truecolor",
+                    highlight=False, width=200,
+                )
+                _echo_t = Text()
+                _echo_t.append("❯ ", style=BEE_DIM)
+                _echo_t.append(original_line, style=BEE_DIM)
+                _c.print(_echo_t, end="")
+                _echo_fragments = list(_tft(_ANSI(_buf.getvalue())))
+                scrollback.insert_line(output_start_index, _echo_fragments)
+            except Exception:
+                pass
+            _print_command_footer(status_ref[0], duration)
+            state.last_command = "crawl"
+            state.last_status = status_ref[0]
+            state.last_duration = duration
+            is_input_locked[0] = False
+            # Buffer mutations have to run on the prompt_toolkit main
+            # loop thread — this ``_finish`` is on the worker thread,
+            # and calling ``input_buffer.reset()`` from here directly
+            # doesn't actually propagate to the displayed input
+            # (which is why the typed crawl command was still
+            # appearing in the prompt after ``✓ 28.10s``). Marshal
+            # the clear + invalidate through ``call_soon_threadsafe``.
+            def _apply_finish_state() -> None:
+                if status_ref[0] == "ok":
+                    try:
+                        input_buffer.reset()
+                    except Exception:
+                        pass
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+
+            try:
+                loop = getattr(app, "loop", None)
+                if loop is not None:
+                    loop.call_soon_threadsafe(_apply_finish_state)
+                else:
+                    _apply_finish_state()
+            except Exception:
+                _apply_finish_state()
 
         is_input_locked[0] = True
         try:
@@ -2903,6 +3632,14 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 scrollback.insert_line(meta_echo_idx, _echo_fragments)
             except Exception:
                 _echo_to_scrollback(line)
+            # Successful meta command — clear the input so the prompt is
+            # ready for the next entry. Failed parses / typos take the
+            # ``meta is None`` path (unknown command) which leaves the
+            # buffer in place for the user to edit.
+            try:
+                input_buffer.reset()
+            except Exception:
+                pass
             return True
         if meta == "quit":  # belt-and-braces; key binding usually catches it
             return True
@@ -2997,9 +3734,8 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # the bottom prompt into first-run mode instead of routing through
         # ``run_in_terminal`` — the suspend/resume cycle to read a key in
         # the bare terminal feels jarring, and the masked in-place prompt
-        # is the same flow the user just learned at startup. Variants
-        # like ``auth --api-key KEY`` or ``auth --unsafe`` still go
-        # through click normally.
+        # is the same flow the user just learned at startup. ``auth
+        # --api-key KEY`` is non-interactive and still goes through click.
         if cmd_name == "auth" and len(args) == 1:
             _echo_to_scrollback(original_line)
             _first_run_needs_key[0] = True
@@ -3016,7 +3752,42 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 pass
             return True
 
-        args = state.apply_settings_to_args(args)
+        # ``auth --unsafe`` opens a multi-step disclaimer + masked-key
+        # prompt that fights our alt-buffer / termios state when invoked
+        # through ``run_in_terminal``. The flow appears to exit the REPL
+        # and leaves the terminal non-reactive while it blocks on
+        # synchronous stdin reads. Redirect the user to run it from a
+        # plain shell, where its interactive prompts work correctly.
+        if cmd_name == "auth" and "--unsafe" in args:
+            _echo_to_scrollback(original_line)
+            err_console.print(
+                f"  [bold {BEE_YELLOW}]auth --unsafe[/] must be run from a "
+                f"plain shell, not inside the REPL."
+            )
+            err_console.print(
+                f"  [{BEE_DIM}]exit the REPL ([bold {BEE_YELLOW}]:q[/][{BEE_DIM}]) "
+                f"then run:[/]  [bold]scrapingbee auth --unsafe[/]"
+            )
+            return True
+
+        # Only inject session defaults that the target command actually
+        # accepts; otherwise ``:set --json-response true`` would also
+        # apply to ``usage``, which rejects it as an unknown option.
+        args = state.apply_settings_to_args(
+            args, accepted=set(command_flags.get(cmd_name, []))
+        )
+        # Let users type ``--verbose true|false`` (etc.) in the REPL
+        # too — same normalisation as the CLI ``main()`` entry.
+        try:
+            from .cli_utils import (
+                collect_bool_flag_names,
+                normalize_bool_flag_args,
+            )
+            args = normalize_bool_flag_args(
+                args, collect_bool_flag_names(cli_group)
+            )
+        except Exception:
+            pass
 
         # Mark the scrollback position where this command's output will
         # start. We DO NOT echo here — while the command runs, only the
@@ -3029,6 +3800,15 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # i.e. echo + output + footer atomically appear together at the
         # moment of completion, without doubling up the live shimmer.
         output_start_index = scrollback.current_length()
+
+        # ``crawl`` is special — Twisted's reactor is a process-wide
+        # singleton, so we run each crawl in a fresh subprocess to make
+        # multiple crawls per REPL session work. The function below
+        # owns the full lifecycle (worker thread, status-file polling,
+        # _finish), so we return immediately here.
+        if cmd_name == "crawl":
+            _execute_crawl_subprocess(args, original_line, output_start_index)
+            return True
 
         start = time.monotonic()
         status_ref = ["ok"]
@@ -3249,6 +4029,10 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     def _submit(event):
         text = input_buffer.text
         stripped = text.strip()
+        # Whether the user typed/pasted is collapsing back to a single
+        # line — once Enter fires we drop out of multi-line mode so
+        # the next prompt is single-line again.
+        _multiline_visible[0] = False
         if not stripped:
             # ``reset()`` clears the buffer AND the history-navigation
             # cursor (``working_index``). A plain set_document keeps the
@@ -3268,6 +4052,13 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             input_buffer.reset()
             event.app.exit()
             return
+        # Multi-line submission (typically a paste of several commands):
+        # run the first line immediately, queue the rest. ``_ticker``
+        # picks them up one at a time as soon as the input lock clears.
+        lines = [s for s in (ln.strip() for ln in stripped.splitlines()) if s]
+        if len(lines) > 1:
+            stripped = lines[0]
+            _pending_commands.extend(lines[1:])
         # Persist the submitted line into the FileHistory before we kick off
         # execution. ``append_string`` is the right call (not
         # ``store_string``): the latter only writes to disk, leaving the
@@ -3288,6 +4079,29 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
     @kb.add("c-c")
     def _ctrl_c(event):
+        # Clear any queued multi-line commands so an aborted paste
+        # doesn't keep firing after the user explicitly cancels.
+        cleared_queue = False
+        if _pending_commands:
+            n_dropped = len(_pending_commands)
+            _pending_commands.clear()
+            cleared_queue = True
+            err_console.print(
+                f"  [{BEE_DIM}]cancelled {n_dropped} queued command"
+                f"{'s' if n_dropped != 1 else ''}[/]"
+            )
+        # If the input buffer is currently in multi-line mode (active
+        # paste preview), Ctrl+C clears it and drops back to single-
+        # line — treated as "consumed" so we don't fall through to
+        # ``event.app.exit()`` below.
+        cleared_multiline = False
+        if _multiline_visible[0]:
+            _multiline_visible[0] = False
+            cleared_multiline = True
+            try:
+                input_buffer.reset()
+            except Exception:
+                pass
         # If a worker thread is running, Ctrl+C stops that command rather
         # than exiting the REPL. We try two mechanisms in parallel:
         #
@@ -3319,16 +4133,40 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 except Exception:
                     pass
 
-            # If a ``!shell`` command is running, terminate the subprocess
-            # directly — the worker thread is blocked in a C-level read()
-            # on the child's stdout pipe, so a Python-level
-            # KeyboardInterrupt won't fire until the read returns.
-            # ``terminate()`` sends SIGTERM; closing the pipe also frees
-            # the readline() loop.
+            # If a Scrapy crawl is running, the worker is parked inside
+            # Twisted's reactor (epoll/kqueue/select in C code), so
+            # neither asyncio cancellation nor PyThreadState_SetAsyncExc
+            # reaches it. ``reactor.callFromThread`` wakes the selector
+            # via the reactor's self-pipe and runs ``reactor.stop()`` on
+            # the reactor thread — the only thread-safe way to stop a
+            # running Twisted reactor from outside.
+            try:
+                from .crawl import stop_running_reactor
+                stop_running_reactor()
+            except Exception:
+                pass
+
+            # If a ``!shell`` command or crawl subprocess is running,
+            # signal the child — the worker thread is blocked in a
+            # C-level read() on the child's stdout pipe, so a
+            # Python-level KeyboardInterrupt won't fire until the read
+            # returns. First Ctrl+C sends SIGTERM (lets Scrapy write
+            # the manifest, preserves partial output). A SECOND Ctrl+C
+            # within 2 s while the child is still running escalates to
+            # SIGKILL — useful when a long screenshot fetch keeps
+            # Twisted's reactor parked in select() and SIGTERM
+            # processing lags behind. Standard Unix Ctrl+C convention.
             proc = current_subprocess[0]
             if proc is not None:
+                now = time.monotonic()
+                last = _last_ctrl_c_time[0]
+                _last_ctrl_c_time[0] = now
+                still_running = proc.poll() is None
                 try:
-                    proc.terminate()
+                    if still_running and (now - last) < 2.0:
+                        proc.kill()
+                    else:
+                        proc.terminate()
                 except Exception:
                     pass
 
@@ -3353,6 +4191,11 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 # ctypes path failed (PyPy? embedded?) — fall back to
                 # exiting; daemon worker dies with the process.
                 event.app.exit()
+            return
+        # No worker running. If we just dropped queued commands OR
+        # closed a multi-line paste preview, that was the user's intent
+        # for this Ctrl+C — don't also exit the REPL on top of it.
+        if cleared_queue or cleared_multiline:
             return
         event.app.exit()
 
@@ -3385,28 +4228,102 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             return False
 
     def _do_accept_suggestion(event):
+        """Accept the entire ghost-text suggestion (bound to End)."""
         buf = event.current_buffer
         sug = buf.suggestion
         if sug:
             buf.insert_text(sug.text)
 
-    kb.add("right", filter=_suggestion_at_eol, eager=True)(_do_accept_suggestion)
+    def _do_accept_suggestion_word(event):
+        """Accept the next word of the ghost-text suggestion (bound to
+        Right arrow). Splits at the first space — so on a suggestion
+        ``scrape https://www.scrapingbee.com --premium-proxy true``,
+        successive Right presses accept ``scrape `` → ``https://… `` →
+        ``--premium-proxy `` → ``true``. End remains the shortcut for
+        accepting the whole thing in one keystroke.
+        """
+        buf = event.current_buffer
+        sug = buf.suggestion
+        if not sug or not sug.text:
+            return
+        text = sug.text
+        space_idx = text.find(" ")
+        if space_idx == -1:
+            buf.insert_text(text)
+        else:
+            buf.insert_text(text[: space_idx + 1])
+
+    kb.add("right", filter=_suggestion_at_eol, eager=True)(_do_accept_suggestion_word)
     kb.add("end", filter=_suggestion_at_eol, eager=True)(_do_accept_suggestion)
-    kb.add(
-        "tab",
-        filter=~has_completions & _suggestion_at_eol,
-        eager=True,
-    )(_do_accept_suggestion)
 
     _not_first_run = Condition(lambda: not _first_run_needs_key[0])
 
-    @kb.add("tab", filter=~has_completions & ~_suggestion_at_eol & _not_first_run)
+    @kb.add("tab", filter=~has_completions & _not_first_run)
     def _tab_open(event):
-        # Tab opens the completion popup when no ghost suggestion is
-        # visible. Shift+Tab is the mode toggle. Suppressed during the
-        # first-run API key prompt — command-name completions are
-        # irrelevant there.
-        event.current_buffer.start_completion(select_first=False)
+        # Bash-style Tab behaviour with a ghost-text fallback:
+        #   • exactly one completion match → accept inline (no popup),
+        #     with a trailing space when the match is a command name.
+        #   • multiple matches → open the popup WITHOUT modifying the
+        #     buffer. We deliberately don't auto-insert the common
+        #     prefix because doing so wipes any active ghost-text
+        #     suggestion (the prefix change invalidates the ghost's
+        #     attachment point). Users can pick from the popup with
+        #     arrow keys, accept the ghost word with Right, or just
+        #     keep typing.
+        #   • zero matches BUT a ghost-text suggestion is visible →
+        #     accept the next word of the suggestion (same as Right
+        #     arrow does in our isolated suggestion handler).
+        #   • zero matches AND no suggestion → open an empty popup
+        #     (visual no-op).
+        # Wrapped in try/except so a flaky completer can't kill the
+        # binding handler.
+        buf = event.current_buffer
+        try:
+            from prompt_toolkit.completion import CompleteEvent as _CE
+            cmps = list(buf.completer.get_completions(buf.document, _CE()))
+        except Exception:
+            buf.start_completion(select_first=False)
+            return
+        # Helper: accept the next word (up to & including next space) of
+        # the ghost-text suggestion, mirroring what Right arrow does.
+        def _accept_ghost_word() -> bool:
+            sug = buf.suggestion
+            if not sug or not sug.text:
+                return False
+            text = sug.text
+            space_idx = text.find(" ")
+            buf.insert_text(text if space_idx == -1 else text[: space_idx + 1])
+            return True
+
+        if len(cmps) == 1:
+            c = cmps[0]
+            # Is the single match REDUNDANT with what's already typed?
+            # E.g. typing 'scrape' then Tab — the completer yields
+            # Completion(text='scrape', start_position=-6), which would
+            # replace 'scrape' with 'scrape' (net zero text change, just
+            # adds a trailing space). When that happens AND a ghost
+            # suggestion is showing, prefer advancing into the ghost —
+            # that's what the user actually wants progress on.
+            typed_before = buf.document.text_before_cursor
+            replaced = (
+                typed_before[c.start_position:] if c.start_position < 0 else ""
+            )
+            if c.text == replaced and _accept_ghost_word():
+                return
+            try:
+                if c.start_position < 0:
+                    buf.delete_before_cursor(count=-c.start_position)
+                # Trailing space for command names; flags (start with
+                # ``-``) get none so ``--key=value`` is still typable.
+                suffix = "" if c.text.startswith("-") else " "
+                buf.insert_text(c.text + suffix)
+            except Exception:
+                buf.start_completion(select_first=False)
+            return
+        if len(cmps) == 0:
+            if _accept_ghost_word():
+                return
+        buf.start_completion(select_first=False)
 
     @kb.add("tab", filter=has_completions)
     def _tab_next(event):
@@ -3426,12 +4343,124 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     def _esc(event):
         event.current_buffer.cancel_completion()
 
+    # ── Word-wise backward delete ─────────────────────────────────────────
+    # Bound to the conventional combos so muscle memory works regardless
+    # of OS / terminal:
+    #   • Option+Backspace on macOS Terminal/iTerm sends ``escape``
+    #     followed by ``c-h`` (most common) or ``backspace`` (a few
+    #     terminals) — we bind both.
+    #   • Ctrl+W is the POSIX standard for ``unix-word-rubout``.
+    # ``find_start_of_previous_word`` returns a negative offset to the
+    # start of the previous word, or ``None`` when the cursor is at the
+    # buffer start.
+    def _word_delete_backward(event):
+        buf = event.current_buffer
+        pos = buf.document.find_start_of_previous_word(count=1, WORD=False)
+        if pos:
+            buf.delete_before_cursor(count=-pos)
+
+    kb.add("escape", "backspace")(_word_delete_backward)
+    kb.add("escape", "c-h")(_word_delete_backward)
+    kb.add("c-w")(_word_delete_backward)
+
+    # ── Disable reverse/forward incremental search ────────────────────────
+    # prompt_toolkit's emacs defaults bind Ctrl+R and Ctrl+S to incremental
+    # history search, which writes into a hidden search buffer. Our layout
+    # has no SearchToolbar, so the search query renders nowhere — the user
+    # types into a black hole. Up/Down already walk the FileHistory, so we
+    # explicitly swallow the keys to avoid the broken default behaviour.
+    @kb.add("c-r")
+    @kb.add("c-s")
+    def _disable_incremental_search(event):
+        pass
+
+    # ── Manual newline insertion ───────────────────────────────────────────
+    # When the user wants to compose a multi-command batch by hand
+    # (rather than via paste), bind Alt+Enter and Ctrl+J to "insert
+    # newline + flip to multi-line mode". Most terminals don't
+    # distinguish Shift+Enter from plain Enter, so these are the
+    # portable shortcuts. Plain Enter remains "submit".
+    def _insert_newline(event):
+        _multiline_visible[0] = True
+        event.current_buffer.insert_text("\n")
+
+    kb.add("escape", "enter")(_insert_newline)
+    kb.add("c-j")(_insert_newline)
+
+    # ── Bracketed-paste cleanup ───────────────────────────────────────────
+    # Pasted text comes in two flavours:
+    #   1. A single command soft-wrapped by the source (IDE, doc render,
+    #      etc.) — the wrap inserts whitespace (sometimes CR) and may
+    #      also insert a newline. We want to flatten those back into a
+    #      single line so the command parses correctly.
+    #   2. A genuine multi-command paste (e.g. ``scrape …\ncrawl …``)
+    #      where the user intends each line to run separately via the
+    #      ``_pending_commands`` queue.
+    # Heuristic: if EVERY non-empty line begins with a recognized
+    # command name or REPL meta-prefix (``:``, ``!``), treat as
+    # multi-command (keep ``\n``). Otherwise treat as soft-wrap and
+    # join with spaces. ``\r`` is always normalised (CR is never a
+    # useful separator in our buffer).
+    from prompt_toolkit.keys import Keys as _Keys
+    _command_name_set = set(command_names)
+
+    def _looks_like_command_line(line: str) -> bool:
+        s = line.strip()
+        if not s:
+            return False
+        if s.startswith((":", "!")):
+            return True
+        first = s.split(None, 1)[0]
+        return first in _command_name_set
+
+    @kb.add(_Keys.BracketedPaste)
+    def _bracketed_paste(event):
+        # Bracketed paste handler. Two modes:
+        #   • Pasted text contains a newline → switch buffer to
+        #     multi-line mode and insert each line. The user can then
+        #     edit any line and press Enter to submit the whole batch
+        #     — ``_submit`` already splits multi-line text and queues
+        #     subsequent lines via ``_pending_commands``. Esc / Ctrl+C
+        #     clear the buffer and return to single-line mode.
+        #   • No newlines → single-line paste. Collapse runs of
+        #     spaces/tabs to single spaces (handles soft-wrap in the
+        #     source rendering), CR to space, and insert normally.
+        import re as _re
+        # Normalise line endings: CRLF (Windows), CR (classic Mac), and
+        # LF all become a single ``\n``. Treating a lone CR as a space
+        # would silently collapse multi-line paste into one line on
+        # paste from sources that use CR only.
+        text = event.data.replace("\r\n", "\n").replace("\r", "\n")
+        if "\n" in text:
+            non_empty = [ln.strip() for ln in text.split("\n") if ln.strip()]
+            if non_empty:
+                _multiline_visible[0] = True
+                # Replace any current buffer contents with the pasted
+                # lines (no preserving partial input — multi-line paste
+                # is the dominant intent). The user can edit any line
+                # and Enter submits the batch.
+                event.current_buffer.text = "\n".join(non_empty)
+                event.current_buffer.cursor_position = len(
+                    event.current_buffer.text
+                )
+            return
+        text = _re.sub(r"[ \t]+", " ", text)
+        event.current_buffer.insert_text(text)
+
     # ── History navigation ─────────────────────────────────────────────────
     # Plain Up/Down navigate the FileHistory at ~/.config/scrapingbee-cli/
     # .history. When the completion menu is open these keys instead
     # navigate the menu (prompt_toolkit's default behaviour); the
     # ``~has_completions`` filter ensures we don't compete.
-    @kb.add("up", filter=~has_completions)
+    # Suppressed during the first-run API key prompt — otherwise an Up
+    # press would inject the previous command into the (masked) API key
+    # field, with no visible cue that the buffer is no longer empty.
+    # In multi-line mode (after a multi-line paste) arrow keys must
+    # navigate within the buffer instead of walking history, otherwise
+    # the user can't edit lines 2+ after pasting them.
+    _single_line_buffer = Condition(lambda: not _multiline_visible[0])
+
+    @kb.add("up", filter=~has_completions & _not_first_run & _single_line_buffer)
     def _history_back(event):
         buf = event.current_buffer
         # prompt_toolkit loads history asynchronously via a background
@@ -3465,7 +4494,10 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             pass
         buf.history_backward()
 
-    @kb.add("down", filter=~has_completions)
+    @kb.add(
+        "down",
+        filter=~has_completions & _not_first_run & _single_line_buffer,
+    )
     def _history_forward(event):
         event.current_buffer.history_forward()
 
@@ -3588,7 +4620,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     async def _ticker():
         import asyncio
 
-        from .theme import has_progress_state, tick_progress_render
+        from .theme import has_progress_state
 
         idle_counter = 0
         # Track terminal width and trigger a fresh invalidate on resize.
@@ -3600,15 +4632,31 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
         while True:
             await asyncio.sleep(0.1)
-            # Re-render the honeycomb progress widget while a batch is in
-            # flight so the boundary hex shimmers between completion
-            # events. ``tick_progress_render`` is a no-op when no batch
-            # state is set, so the cost is negligible when idle.
-            if has_progress_state():
+            # Drain queued commands from a multi-line paste — only when
+            # the input lock is clear (previous command done) AND we're
+            # not in the API-key prompt. Pop one per tick so each
+            # command's footer renders before the next starts.
+            if (
+                _pending_commands
+                and not is_input_locked[0]
+                and not _first_run_needs_key[0]
+            ):
+                next_cmd = _pending_commands.pop(0)
                 try:
-                    tick_progress_render()
+                    if history is not None:
+                        try:
+                            history.append_string(next_cmd)
+                        except Exception:
+                            pass
+                    _execute(next_cmd)
                 except Exception:
                     pass
+            # Trigger a frame redraw while progress is reporting so
+            # the honeycomb's boundary-hex shimmer animates. The fixed
+            # ``crawl_status_window`` reads progress state directly via
+            # ``_crawl_status_text`` on each invalidate — no separate
+            # scrollback rendering needed.
+            if has_progress_state():
                 try:
                     app.invalidate()
                 except Exception:
@@ -3644,7 +4692,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         import hashlib as _hashlib
         import json as _json
 
-        from .batch import write_usage_file_cache
+        from .batch import read_usage_file_cache, write_usage_file_cache
         from .client import Client, parse_usage
         from .config import BASE_URL, get_api_key
 
@@ -3656,6 +4704,44 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # with the *same* key vs a different one, so the session counter
         # continues for the former and resets for the latter.
         key_hash = _hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+        # ── Cache-first fast path (REPL only) ──────────────────────────
+        # Sibling REPL sessions and batch/crawl pre-flight write to the
+        # same file cache. If the cache was refreshed within the TTL we
+        # can populate the
+        # toolbar without a live call — saving us a slot in the /usage
+        # rate limit. ``update_from_usage_response`` reads the same keys
+        # ``parse_usage`` writes, so we build a synthetic raw dict from
+        # the cache entry. ``current_concurrency`` isn't preserved in
+        # the cache, so the toolbar's `0/N` slot will lag by one tick;
+        # that's an acceptable trade for the rate-limit headroom.
+        cached = read_usage_file_cache(key)
+        if cached is not None:
+            try:
+                max_credit = cached.get("max_api_credit")
+                credits = cached.get("credits")
+                used_credit = (
+                    int(max_credit) - int(credits)
+                    if isinstance(max_credit, (int, float))
+                    and isinstance(credits, (int, float))
+                    else None
+                )
+                synthetic = {
+                    "max_concurrency": cached.get("max_concurrency"),
+                    "max_api_credit": max_credit,
+                    "used_api_credit": used_credit,
+                }
+                state.update_from_usage_response(synthetic, key_hash=key_hash)
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+                return
+            except Exception:
+                # Cache was malformed in some unexpected way — fall
+                # through to the live call.
+                pass
+
         try:
             async with Client(key, BASE_URL) as client:
                 data, _hdrs, status_code = await client.usage(retries=1, backoff=1.0)

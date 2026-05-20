@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import nullcontext
 
 import click
 from click_option_group import optgroup
@@ -30,7 +29,6 @@ from ..cli_utils import (
 )
 from ..client import Client
 from ..config import BASE_URL, get_api_key
-from ..theme import MiniBeeSpinner, is_repl_mode
 
 AMAZON_SORT_BY = [
     "most-recent",
@@ -149,7 +147,6 @@ def amazon_product_cmd(
             output_file=obj.get("output_file") or None,
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
-            usage_info=usage_info,
         )
         return
 
@@ -158,23 +155,21 @@ def amazon_product_cmd(
         raise SystemExit(1)
 
     async def _single() -> None:
-        _spinner = MiniBeeSpinner("amazon-product") if is_repl_mode() else nullcontext()
-        with _spinner:
-            async with Client(key, BASE_URL) as client:
-                data, headers, status_code = await client.amazon_product(
-                    asin,
-                    device=device,
-                    domain=domain,
-                    country=country,
-                    zip_code=zip_code,
-                    language=language,
-                    currency=currency,
-                    add_html=parse_bool(add_html),
-                    light_request=parse_bool(light_request),
-                    screenshot=parse_bool(screenshot),
-                    retries=int(obj.get("retries") or 3),
-                    backoff=float(obj.get("backoff") or 2.0),
-                )
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.amazon_product(
+                asin,
+                device=device,
+                domain=domain,
+                country=country,
+                zip_code=zip_code,
+                language=language,
+                currency=currency,
+                add_html=parse_bool(add_html),
+                light_request=parse_bool(light_request),
+                screenshot=parse_bool(screenshot),
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
+            )
         check_api_response(data, status_code)
         from ..credits import amazon_credits
 
@@ -324,7 +319,6 @@ def amazon_search_cmd(
             output_file=obj.get("output_file") or None,
             extract_field=obj.get("extract_field"),
             fields=obj.get("fields"),
-            usage_info=usage_info,
         )
         return
 
@@ -333,29 +327,27 @@ def amazon_search_cmd(
         raise SystemExit(1)
 
     async def _single() -> None:
-        _spinner = MiniBeeSpinner("amazon-search") if is_repl_mode() else nullcontext()
-        with _spinner:
-            async with Client(key, BASE_URL) as client:
-                data, headers, status_code = await client.amazon_search(
-                    query,
-                    start_page=start_page,
-                    pages=pages,
-                    sort_by=norm_val(sort_by),
-                    device=device,
-                    domain=domain,
-                    country=country,
-                    zip_code=zip_code,
-                    language=language,
-                    currency=currency,
-                    category_id=category_id,
-                    merchant_id=merchant_id,
-                    autoselect_variant=parse_bool(autoselect_variant),
-                    add_html=parse_bool(add_html),
-                    light_request=parse_bool(light_request),
-                    screenshot=parse_bool(screenshot),
-                    retries=int(obj.get("retries") or 3),
-                    backoff=float(obj.get("backoff") or 2.0),
-                )
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.amazon_search(
+                query,
+                start_page=start_page,
+                pages=pages,
+                sort_by=norm_val(sort_by),
+                device=device,
+                domain=domain,
+                country=country,
+                zip_code=zip_code,
+                language=language,
+                currency=currency,
+                category_id=category_id,
+                merchant_id=merchant_id,
+                autoselect_variant=parse_bool(autoselect_variant),
+                add_html=parse_bool(add_html),
+                light_request=parse_bool(light_request),
+                screenshot=parse_bool(screenshot),
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
+            )
         check_api_response(data, status_code)
         from ..credits import amazon_credits
 

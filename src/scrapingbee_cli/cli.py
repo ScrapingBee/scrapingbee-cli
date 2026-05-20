@@ -191,6 +191,16 @@ def main() -> None:
         sys.exit(0)
     _handle_scraping_config()
 
+    # Let users write ``--verbose true`` / ``--verbose false`` in
+    # addition to the bare ``--verbose`` shortcut, so all boolean
+    # options behave like the scraping-side ones (--render-js, etc.).
+    try:
+        from .cli_utils import collect_bool_flag_names, normalize_bool_flag_args
+        _bool_flags = collect_bool_flag_names(cli)
+        sys.argv[1:] = normalize_bool_flag_args(sys.argv[1:], _bool_flags)
+    except Exception:
+        pass
+
     try:
         cli.main(standalone_mode=False)
     except click.ClickException as e:

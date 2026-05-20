@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
-from contextlib import nullcontext
 
 import click
 
@@ -12,7 +11,7 @@ from ..batch import write_usage_file_cache
 from ..cli_utils import _output_options, store_common_options
 from ..client import Client, parse_usage, pretty_json
 from ..config import BASE_URL, get_api_key
-from ..theme import MiniBeeSpinner, is_repl_mode
+from ..theme import is_repl_mode
 
 
 @click.command()
@@ -30,28 +29,26 @@ def usage_cmd(obj: dict, **kwargs) -> None:
     backoff = float(obj.get("backoff") or 2.0)
 
     async def _run() -> None:
-        _spinner = MiniBeeSpinner("usage") if is_repl_mode() else nullcontext()
-        with _spinner:
-            async with Client(key, BASE_URL) as client:
-                data, _, status_code = await client.usage(retries=retries, backoff=backoff)
-                if status_code != 200:
-                    click.echo(
-                        f"API returned status {status_code}: {data.decode('utf-8', errors='replace')}",
-                        err=True,
-                    )
-                    raise SystemExit(1)
-                # Warm the shared file cache so concurrent batch subprocesses skip the API call.
-                write_usage_file_cache(key, parse_usage(data))
+        async with Client(key, BASE_URL) as client:
+            data, _, status_code = await client.usage(retries=retries, backoff=backoff)
+            if status_code != 200:
+                click.echo(
+                    f"API returned status {status_code}: {data.decode('utf-8', errors='replace')}",
+                    err=True,
+                )
+                raise SystemExit(1)
+            # Warm the shared file cache so concurrent batch subprocesses skip the API call.
+            write_usage_file_cache(key, parse_usage(data))
 
-                if is_repl_mode():
-                    _show_repl_usage(data)
+            if is_repl_mode():
+                _show_repl_usage(data)
+            else:
+                output_file = obj.get("output_file")
+                if output_file:
+                    with open(output_file, "w", encoding="utf-8") as f:
+                        f.write(pretty_json(data) + "\n")
                 else:
-                    output_file = obj.get("output_file")
-                    if output_file:
-                        with open(output_file, "w", encoding="utf-8") as f:
-                            f.write(pretty_json(data) + "\n")
-                    else:
-                        click.echo(pretty_json(data))
+                    click.echo(pretty_json(data))
 
     asyncio.run(_run())
 
