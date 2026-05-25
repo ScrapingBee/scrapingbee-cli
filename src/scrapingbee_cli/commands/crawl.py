@@ -60,6 +60,7 @@ def _crawl_build_params(
     device: str | None,
     custom_google: str | None,
     transparent_status_code: str | None,
+    tag: str | None = None,
     scraping_config: str | None = None,
 ) -> dict[str, str]:
     """Build ScrapingBee API params dict from crawl options (quick-crawl URL mode)."""
@@ -98,6 +99,7 @@ def _crawl_build_params(
         device=device,
         custom_google=custom_google,
         transparent_status_code=transparent_status_code,
+        tag=tag,
         body=None,
         scraping_config=scraping_config,
     )
@@ -248,6 +250,12 @@ def _crawl_build_params(
     default=None,
     help="Return target status as-is (true/false).",
 )
+@optgroup.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Optional label included in API response headers.",
+)
 @optgroup.group("Crawl", help="Quick-crawl: depth, pages, output, throttling")
 @optgroup.option(
     "--max-depth",
@@ -372,6 +380,7 @@ def crawl_cmd(
     device: str | None,
     custom_google: str | None,
     transparent_status_code: str | None,
+    tag: str | None,
     max_depth: int,
     max_pages: int,
     allowed_domains: str | None,
@@ -500,6 +509,7 @@ def crawl_cmd(
                 device=device,
                 custom_google=custom_google,
                 transparent_status_code=transparent_status_code,
+                tag=tag,
                 scraping_config=scraping_config,
             )
         except ValueError as e:
@@ -602,6 +612,7 @@ def crawl_cmd(
             "--device": device,
             "--custom-google": custom_google,
             "--transparent-status-code": transparent_status_code,
+            "--tag": tag,
         }
         used = [flag for flag, val in api_flags.items() if val is not None]
         if headers:

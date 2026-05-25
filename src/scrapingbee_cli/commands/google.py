@@ -97,6 +97,12 @@ def _warn_empty_organic(data: bytes, search_type: str | None) -> None:
     default=None,
     help="Light request mode, 10 credits (true/false). Fewer data than regular.",
 )
+@optgroup.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Optional label included in API response headers.",
+)
 @_batch_options
 @click.pass_obj
 def google_cmd(
@@ -111,6 +117,7 @@ def google_cmd(
     extra_params: str | None,
     add_html: str | None,
     light_request: str | None,
+    tag: str | None,
     **kwargs,
 ) -> None:
     """Search Google using the Google Search API."""
@@ -157,6 +164,7 @@ def google_cmd(
                 extra_params=extra_params,
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -199,6 +207,7 @@ def google_cmd(
                 extra_params=extra_params,
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )

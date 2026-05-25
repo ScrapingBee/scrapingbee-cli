@@ -1304,6 +1304,7 @@ def build_scrape_kwargs(
     device: str | None = None,
     custom_google: str | None = None,
     transparent_status_code: str | None = None,
+    tag: str | None = None,
     body: str | None = None,
     scraping_config: str | None = None,
 ) -> dict[str, Any]:
@@ -1344,6 +1345,7 @@ def build_scrape_kwargs(
         "device": device,
         "custom_google": parse_bool(custom_google),
         "transparent_status_code": parse_bool(transparent_status_code),
+        "tag": tag,
         "body": body,
         "scraping_config": scraping_config,
     }
@@ -1564,6 +1566,7 @@ def write_output(
             ("spb-cost", "Credit Cost"),
             ("spb-resolved-url", "Resolved URL"),
             ("spb-initial-status-code", "Initial Status Code"),
+            ("tag", "Tag"),
         ]:
             if key in headers_lower:
                 _, val = headers_lower[key]

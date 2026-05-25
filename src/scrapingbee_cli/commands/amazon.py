@@ -66,6 +66,12 @@ AMAZON_SORT_BY = [
 )
 @optgroup.option("--light-request", type=str, default=None, help="Light request mode (true/false).")
 @optgroup.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@optgroup.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Optional label included in API response headers.",
+)
 @_batch_options
 @click.pass_obj
 def amazon_product_cmd(
@@ -80,6 +86,7 @@ def amazon_product_cmd(
     add_html: str | None,
     light_request: str | None,
     screenshot: str | None,
+    tag: str | None,
     **kwargs,
 ) -> None:
     """Fetch Amazon product details by ASIN."""
@@ -125,6 +132,7 @@ def amazon_product_cmd(
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -167,6 +175,7 @@ def amazon_product_cmd(
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -224,6 +233,12 @@ def amazon_product_cmd(
 @optgroup.option("--add-html", type=str, default=None, help="Include full HTML (true/false).")
 @optgroup.option("--light-request", type=str, default=None, help="Light request (true/false).")
 @optgroup.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@optgroup.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Optional label included in API response headers.",
+)
 @_batch_options
 @click.pass_obj
 def amazon_search_cmd(
@@ -244,6 +259,7 @@ def amazon_search_cmd(
     add_html: str | None,
     light_request: str | None,
     screenshot: str | None,
+    tag: str | None,
     **kwargs,
 ) -> None:
     """Search Amazon products."""
@@ -297,6 +313,7 @@ def amazon_search_cmd(
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -345,6 +362,7 @@ def amazon_search_cmd(
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )

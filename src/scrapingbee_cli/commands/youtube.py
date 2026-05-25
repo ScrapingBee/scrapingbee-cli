@@ -155,6 +155,12 @@ YOUTUBE_SORT_BY = ["relevance", "rating", "view-count", "upload-date"]
 @optgroup.option("--location", type=str, default=None, help="With location (true/false).")
 @optgroup.option("--vr180", type=str, default=None, help="VR180 only (true/false).")
 @optgroup.option("--purchased", type=str, default=None, help="Purchased only (true/false).")
+@optgroup.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Optional label included in API response headers.",
+)
 @_batch_options
 @click.pass_obj
 def youtube_search_cmd(
@@ -175,6 +181,7 @@ def youtube_search_cmd(
     location: str | None,
     vr180: str | None,
     purchased: str | None,
+    tag: str | None,
     **kwargs,
 ) -> None:
     """Search YouTube videos."""
@@ -227,6 +234,7 @@ def youtube_search_cmd(
                 location=parse_bool(location),
                 vr180=parse_bool(vr180),
                 purchased=parse_bool(purchased),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -276,6 +284,7 @@ def youtube_search_cmd(
                 location=parse_bool(location),
                 vr180=parse_bool(vr180),
                 purchased=parse_bool(purchased),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -299,11 +308,18 @@ def youtube_search_cmd(
 
 @click.command("youtube-metadata")
 @click.argument("video_id", required=False)
+@click.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Optional label included in API response headers.",
+)
 @_batch_options
 @click.pass_obj
 def youtube_metadata_cmd(
     obj: dict,
     video_id: str | None,
+    tag: str | None,
     **kwargs,
 ) -> None:
     """Fetch YouTube video metadata."""
@@ -340,6 +356,7 @@ def youtube_metadata_cmd(
         async def api_call(client, vid):
             return await client.youtube_metadata(
                 _extract_video_id(vid),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -373,6 +390,7 @@ def youtube_metadata_cmd(
         async with Client(key, BASE_URL) as client:
             data, headers, status_code = await client.youtube_metadata(
                 _extract_video_id(video_id),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
