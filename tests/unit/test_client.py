@@ -225,3 +225,40 @@ class TestTagParam:
     def test_tag_omitted_when_unset(self, method_name):
         captured = _call_with(method_name, tag=None)
         assert "tag" not in captured["params"]
+
+
+class TestGoogleDateRange:
+    """Tests that google_search forwards date_range only when set."""
+
+    @pytest.mark.parametrize(
+        "value", ["past_hour", "past_day", "past_week", "past_month", "past_year"]
+    )
+    def test_date_range_sent_when_set(self, value):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search("coffee", date_range=value, retries=0)
+            assert captured["params"].get("date_range") == value
+
+        asyncio.run(run())
+
+    def test_date_range_omitted_when_unset(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search("coffee", retries=0)
+            assert "date_range" not in captured["params"]
+
+        asyncio.run(run())

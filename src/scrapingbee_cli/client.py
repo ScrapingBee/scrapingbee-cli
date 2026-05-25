@@ -293,6 +293,7 @@ class Client:
         add_html: bool | None = None,
         light_request: bool | None = None,
         tag: str | None = None,
+        date_range: str | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -308,6 +309,7 @@ class Client:
             "add_html": self._bool(add_html),
             "light_request": self._bool(light_request),
             "tag": tag,
+            "date_range": date_range,
         }
         return await self._get_with_retry(
             "/google",
