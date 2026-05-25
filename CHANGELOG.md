@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`--tag` on all API-hitting commands** — `scrape`, `crawl`, `google`, `fast-search`, `amazon-product`, `amazon-search`, `walmart-search`, `walmart-product`, `youtube-search`, `youtube-metadata`, and `chatgpt` now accept `--tag VALUE` to label requests for filtering/analytics in the ScrapingBee dashboard. Forwarded to the API as `?tag=...` when set, omitted otherwise.
+- **`--tag` on all API-hitting commands** — `scrape`, `crawl`, `google`, `fast-search`, `amazon-product`, `amazon-search`, `walmart-search`, `walmart-product`, `youtube-search`, `youtube-metadata`, and `chatgpt` now accept `--tag VALUE` to optionally label requests - tag is included in API response headers. Forwarded to the API as `?tag=...` when set, omitted otherwise.
 - **`--date-range` on `google`** — restrict results to the past hour/day/week/month/year via `--date-range past-hour|past-day|past-week|past-month|past-year` (also accepts the underscore form `past_hour`, ...). Forwarded to the API as `date_range=past_week` (snake_case).
 
 ## [1.4.1] - 2026-04-17
