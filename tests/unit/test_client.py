@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from scrapingbee_cli.client import Client, parse_usage, pretty_json
+from scrapingbee_cli.client import Client, _clean_params, parse_usage, pretty_json
 
 
 class TestParseUsage:
@@ -169,3 +169,59 @@ class TestGetWithRetry:
             assert m.call_count == 2
 
         asyncio.run(run())
+
+
+def _call_with(method_name: str, tag):
+    """Invoke a Client method by name with a minimal positional arg, optionally passing tag.
+
+    Returns the (path, cleaned_params) recorded by the patched _get. Methods all
+    funnel through Client._get (directly or via _get_with_retry), so patching
+    _get captures the params dict and _clean_params() mirrors what hits the wire.
+    """
+
+    async def run():
+        client = Client("fake-key")
+        captured: dict = {}
+
+        async def fake_get(path, params, headers=None):
+            captured["path"] = path
+            captured["params"] = _clean_params(params)
+            return (b"{}", {}, 200)
+
+        with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+            method = getattr(client, method_name)
+            kwargs = {"tag": tag} if tag is not None else {}
+            # Disable retries so failures don't loop on the stub.
+            kwargs["retries"] = 0
+            await method(_FIRST_ARG[method_name], **kwargs)
+        return captured
+
+    return asyncio.run(run())
+
+
+_FIRST_ARG = {
+    "scrape": "https://example.com",
+    "google_search": "coffee",
+    "fast_search": "coffee",
+    "amazon_product": "B000000000",
+    "amazon_search": "coffee",
+    "walmart_search": "coffee",
+    "walmart_product": "12345",
+    "youtube_search": "coffee",
+    "youtube_metadata": "dQw4w9WgXcQ",
+    "chatgpt": "hello",
+}
+
+
+class TestTagParam:
+    """Tests that --tag is forwarded as ?tag=... when set, and omitted when not."""
+
+    @pytest.mark.parametrize("method_name", list(_FIRST_ARG))
+    def test_tag_sent_when_set(self, method_name):
+        captured = _call_with(method_name, tag="my-tag")
+        assert captured["params"].get("tag") == "my-tag"
+
+    @pytest.mark.parametrize("method_name", list(_FIRST_ARG))
+    def test_tag_omitted_when_unset(self, method_name):
+        captured = _call_with(method_name, tag=None)
+        assert "tag" not in captured["params"]
