@@ -83,6 +83,15 @@ def _warn_empty_organic(data: bytes, search_type: str | None) -> None:
     default=None,
     help="Language code for results (e.g. en, fr, de). Default: en.",
 )
+@optgroup.option(
+    "--date-range",
+    type=NormalizedChoice(
+        ["past-hour", "past-day", "past-week", "past-month", "past-year"],
+        case_sensitive=False,
+    ),
+    default=None,
+    help="Restrict results to the past hour/day/week/month/year.",
+)
 @optgroup.group("Filters", help="Autocorrection, extra params, and response format")
 @optgroup.option("--nfpr", type=str, default=None, help="Disable autocorrection (true/false).")
 @optgroup.option(
@@ -96,6 +105,12 @@ def _warn_empty_organic(data: bytes, search_type: str | None) -> None:
     type=str,
     default=None,
     help="Light request mode, 10 credits (true/false). Fewer data than regular.",
+)
+@optgroup.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Optional label included in API response headers.",
 )
 @_batch_options
 @click.pass_obj
@@ -111,6 +126,8 @@ def google_cmd(
     extra_params: str | None,
     add_html: str | None,
     light_request: str | None,
+    tag: str | None,
+    date_range: str | None,
     **kwargs,
 ) -> None:
     """Search Google using the Google Search API."""
@@ -157,6 +174,8 @@ def google_cmd(
                 extra_params=extra_params,
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
+                tag=tag,
+                date_range=norm_val(date_range),
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -199,6 +218,8 @@ def google_cmd(
                 extra_params=extra_params,
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
+                tag=tag,
+                date_range=norm_val(date_range),
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )

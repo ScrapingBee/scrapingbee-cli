@@ -46,6 +46,12 @@ from ..config import BASE_URL, get_api_key
     default=None,
     help="Country code for geolocation (ISO 3166-1).",
 )
+@click.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Optional label included in API response headers.",
+)
 @_batch_options  # must be after command-specific options
 @click.pass_obj
 def chatgpt_cmd(
@@ -54,6 +60,7 @@ def chatgpt_cmd(
     search: str | None,
     add_html: str | None,
     country_code: str | None,
+    tag: str | None,
     **kwargs,
 ) -> None:
     """Send a prompt to the ChatGPT API."""
@@ -93,6 +100,7 @@ def chatgpt_cmd(
                 search=parse_bool(search),
                 add_html=parse_bool(add_html),
                 country_code=country_code,
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -131,6 +139,7 @@ def chatgpt_cmd(
                 search=parse_bool(search),
                 add_html=parse_bool(add_html),
                 country_code=country_code,
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )

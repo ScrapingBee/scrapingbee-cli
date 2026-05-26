@@ -38,6 +38,12 @@ from ..config import BASE_URL, get_api_key
     help="Country code for results (ISO 3166-1, e.g. us, fr).",
 )
 @optgroup.option("--language", type=str, default=None, help="Language code (e.g. en, fr).")
+@optgroup.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Optional label included in API response headers.",
+)
 @_batch_options
 @click.pass_obj
 def fast_search_cmd(
@@ -46,6 +52,7 @@ def fast_search_cmd(
     page: int | None,
     country_code: str | None,
     language: str | None,
+    tag: str | None,
     **kwargs,
 ) -> None:
     """Search using the Fast Search API (sub-second results)."""
@@ -86,6 +93,7 @@ def fast_search_cmd(
                 page=page,
                 country_code=country_code,
                 language=language,
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -122,6 +130,7 @@ def fast_search_cmd(
                 page=page,
                 country_code=country_code,
                 language=language,
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
