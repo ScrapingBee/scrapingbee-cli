@@ -41,7 +41,7 @@ scrapingbee scrape --output-dir my-batch --input-file urls.txt
 scrapingbee scrape --output-dir my-batch --resume --input-file urls.txt
 ```
 
-`--resume` scans `--output-dir` for existing `N.ext` files and skips those item indices. Works with all batch commands: `scrape`, `google`, `fast-search`, `amazon-product`, `amazon-search`, `walmart-search`, `walmart-product`, `youtube-search`, `youtube-metadata`, `chatgpt`.
+`--resume` scans `--output-dir` for existing `N.ext` files and skips those item indices. Works with all batch commands: `scrape`, `google`, `fast-search`, `amazon-product`, `amazon-pricing`, `amazon-search`, `walmart-search`, `walmart-product`, `youtube-search`, `youtube-metadata`, `chatgpt`.
 
 **Requirements:** `--output-dir` must point to the folder from the previous run. Items with only `.err` files are not skipped (they failed and will be retried).
 

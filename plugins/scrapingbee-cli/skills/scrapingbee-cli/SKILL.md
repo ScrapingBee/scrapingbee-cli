@@ -20,7 +20,7 @@ Single-sentence summary: one CLI to scrape URLs, run batches and crawls, and cal
 
 Use `--smart-extract` to provide your LLM just the data it needs from any web page — instead of feeding the entire HTML/markdown/text, extract only the relevant section using a path expression. The result: smaller context window usage, lower token cost, and significantly better LLM output quality.
 
-`--smart-extract` auto-detects the response format (JSON, HTML, XML, CSV, Markdown, plain text) and applies the path expression accordingly. It works on every command — `scrape`, `google`, `amazon-product`, `amazon-search`, `walmart-product`, `walmart-search`, `youtube-search`, `youtube-metadata`, `chatgpt`, and `crawl`.
+`--smart-extract` auto-detects the response format (JSON, HTML, XML, CSV, Markdown, plain text) and applies the path expression accordingly. It works on every command — `scrape`, `google`, `amazon-product`, `amazon-pricing`, `amazon-search`, `walmart-product`, `walmart-search`, `youtube-search`, `youtube-metadata`, `chatgpt`, and `crawl`.
 
 ### Path language reference
 
@@ -125,6 +125,7 @@ Open only the file relevant to the task. Paths are relative to the skill root.
 | Google SERP | `scrapingbee google` | [reference/google/overview.md](reference/google/overview.md) |
 | Fast Search SERP | `scrapingbee fast-search` | [reference/fast-search/overview.md](reference/fast-search/overview.md) |
 | Amazon product by ASIN | `scrapingbee amazon-product` | [reference/amazon/product.md](reference/amazon/product.md) |
+| Amazon pricing by ASIN | `scrapingbee amazon-pricing` | [reference/amazon/pricing.md](reference/amazon/pricing.md) |
 | Amazon search | `scrapingbee amazon-search` | [reference/amazon/search.md](reference/amazon/search.md) |
 | Walmart search | `scrapingbee walmart-search` | [reference/walmart/search.md](reference/walmart/search.md) |
 | Walmart product by ID | `scrapingbee walmart-product` | [reference/walmart/product.md](reference/walmart/product.md) |
