@@ -475,6 +475,7 @@ class TestEstimatedCredits:
             "google",
             "fast-search",
             "amazon-product",
+            "amazon-pricing",
             "amazon-search",
             "walmart-search",
             "walmart-product",

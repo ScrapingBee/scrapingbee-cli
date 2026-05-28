@@ -503,6 +503,21 @@ class TestCommandHelpOutput:
         ):
             assert param in out, f"{param} should appear in amazon-product --help"
 
+    def test_amazon_pricing_help(self):
+        from tests.conftest import cli_run
+
+        code, out, _ = cli_run(["amazon-pricing", "--help"])
+        assert code == 0
+        for param in (
+            "--device",
+            "--domain",
+            "--country",
+            "--language",
+            "--currency",
+            "--add-html",
+        ):
+            assert param in out, f"{param} should appear in amazon-pricing --help"
+
     def test_amazon_search_help(self):
         from tests.conftest import cli_run
 
@@ -638,6 +653,7 @@ class TestCommandHelpOutput:
             "google",
             "fast-search",
             "amazon-product",
+            "amazon-pricing",
             "amazon-search",
             "walmart-search",
             "walmart-product",

@@ -204,6 +204,7 @@ _FIRST_ARG = {
     "google_search": "coffee",
     "fast_search": "coffee",
     "amazon_product": "B000000000",
+    "amazon_pricing": "B000000000",
     "amazon_search": "coffee",
     "walmart_search": "coffee",
     "walmart_product": "12345",
