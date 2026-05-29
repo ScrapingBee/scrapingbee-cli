@@ -1167,6 +1167,78 @@ def build_tests(fx: dict[str, str]) -> list[Test]:
         ),
     ]
 
+    # ── APR: amazon-pricing ───────────────────────────────────────────────────
+    # B07FZ8S74R = Echo Dot 3rd Gen. API returns "product_name" key.
+    # --device only accepts "desktop".
+    tests += [
+        Test(
+            "APR-01",
+            "amazon-pricing B07FZ8S74R (Echo Dot)",
+            ["amazon-pricing", "B07FZ8S74R"],
+            json_key("product_name"),
+        ),
+        Test(
+            "APR-02",
+            "amazon-pricing --domain com",
+            ["amazon-pricing", "B07FZ8S74R", "--domain", "com"],
+            json_key("product_name"),
+        ),
+        Test(
+            "APR-03",
+            "amazon-pricing --domain co.uk",
+            ["amazon-pricing", "B09B8YWXDF", "--domain", "co.uk"],
+            json_key("product_name"),
+        ),
+        Test(
+            "APR-04",
+            "amazon-pricing --domain de",
+            ["amazon-pricing", "B0BMB9RHTG", "--domain", "de"],
+            json_key("product_name"),
+        ),
+        Test(
+            "APR-05",
+            "amazon-pricing --domain fr",
+            ["amazon-pricing", "B09B8RF4PY", "--domain", "fr"],
+            json_key("product_name"),
+        ),
+        Test(
+            "APR-06",
+            "amazon-pricing --zip-code 10001",
+            ["amazon-pricing", "B07FZ8S74R", "--zip-code", "10001"],
+            json_key("product_name"),
+        ),
+        Test(
+            "APR-07",
+            "amazon-pricing --language en_US",
+            ["amazon-pricing", "B07FZ8S74R", "--language", "en_US"],
+            json_key("product_name"),
+        ),
+        Test(
+            "APR-08",
+            "amazon-pricing --currency USD",
+            ["amazon-pricing", "B07FZ8S74R", "--currency", "USD"],
+            json_key("product_name"),
+        ),
+        Test(
+            "APR-09",
+            "amazon-pricing --add-html true",
+            ["amazon-pricing", "B07FZ8S74R", "--add-html", "true"],
+            json_key("product_name"),
+        ),
+        Test(
+            "APR-10",
+            "amazon-pricing --light-request true",
+            ["amazon-pricing", "B07FZ8S74R", "--light-request", "true"],
+            json_key("product_name"),
+        ),
+        Test(
+            "APR-11",
+            "amazon-pricing --device desktop",
+            ["amazon-pricing", "B07FZ8S74R", "--device", "desktop"],
+            json_key("product_name"),
+        ),
+    ]
+
     # ── AS: amazon-search ─────────────────────────────────────────────────────
     # API returns "products" key (not "results"). --device only accepts "desktop".
     tests += [
