@@ -17,6 +17,7 @@ scrapingbee walmart-product --output-file product.json 123456789 --domain com
 | `--domain` | string | Walmart domain. |
 | `--delivery-zip` / `--store-id` | string | Delivery or store. |
 | `--add-html` / `--light-request` / `--screenshot` | true/false | Optional. |
+| `--tag` | string | Optional label included in API response headers. |
 
 ## Batch
 

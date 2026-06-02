@@ -20,6 +20,7 @@ scrapingbee youtube-search --output-file yt-search.json "tutorial python"
 | `--sort-by` | string | `relevance`, `rating`, `view-count`, `upload-date`. |
 | `--hd` / `--4k` / `--subtitles` / `--creative-commons` / `--live` / `--360` / `--3d` / `--hdr` / `--location` / `--vr180` | true/false | Filters. |
 | `--purchased` | true/false | Filter to purchased videos only. |
+| `--tag` | string | Optional label included in API response headers. |
 
 ## Pipeline: search → metadata batch
 

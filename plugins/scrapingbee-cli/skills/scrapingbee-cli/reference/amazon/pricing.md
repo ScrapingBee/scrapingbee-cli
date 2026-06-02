@@ -22,6 +22,7 @@ scrapingbee amazon-pricing --output-file pricing.json B0DPDRNSXV --domain com
 | `--currency` | string | USD, EUR, GBP, etc. |
 | `--add-html` | true/false | Include full HTML. |
 | `--light-request` | true/false | Light request. |
+| `--tag` | string | Optional label included in API response headers. |
 
 ## Batch
 

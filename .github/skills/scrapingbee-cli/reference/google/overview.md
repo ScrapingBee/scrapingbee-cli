@@ -19,10 +19,15 @@ scrapingbee google --output-file serp.json "pizza new york" --country-code us
 | `--device` | string | `desktop` or `mobile`. |
 | `--page` | int | Page number (default 1). |
 | `--language` | string | Language code (e.g. en, fr, de). |
+| `--date-range` | string | `past-hour`, `past-day`, `past-week`, `past-month`, `past-year`. Restrict results by recency. |
 | `--nfpr` | true/false | Disable autocorrection. |
+| `--sort-by` | string | **Shopping only.** `relevance`, `reviews`, `price-asc`, `price-desc`. |
+| `--min-price` | float | **Shopping only.** Minimum price, in the marketplace's native currency. |
+| `--max-price` | float | **Shopping only.** Maximum price, in the marketplace's native currency. |
 | `--extra-params` | string | Extra URL params (URL-encoded). |
 | `--add-html` | true/false | Include full HTML. |
 | `--light-request` | true/false | Light request. |
+| `--tag` | string | Optional label included in API response headers. |
 
 ## Extract URLs for piping
 
