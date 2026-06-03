@@ -1231,9 +1231,7 @@ def _validate_page(value: int | None, name: str = "page") -> None:
         raise SystemExit(1)
 
 
-def _validate_price_range(
-    min_price: float | None, max_price: float | None
-) -> None:
+def _validate_price_range(min_price: float | None, max_price: float | None) -> None:
     """Validate min_price/max_price: non-negative and min <= max."""
     if min_price is not None and min_price < 0:
         click.echo("min_price must be >= 0", err=True)

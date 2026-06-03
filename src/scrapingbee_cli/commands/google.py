@@ -96,7 +96,9 @@ def _warn_empty_organic(data: bytes, search_type: str | None) -> None:
 @optgroup.group("Shopping", help="Options for --search-type shopping only")
 @optgroup.option(
     "--sort-by",
-    type=NormalizedChoice(["relevance", "reviews", "price-asc", "price-desc"], case_sensitive=False),
+    type=NormalizedChoice(
+        ["relevance", "reviews", "price-asc", "price-desc"], case_sensitive=False
+    ),
     default=None,
     help="Sort Shopping results: relevance, reviews, price-asc, price-desc.",
 )
