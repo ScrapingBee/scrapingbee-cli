@@ -294,6 +294,9 @@ class Client:
         light_request: bool | None = None,
         tag: str | None = None,
         date_range: str | None = None,
+        sort_by: str | None = None,
+        min_price: float | None = None,
+        max_price: float | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -310,6 +313,9 @@ class Client:
             "light_request": self._bool(light_request),
             "tag": tag,
             "date_range": date_range,
+            "sort_by": sort_by,
+            "min_price": min_price,
+            "max_price": max_price,
         }
         return await self._get_with_retry(
             "/google",

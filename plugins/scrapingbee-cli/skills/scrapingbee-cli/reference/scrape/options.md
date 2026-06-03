@@ -72,6 +72,7 @@ Blocked? See [reference/proxy/strategies.md](reference/proxy/strategies.md).
 | `--device` | desktop \| mobile | Device type (CLI validates). |
 | `--timeout` | int | Timeout ms (1000–140000). Scrape job timeout on ScrapingBee. The CLI sets the HTTP client (aiohttp) timeout to this value in seconds plus 30 s (for send/receive) so the client does not give up before the API responds. |
 | `--custom-google` / `--transparent-status-code` | — | Google (15 credits), target status. |
+| `--tag` | string | Optional label included in API response headers. |
 | `-X` / `-d` | — | Method (GET, POST, or PUT), body for POST/PUT. The request **to ScrapingBee** is always `application/x-www-form-urlencoded`; use form body (e.g. `KEY_1=VALUE_1`). For POST/PUT use **`--render-js false`** so the request is forwarded without the browser tunnel. |
 
 ## RAG / chunked output

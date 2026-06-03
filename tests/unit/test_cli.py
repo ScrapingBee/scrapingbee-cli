@@ -637,10 +637,15 @@ class TestCommandHelpOutput:
             "--page",
             "--language",
             "--add-html",
+            "--sort-by",
+            "--min-price",
+            "--max-price",
+            "--date-range",
         ):
             assert param in out, f"{param} should appear in google --help"
         for search_type in ("classic", "news", "maps", "shopping", "images", "ai-mode"):
             assert search_type in out, f"search type {search_type!r} should appear in google --help"
+        assert "price-asc" in out, "Shopping sort value should appear in google --help"
 
     def test_global_help_lists_all_commands(self):
         from tests.conftest import cli_run
