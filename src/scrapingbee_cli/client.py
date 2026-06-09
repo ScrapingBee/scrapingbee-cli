@@ -294,6 +294,9 @@ class Client:
         light_request: bool | None = None,
         tag: str | None = None,
         date_range: str | None = None,
+        sort_by: str | None = None,
+        min_price: float | None = None,
+        max_price: float | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -310,6 +313,9 @@ class Client:
             "light_request": self._bool(light_request),
             "tag": tag,
             "date_range": date_range,
+            "sort_by": sort_by,
+            "min_price": min_price,
+            "max_price": max_price,
         }
         return await self._get_with_retry(
             "/google",
@@ -373,6 +379,40 @@ class Client:
         }
         return await self._get_with_retry(
             "/amazon/product",
+            params,
+            retries=retries,
+            backoff=backoff,
+        )
+
+    async def amazon_pricing(
+        self,
+        asin: str,
+        device: str | None = None,
+        domain: str | None = None,
+        country: str | None = None,
+        zip_code: str | None = None,
+        language: str | None = None,
+        currency: str | None = None,
+        add_html: bool | None = None,
+        light_request: bool | None = None,
+        tag: str | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
+    ) -> tuple[bytes, dict, int]:
+        params = {
+            "asin": asin,
+            "device": device,
+            "domain": domain,
+            "country": country,
+            "zip_code": zip_code,
+            "language": language,
+            "currency": currency,
+            "add_html": self._bool(add_html),
+            "light_request": self._bool(light_request),
+            "tag": tag,
+        }
+        return await self._get_with_retry(
+            "/amazon/pricing",
             params,
             retries=retries,
             backoff=backoff,

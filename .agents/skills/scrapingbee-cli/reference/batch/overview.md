@@ -25,6 +25,7 @@ Commands with **single input** (URL, query, ASIN, video ID, prompt) support batc
 | google | Search query | [reference/google/overview.md](reference/google/overview.md) |
 | fast-search | Search query | [reference/fast-search/overview.md](reference/fast-search/overview.md) |
 | amazon-product | ASIN | [reference/amazon/product.md](reference/amazon/product.md) |
+| amazon-pricing | ASIN | [reference/amazon/pricing.md](reference/amazon/pricing.md) |
 | amazon-search | Search query | [reference/amazon/search.md](reference/amazon/search.md) |
 | walmart-search | Search query | [reference/walmart/search.md](reference/walmart/search.md) |
 | walmart-product | Product ID | [reference/walmart/product.md](reference/walmart/product.md) |

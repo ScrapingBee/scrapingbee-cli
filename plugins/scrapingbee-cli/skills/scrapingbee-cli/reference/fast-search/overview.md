@@ -17,6 +17,7 @@ scrapingbee fast-search --output-file fast.json "ai news today" --country-code u
 | `--page` | int | Page number (default 1). |
 | `--country-code` | string | ISO 3166-1 country. |
 | `--language` | string | Language code (e.g. en, fr). |
+| `--tag` | string | Optional label included in API response headers. |
 
 ## Pipeline: fast search → scrape result pages
 

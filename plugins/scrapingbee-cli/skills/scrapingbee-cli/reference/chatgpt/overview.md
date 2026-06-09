@@ -11,6 +11,7 @@ Send a prompt to the ScrapingBee ChatGPT endpoint. **Credit:** 15 per request.
 | `--search` | Enable web search to enhance the response (`true`/`false`). Only `true` sends the param; `false` is ignored. | not sent |
 | `--add-html` | Include full HTML of the page in results (`true`/`false`). | not sent |
 | `--country-code` | Country code for geolocation (ISO 3166-1, e.g. `us`, `gb`). | not sent |
+| `--tag` | Optional label included in API response headers. | not sent |
 
 Plus global flags: `--output-file`, `--verbose`, `--output-dir`, `--concurrency`, `--retries`, `--backoff`.
 

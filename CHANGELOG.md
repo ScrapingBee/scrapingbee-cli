@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3] - 2026-05-28
+
+### Added
+
+- **`amazon-pricing` command** — fetch Amazon pricing details by ASIN via `/amazon/pricing`. Supports `--domain`, `--country`, `--zip-code`, `--language`, `--currency`, `--add-html`, `--light-request`, `--tag`, and batch mode (`--input-file` + `--output-dir`). `--device` accepts `desktop` only. **Credit:** 5–15 per request.
+- **`--sort-by`, `--min-price`, `--max-price` on `google --search-type shopping`** — order Shopping results via `--sort-by relevance|reviews|price-asc|price-desc` (also accepts the underscore form `price_asc`, ...) and narrow them server-side with `--min-price`/`--max-price`. Forwarded to the API as `sort_by`/`min_price`/`max_price` when set, omitted otherwise. These apply only to `--search-type shopping`. Prices are in the marketplace's native currency (e.g. `--min-price 50 --country-code de` means €50+).
+
 ## [1.4.2] - 2026-05-25
 
 ### Added

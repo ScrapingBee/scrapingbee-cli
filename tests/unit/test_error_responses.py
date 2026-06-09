@@ -65,6 +65,11 @@ def _mock_client_cls(method_name: str, status_code: int, body: bytes = b'{"error
             "amazon_product",
         ),
         (
+            ["amazon-pricing", "B001234"],
+            "scrapingbee_cli.commands.amazon.Client",
+            "amazon_pricing",
+        ),
+        (
             ["amazon-search", "laptop"],
             "scrapingbee_cli.commands.amazon.Client",
             "amazon_search",

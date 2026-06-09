@@ -24,6 +24,7 @@ scrapingbee amazon-search --output-file search.json "laptop" --domain com --sort
 | `--category-id` / `--merchant-id` | string | Category or seller. |
 | `--autoselect-variant` | true/false | Auto-select variants. |
 | `--add-html` / `--light-request` / `--screenshot` | true/false | Optional. |
+| `--tag` | string | Optional label included in API response headers. |
 
 ## Pipeline: search → product details
 

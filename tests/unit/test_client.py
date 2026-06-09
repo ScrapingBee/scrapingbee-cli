@@ -204,6 +204,7 @@ _FIRST_ARG = {
     "google_search": "coffee",
     "fast_search": "coffee",
     "amazon_product": "B000000000",
+    "amazon_pricing": "B000000000",
     "amazon_search": "coffee",
     "walmart_search": "coffee",
     "walmart_product": "12345",
@@ -260,5 +261,66 @@ class TestGoogleDateRange:
             with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
                 await client.google_search("coffee", retries=0)
             assert "date_range" not in captured["params"]
+
+        asyncio.run(run())
+
+
+class TestGoogleShoppingParams:
+    """Tests that google_search forwards Shopping params only when set."""
+
+    @pytest.mark.parametrize("value", ["relevance", "reviews", "price_asc", "price_desc"])
+    def test_sort_by_sent_when_set(self, value):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search(
+                    "shoes", search_type="shopping", sort_by=value, retries=0
+                )
+            assert captured["params"].get("sort_by") == value
+
+        asyncio.run(run())
+
+    def test_min_max_price_sent_when_set(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search(
+                    "shoes",
+                    search_type="shopping",
+                    min_price=50,
+                    max_price=150,
+                    retries=0,
+                )
+            assert captured["params"].get("min_price") == 50
+            assert captured["params"].get("max_price") == 150
+
+        asyncio.run(run())
+
+    def test_shopping_params_omitted_when_unset(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search("shoes", retries=0)
+            assert "sort_by" not in captured["params"]
+            assert "min_price" not in captured["params"]
+            assert "max_price" not in captured["params"]
 
         asyncio.run(run())

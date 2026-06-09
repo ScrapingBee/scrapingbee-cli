@@ -106,7 +106,7 @@ scrapingbee schedule --every 1d --name my-tracker \
 | `scrape` (premium proxy, with JS) | 25 |
 | `scrape` (stealth proxy) | 75 |
 | `google` / `fast-search` | 10–15 |
-| `amazon-product` / `amazon-search` | 5–15 |
+| `amazon-product` / `amazon-pricing` / `amazon-search` | 5–15 |
 | `walmart-product` / `walmart-search` | 10–15 |
 | `youtube-search` / `youtube-metadata` | 5 |
 | `chatgpt` | 15 |

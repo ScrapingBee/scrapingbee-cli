@@ -20,6 +20,7 @@ from ..cli_utils import (
     NormalizedChoice,
     _batch_options,
     _validate_page,
+    _validate_price_range,
     check_api_response,
     norm_val,
     parse_bool,
@@ -92,6 +93,27 @@ def _warn_empty_organic(data: bytes, search_type: str | None) -> None:
     default=None,
     help="Restrict results to the past hour/day/week/month/year.",
 )
+@optgroup.group("Shopping", help="Options for --search-type shopping only")
+@optgroup.option(
+    "--sort-by",
+    type=NormalizedChoice(
+        ["relevance", "reviews", "price-asc", "price-desc"], case_sensitive=False
+    ),
+    default=None,
+    help="Sort Shopping results: relevance, reviews, price-asc, price-desc.",
+)
+@optgroup.option(
+    "--min-price",
+    type=float,
+    default=None,
+    help="Minimum price filter, in the marketplace's native currency.",
+)
+@optgroup.option(
+    "--max-price",
+    type=float,
+    default=None,
+    help="Maximum price filter, in the marketplace's native currency.",
+)
 @optgroup.group("Filters", help="Autocorrection, extra params, and response format")
 @optgroup.option("--nfpr", type=str, default=None, help="Disable autocorrection (true/false).")
 @optgroup.option(
@@ -128,6 +150,9 @@ def google_cmd(
     light_request: str | None,
     tag: str | None,
     date_range: str | None,
+    sort_by: str | None,
+    min_price: float | None,
+    max_price: float | None,
     **kwargs,
 ) -> None:
     """Search Google using the Google Search API."""
@@ -139,6 +164,7 @@ def google_cmd(
         click.echo(str(e), err=True)
         raise SystemExit(1)
     _validate_page(page)
+    _validate_price_range(min_price, max_price)
 
     if input_file:
         if query:
@@ -176,6 +202,9 @@ def google_cmd(
                 light_request=parse_bool(light_request),
                 tag=tag,
                 date_range=norm_val(date_range),
+                sort_by=norm_val(sort_by),
+                min_price=min_price,
+                max_price=max_price,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -220,6 +249,9 @@ def google_cmd(
                 light_request=parse_bool(light_request),
                 tag=tag,
                 date_range=norm_val(date_range),
+                sort_by=norm_val(sort_by),
+                min_price=min_price,
+                max_price=max_price,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
