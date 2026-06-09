@@ -58,7 +58,7 @@ scrapingbee [command] [arguments] [options]
 | `scrape [url]` | Scrape a URL (HTML, JS, screenshot, extract) |
 | `crawl` | Crawl sites following links, with AI extraction and save-pattern filtering |
 | `google` / `fast-search` | Search SERP APIs |
-| `amazon-product` / `amazon-search` | Amazon product and search |
+| `amazon-product` / `amazon-pricing` / `amazon-search` | Amazon product, pricing and search |
 | `walmart-search` / `walmart-product` | Walmart search and product |
 | `youtube-search` / `youtube-metadata` | YouTube search and video metadata |
 | `chatgpt` | ChatGPT API (`--search true` for web-enhanced responses) |

@@ -72,6 +72,12 @@ WALMART_SORT_BY = ["best-match", "price-low", "price-high", "best-seller"]
 @optgroup.option("--add-html", type=str, default=None, help="Include full HTML (true/false).")
 @optgroup.option("--light-request", type=str, default=None, help="Light request (true/false).")
 @optgroup.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@optgroup.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Optional label included in API response headers.",
+)
 @_batch_options
 @click.pass_obj
 def walmart_search_cmd(
@@ -90,6 +96,7 @@ def walmart_search_cmd(
     add_html: str | None,
     light_request: str | None,
     screenshot: str | None,
+    tag: str | None,
     **kwargs,
 ) -> None:
     """Search Walmart products."""
@@ -141,6 +148,7 @@ def walmart_search_cmd(
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -187,6 +195,7 @@ def walmart_search_cmd(
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -225,6 +234,12 @@ def walmart_search_cmd(
 @optgroup.option("--add-html", type=str, default=None, help="Include full HTML (true/false).")
 @optgroup.option("--light-request", type=str, default=None, help="Light request (true/false).")
 @optgroup.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@optgroup.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Optional label included in API response headers.",
+)
 @_batch_options
 @click.pass_obj
 def walmart_product_cmd(
@@ -237,6 +252,7 @@ def walmart_product_cmd(
     add_html: str | None,
     light_request: str | None,
     screenshot: str | None,
+    tag: str | None,
     **kwargs,
 ) -> None:
     """Fetch Walmart product details by product ID."""
@@ -280,6 +296,7 @@ def walmart_product_cmd(
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -320,6 +337,7 @@ def walmart_product_cmd(
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
+                tag=tag,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )

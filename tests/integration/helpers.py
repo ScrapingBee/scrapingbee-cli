@@ -210,6 +210,7 @@ CLI_COMMANDS = [
     ("google", ["query"]),
     ("fast-search", ["query"]),
     ("amazon-product", ["B001"]),
+    ("amazon-pricing", ["B001"]),
     ("amazon-search", ["query"]),
     ("walmart-search", ["query"]),
     ("walmart-product", ["1"]),

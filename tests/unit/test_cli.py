@@ -503,6 +503,21 @@ class TestCommandHelpOutput:
         ):
             assert param in out, f"{param} should appear in amazon-product --help"
 
+    def test_amazon_pricing_help(self):
+        from tests.conftest import cli_run
+
+        code, out, _ = cli_run(["amazon-pricing", "--help"])
+        assert code == 0
+        for param in (
+            "--device",
+            "--domain",
+            "--country",
+            "--language",
+            "--currency",
+            "--add-html",
+        ):
+            assert param in out, f"{param} should appear in amazon-pricing --help"
+
     def test_amazon_search_help(self):
         from tests.conftest import cli_run
 
@@ -622,10 +637,15 @@ class TestCommandHelpOutput:
             "--page",
             "--language",
             "--add-html",
+            "--sort-by",
+            "--min-price",
+            "--max-price",
+            "--date-range",
         ):
             assert param in out, f"{param} should appear in google --help"
         for search_type in ("classic", "news", "maps", "shopping", "images", "ai-mode"):
             assert search_type in out, f"search type {search_type!r} should appear in google --help"
+        assert "price-asc" in out, "Shopping sort value should appear in google --help"
 
     def test_global_help_lists_all_commands(self):
         from tests.conftest import cli_run
@@ -638,6 +658,7 @@ class TestCommandHelpOutput:
             "google",
             "fast-search",
             "amazon-product",
+            "amazon-pricing",
             "amazon-search",
             "walmart-search",
             "walmart-product",

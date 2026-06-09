@@ -12,6 +12,7 @@ ESTIMATED_CREDITS: dict[str, str] = {
     "google": "10-15",
     "fast-search": "10",
     "amazon-product": "5-15",
+    "amazon-pricing": "5-15",
     "amazon-search": "5-15",
     "walmart-search": "10-15",
     "walmart-product": "10-15",

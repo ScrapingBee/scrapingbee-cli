@@ -22,6 +22,7 @@ scrapingbee walmart-search --output-file search.json "headphones" --min-price 20
 | `--fulfillment-type` | string | e.g. `in_store`. |
 | `--delivery-zip` / `--store-id` | string | Delivery or store. |
 | `--add-html` / `--light-request` / `--screenshot` | true/false | Optional. |
+| `--tag` | string | Optional label included in API response headers. |
 
 ## Pipeline: search → product details
 

@@ -295,6 +295,12 @@ SCRAPE_PRESETS = (
     help="Return target status/body as-is (true/false). No retry on 500.",
 )
 @optgroup.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Optional label included in API response headers.",
+)
+@optgroup.option(
     "-X",
     "--method",
     type=click.Choice(["GET", "POST", "PUT"], case_sensitive=False),
@@ -352,6 +358,7 @@ def scrape_cmd(
     device: str | None,
     custom_google: str | None,
     transparent_status_code: str | None,
+    tag: str | None,
     method: str,
     body: str | None,
     escalate_proxy: bool,
@@ -477,6 +484,7 @@ def scrape_cmd(
             device=device,
             custom_google=custom_google,
             transparent_status_code=transparent_status_code,
+            tag=tag,
             body=body,
             scraping_config=scraping_config,
         )

@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3] - 2026-05-28
+
+### Added
+
+- **`amazon-pricing` command** — fetch Amazon pricing details by ASIN via `/amazon/pricing`. Supports `--domain`, `--country`, `--zip-code`, `--language`, `--currency`, `--add-html`, `--light-request`, `--tag`, and batch mode (`--input-file` + `--output-dir`). `--device` accepts `desktop` only. **Credit:** 5–15 per request.
+- **`--sort-by`, `--min-price`, `--max-price` on `google --search-type shopping`** — order Shopping results via `--sort-by relevance|reviews|price-asc|price-desc` (also accepts the underscore form `price_asc`, ...) and narrow them server-side with `--min-price`/`--max-price`. Forwarded to the API as `sort_by`/`min_price`/`max_price` when set, omitted otherwise. These apply only to `--search-type shopping`. Prices are in the marketplace's native currency (e.g. `--min-price 50 --country-code de` means €50+).
+
+## [1.4.2] - 2026-05-25
+
+### Added
+
+- **`--tag` on all API-hitting commands** — `scrape`, `crawl`, `google`, `fast-search`, `amazon-product`, `amazon-search`, `walmart-search`, `walmart-product`, `youtube-search`, `youtube-metadata`, and `chatgpt` now accept `--tag VALUE` to optionally label requests - tag is included in API response headers. Forwarded to the API as `?tag=...` when set, omitted otherwise.
+- **`--date-range` on `google`** — restrict results to the past hour/day/week/month/year via `--date-range past-hour|past-day|past-week|past-month|past-year` (also accepts the underscore form `past_hour`, ...). Forwarded to the API as `date_range=past_week` (snake_case).
+
 ## [1.4.1] - 2026-04-17
 
 ### Fixed

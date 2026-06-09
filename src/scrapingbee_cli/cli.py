@@ -159,6 +159,7 @@ def _handle_scraping_config() -> None:
         "google",
         "fast-search",
         "amazon-product",
+        "amazon-pricing",
         "amazon-search",
         "walmart-search",
         "walmart-product",

@@ -23,6 +23,7 @@ scrapingbee amazon-product --output-file product.json B0DPDRNSXV --domain com
 | `--add-html` | true/false | Include full HTML. |
 | `--light-request` | true/false | Light request. |
 | `--screenshot` | true/false | Take screenshot. |
+| `--tag` | string | Optional label included in API response headers. |
 
 ## Batch
 

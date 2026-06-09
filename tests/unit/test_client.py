@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from scrapingbee_cli.client import Client, parse_usage, pretty_json
+from scrapingbee_cli.client import Client, _clean_params, parse_usage, pretty_json
 
 
 class TestParseUsage:
@@ -167,5 +167,160 @@ class TestGetWithRetry:
                 out = await client._get_with_retry("/usage", {"api_key": "k"}, retries=2)
             assert out == (b"ok", {}, 200)
             assert m.call_count == 2
+
+        asyncio.run(run())
+
+
+def _call_with(method_name: str, tag):
+    """Invoke a Client method by name with a minimal positional arg, optionally passing tag.
+
+    Returns the (path, cleaned_params) recorded by the patched _get. Methods all
+    funnel through Client._get (directly or via _get_with_retry), so patching
+    _get captures the params dict and _clean_params() mirrors what hits the wire.
+    """
+
+    async def run():
+        client = Client("fake-key")
+        captured: dict = {}
+
+        async def fake_get(path, params, headers=None):
+            captured["path"] = path
+            captured["params"] = _clean_params(params)
+            return (b"{}", {}, 200)
+
+        with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+            method = getattr(client, method_name)
+            kwargs = {"tag": tag} if tag is not None else {}
+            # Disable retries so failures don't loop on the stub.
+            kwargs["retries"] = 0
+            await method(_FIRST_ARG[method_name], **kwargs)
+        return captured
+
+    return asyncio.run(run())
+
+
+_FIRST_ARG = {
+    "scrape": "https://example.com",
+    "google_search": "coffee",
+    "fast_search": "coffee",
+    "amazon_product": "B000000000",
+    "amazon_pricing": "B000000000",
+    "amazon_search": "coffee",
+    "walmart_search": "coffee",
+    "walmart_product": "12345",
+    "youtube_search": "coffee",
+    "youtube_metadata": "dQw4w9WgXcQ",
+    "chatgpt": "hello",
+}
+
+
+class TestTagParam:
+    """Tests that --tag is forwarded as ?tag=... when set, and omitted when not."""
+
+    @pytest.mark.parametrize("method_name", list(_FIRST_ARG))
+    def test_tag_sent_when_set(self, method_name):
+        captured = _call_with(method_name, tag="my-tag")
+        assert captured["params"].get("tag") == "my-tag"
+
+    @pytest.mark.parametrize("method_name", list(_FIRST_ARG))
+    def test_tag_omitted_when_unset(self, method_name):
+        captured = _call_with(method_name, tag=None)
+        assert "tag" not in captured["params"]
+
+
+class TestGoogleDateRange:
+    """Tests that google_search forwards date_range only when set."""
+
+    @pytest.mark.parametrize(
+        "value", ["past_hour", "past_day", "past_week", "past_month", "past_year"]
+    )
+    def test_date_range_sent_when_set(self, value):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search("coffee", date_range=value, retries=0)
+            assert captured["params"].get("date_range") == value
+
+        asyncio.run(run())
+
+    def test_date_range_omitted_when_unset(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search("coffee", retries=0)
+            assert "date_range" not in captured["params"]
+
+        asyncio.run(run())
+
+
+class TestGoogleShoppingParams:
+    """Tests that google_search forwards Shopping params only when set."""
+
+    @pytest.mark.parametrize("value", ["relevance", "reviews", "price_asc", "price_desc"])
+    def test_sort_by_sent_when_set(self, value):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search(
+                    "shoes", search_type="shopping", sort_by=value, retries=0
+                )
+            assert captured["params"].get("sort_by") == value
+
+        asyncio.run(run())
+
+    def test_min_max_price_sent_when_set(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search(
+                    "shoes",
+                    search_type="shopping",
+                    min_price=50,
+                    max_price=150,
+                    retries=0,
+                )
+            assert captured["params"].get("min_price") == 50
+            assert captured["params"].get("max_price") == 150
+
+        asyncio.run(run())
+
+    def test_shopping_params_omitted_when_unset(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search("shoes", retries=0)
+            assert "sort_by" not in captured["params"]
+            assert "min_price" not in captured["params"]
+            assert "max_price" not in captured["params"]
 
         asyncio.run(run())

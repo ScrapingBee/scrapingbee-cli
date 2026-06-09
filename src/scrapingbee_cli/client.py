@@ -176,6 +176,7 @@ class Client:
         device: str | None = None,
         custom_google: bool | None = None,
         transparent_status_code: bool | None = None,
+        tag: str | None = None,
         body: str | None = None,
         scraping_config: str | None = None,
         retries: int = 3,
@@ -218,6 +219,7 @@ class Client:
             ("device", device),
             ("custom_google", self._bool(custom_google)),
             ("transparent_status_code", self._bool(transparent_status_code)),
+            ("tag", tag),
             ("scraping_config", scraping_config),
         ]:
             if v is not None:
@@ -290,6 +292,11 @@ class Client:
         extra_params: str | None = None,
         add_html: bool | None = None,
         light_request: bool | None = None,
+        tag: str | None = None,
+        date_range: str | None = None,
+        sort_by: str | None = None,
+        min_price: float | None = None,
+        max_price: float | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -304,6 +311,11 @@ class Client:
             "extra_params": extra_params,
             "add_html": self._bool(add_html),
             "light_request": self._bool(light_request),
+            "tag": tag,
+            "date_range": date_range,
+            "sort_by": sort_by,
+            "min_price": min_price,
+            "max_price": max_price,
         }
         return await self._get_with_retry(
             "/google",
@@ -318,6 +330,7 @@ class Client:
         page: int | None = None,
         country_code: str | None = None,
         language: str | None = None,
+        tag: str | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -326,6 +339,7 @@ class Client:
             "page": page if page is not None else None,
             "country_code": country_code,
             "language": language,
+            "tag": tag,
         }
         return await self._get_with_retry(
             "/fast_search",
@@ -346,6 +360,7 @@ class Client:
         add_html: bool | None = None,
         light_request: bool | None = None,
         screenshot: bool | None = None,
+        tag: str | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -360,9 +375,44 @@ class Client:
             "add_html": self._bool(add_html),
             "light_request": self._bool(light_request),
             "screenshot": self._bool(screenshot),
+            "tag": tag,
         }
         return await self._get_with_retry(
             "/amazon/product",
+            params,
+            retries=retries,
+            backoff=backoff,
+        )
+
+    async def amazon_pricing(
+        self,
+        asin: str,
+        device: str | None = None,
+        domain: str | None = None,
+        country: str | None = None,
+        zip_code: str | None = None,
+        language: str | None = None,
+        currency: str | None = None,
+        add_html: bool | None = None,
+        light_request: bool | None = None,
+        tag: str | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
+    ) -> tuple[bytes, dict, int]:
+        params = {
+            "asin": asin,
+            "device": device,
+            "domain": domain,
+            "country": country,
+            "zip_code": zip_code,
+            "language": language,
+            "currency": currency,
+            "add_html": self._bool(add_html),
+            "light_request": self._bool(light_request),
+            "tag": tag,
+        }
+        return await self._get_with_retry(
+            "/amazon/pricing",
             params,
             retries=retries,
             backoff=backoff,
@@ -386,6 +436,7 @@ class Client:
         add_html: bool | None = None,
         light_request: bool | None = None,
         screenshot: bool | None = None,
+        tag: str | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -406,6 +457,7 @@ class Client:
             "add_html": self._bool(add_html),
             "light_request": self._bool(light_request),
             "screenshot": self._bool(screenshot),
+            "tag": tag,
         }
         return await self._get_with_retry(
             "/amazon/search",
@@ -430,6 +482,7 @@ class Client:
         add_html: bool | None = None,
         light_request: bool | None = None,
         screenshot: bool | None = None,
+        tag: str | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -448,6 +501,7 @@ class Client:
             "add_html": self._bool(add_html),
             "light_request": self._bool(light_request),
             "screenshot": self._bool(screenshot),
+            "tag": tag,
         }
         return await self._get_with_retry(
             "/walmart/search",
@@ -466,6 +520,7 @@ class Client:
         add_html: bool | None = None,
         light_request: bool | None = None,
         screenshot: bool | None = None,
+        tag: str | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -478,6 +533,7 @@ class Client:
             "add_html": self._bool(add_html),
             "light_request": self._bool(light_request),
             "screenshot": self._bool(screenshot),
+            "tag": tag,
         }
         return await self._get_with_retry(
             "/walmart/product",
@@ -504,6 +560,7 @@ class Client:
         location: bool | None = None,
         vr180: bool | None = None,
         purchased: bool | None = None,
+        tag: str | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -524,6 +581,7 @@ class Client:
             "location": self._bool(location),
             "vr180": self._bool(vr180),
             "purchased": self._bool(purchased),
+            "tag": tag,
         }
         return await self._get_with_retry(
             "/youtube/search",
@@ -535,12 +593,13 @@ class Client:
     async def youtube_metadata(
         self,
         video_id: str,
+        tag: str | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
         return await self._get_with_retry(
             "/youtube/metadata",
-            {"video_id": video_id},
+            {"video_id": video_id, "tag": tag},
             retries=retries,
             backoff=backoff,
         )
@@ -551,6 +610,7 @@ class Client:
         search: bool | None = None,
         add_html: bool | None = None,
         country_code: str | None = None,
+        tag: str | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -561,6 +621,8 @@ class Client:
             params["add_html"] = str(add_html).lower()
         if country_code is not None:
             params["country_code"] = country_code
+        if tag is not None:
+            params["tag"] = tag
         return await self._get_with_retry(
             "/chatgpt",
             params,
