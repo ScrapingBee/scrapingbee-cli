@@ -1414,6 +1414,31 @@ def parse_bool(val: str | None) -> bool | None:
     raise ValueError(f"Invalid boolean '{val}'. Use true/false, 1/0, or yes/no.")
 
 
+class BoolStringParamType(click.ParamType):
+    """A true/false (also 1/0, yes/no) option value, validated at parse time.
+
+    Without this a bool option is plain ``type=str``, so a missing or option-like value
+    (e.g. ``--render-js --output-file x``) gets silently swallowed and surfaces as the
+    misleading "unexpected extra argument". Here ``parse_bool`` runs during parsing, so the
+    user gets a clear "use true/false" error instead. The original string is returned
+    unchanged — ``build_scrape_kwargs``/``parse_bool`` stay the single place that converts
+    to a real bool.
+    """
+
+    name = "true|false"
+
+    def convert(self, value, param, ctx):
+        try:
+            parse_bool(value)
+        except ValueError as exc:
+            self.fail(str(exc), param, ctx)
+        return value
+
+
+# Shared singleton for every true/false CLI option (accepted values: see parse_bool).
+BOOL_STR = BoolStringParamType()
+
+
 def build_scrape_kwargs(
     *,
     method: str = "GET",
@@ -1782,6 +1807,13 @@ def write_output(
             raise SystemExit(1)
         with fh:
             fh.write(data)
+        # Confirm the save with the path — both as feedback (M1: success was
+        # otherwise silent) and so the REPL auto-linkifies it (click-to-open
+        # only works on paths printed to the scrollback). stderr keeps
+        # stdout/pipes clean for non-REPL use.
+        from .theme import BEE_DIM, BEE_YELLOW, err_console
+
+        err_console.print(f"  [{BEE_DIM}]Saved to[/] [bold {BEE_YELLOW}]{output_path}[/]")
     else:
         # In REPL mode, truncate large text dumps to a tidy preview and surface
         # a path to the full output. Non-REPL invocations (`scrapingbee scrape ...`)

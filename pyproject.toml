@@ -57,6 +57,8 @@ Issues = "https://github.com/ScrapingBee/scrapingbee-cli/issues"
 dev = [
     "pytest>=7",
     "pytest-cov>=4",
+    "pexpect>=4.8",
+    "pyte>=0.8",
     "ruff>=0.8",
     "ty>=0.0.17",
     "build",
@@ -92,6 +94,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "integration: marks tests that call the live API (deselect with '-m \"not integration\"')",
+    "pty: marks tests that drive the REPL under a pseudo-terminal (pexpect+pyte; Unix-only, slower; deselect with '-m \"not pty\"')",
 ]
 addopts = "-v --tb=short"
 filterwarnings = [

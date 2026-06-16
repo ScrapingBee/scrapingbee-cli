@@ -43,7 +43,8 @@ CONTENT_TYPE_EXTENSION: dict[str, str] = {
     "application/zip": "zip",
 }
 
-# HTML API (scrape) can return multiple types. Put images in screenshots/, other binary in files/.
+# Intentional layout (changing it is breaking): one scrape batch can return multiple content
+# types, so images go in screenshots/ and other binary in files/, while text stays in the root.
 SCREENSHOT_EXTENSIONS = frozenset({"png", "jpg", "gif", "webp"})
 BINARY_FILE_EXTENSIONS = frozenset({"pdf", "zip"})
 
@@ -687,7 +688,12 @@ def default_batch_output_dir() -> str:
 
 
 def _credits_used_from_headers(headers: dict) -> int | None:
-    """Extract the Spb-Cost header value as an int, or None."""
+    """Extract the Spb-Cost header value as an int, or None.
+
+    Intentional: credits are recorded ONLY from the API's actual Spb-Cost header, never an
+    estimate — the cost model changes and not every endpoint returns it, so a guess is worse
+    than none. (This is why single scrapes don't print a credit count.)
+    """
     for k, v in headers.items():
         if k.lower() == "spb-cost" and v:
             try:

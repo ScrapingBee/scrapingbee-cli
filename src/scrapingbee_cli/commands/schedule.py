@@ -179,8 +179,18 @@ def _print_schedules(registry: dict[str, dict]) -> None:
     click.echo(err=True)
 
 
+def _require_cron() -> None:
+    """Scheduling is cron-based (macOS/Linux). Fail cleanly where cron is absent (e.g. Windows)."""
+    if shutil.which("crontab") is None:
+        raise click.UsageError(
+            "Scheduling requires cron, available on macOS/Linux but not on this system "
+            "(e.g. Windows). The rest of the CLI works normally."
+        )
+
+
 def _add_schedule(name: str, every: str, cmd_args: tuple[str, ...]) -> None:
     """Add a cron job for the schedule."""
+    _require_cron()
     _validate_schedule_name(name)
 
     from ..audit import log_exec
@@ -252,6 +262,7 @@ def _remove_cron_entry(name: str) -> None:
 
 def _stop_schedule(name: str | None) -> None:
     """Stop one or all schedules by removing cron entries."""
+    _require_cron()
     registry = _load_registry()
 
     if not registry:
@@ -333,6 +344,12 @@ def schedule_cmd(
         return
 
     if not every:
+        word = cmd_args[0].lower() if cmd_args else ""
+        if word in ("list", "ls", "show", "status"):
+            raise click.UsageError("Did you mean 'scrapingbee schedule --list'?")
+        if word in ("stop", "cancel", "delete", "remove", "rm"):
+            target = cmd_args[1] if len(cmd_args) > 1 else "<name>"
+            raise click.UsageError(f"Did you mean 'scrapingbee schedule --stop {target}'?")
         click.echo("--every is required (unless using --stop or --list).", err=True)
         raise SystemExit(1)
 

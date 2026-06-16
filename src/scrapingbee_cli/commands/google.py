@@ -16,6 +16,7 @@ from ..batch import (
     validate_batch_run,
 )
 from ..cli_utils import (
+    BOOL_STR,
     DEVICE_DESKTOP_MOBILE,
     NormalizedChoice,
     _batch_options,
@@ -115,16 +116,16 @@ def _warn_empty_organic(data: bytes, search_type: str | None) -> None:
     help="Maximum price filter, in the marketplace's native currency.",
 )
 @optgroup.group("Filters", help="Autocorrection, extra params, and response format")
-@optgroup.option("--nfpr", type=str, default=None, help="Disable autocorrection (true/false).")
+@optgroup.option("--nfpr", type=BOOL_STR, default=None, help="Disable autocorrection (true/false).")
 @optgroup.option(
     "--extra-params", type=str, default=None, help="Extra URL parameters (URL-encoded)."
 )
 @optgroup.option(
-    "--add-html", type=str, default=None, help="Include full HTML in response (true/false)."
+    "--add-html", type=BOOL_STR, default=None, help="Include full HTML in response (true/false)."
 )
 @optgroup.option(
     "--light-request",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Light request mode, 10 credits (true/false). Fewer data than regular.",
 )
@@ -158,6 +159,9 @@ def google_cmd(
     """Search Google using the Google Search API."""
     store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
+    if not input_file and not query:
+        click.echo("expected one search query, or use --input-file for batch", err=True)
+        raise SystemExit(1)
     try:
         key = get_api_key(None)
     except ValueError as e:

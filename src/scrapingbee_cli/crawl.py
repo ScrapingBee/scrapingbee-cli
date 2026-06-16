@@ -269,9 +269,17 @@ def _preferred_extension_from_scrape_params(params: dict[str, Any]) -> str | Non
     return_page_markdown -> md; return_page_text -> txt;
     json_response / extract_rules / ai_extract_rules / ai_query -> json.
     """
-    if _param_truthy(params, "screenshot") and _param_truthy(params, "json_response"):
+    # Any screenshot mode (bare / full-page / selector) returns a PNG body, so
+    # mirror _requires_discovery_phase here — otherwise full-page / selector
+    # screenshots fall through to the URL-path heuristic and get saved as .html.
+    screenshot = (
+        _param_truthy(params, "screenshot")
+        or _param_truthy(params, "screenshot_full_page")
+        or params.get("screenshot_selector")
+    )
+    if screenshot and _param_truthy(params, "json_response"):
         return "json"
-    if _param_truthy(params, "screenshot"):
+    if screenshot:
         return "png"
     if _param_truthy(params, "return_page_markdown"):
         return "md"
@@ -753,10 +761,20 @@ class GenericScrapingBeeSpider(Spider):
             out[key] = val
         return out
 
-    def _save_response(self, response: Response) -> None:
-        """Write response body to output_dir (one file per response)."""
+    def _save_response(self, response: Response) -> bool:
+        """Write response body to output_dir (one file per response).
+
+        Returns True if a file was written, False if skipped because the
+        ``max_pages`` cap is already reached. The cap check, the write-counter
+        reservation, and the ``_save_count`` bump happen together under
+        ``_write_lock``, so ``--max-pages N`` holds as a HARD cap regardless of
+        crawl concurrency — responses that arrive after the cap trips (up to
+        ``concurrency`` can be in flight) are dropped here instead of written.
+        Previously callbacks checked the cap *after* writing, so concurrency > 1
+        overshot by up to ``concurrency - 1`` files.
+        """
         if not self.output_dir:
-            return
+            return False
         headers = self._response_headers_dict(response)
         preferred = _preferred_extension_from_scrape_params(self.scrape_params)
         ext = extension_for_crawl(response.url, headers, response.body, preferred)
@@ -779,8 +797,12 @@ class GenericScrapingBeeSpider(Spider):
             except (ValueError, TypeError):
                 pass
         with self._write_lock:
+            # Hard cap, atomic with the counter bump below — see docstring.
+            if self.max_pages != 0 and self._save_count >= self.max_pages:
+                return False
             n = self._write_counter
             self._write_counter += 1
+            self._save_count += 1
             filename = f"{n + 1}.{ext}"
             rel = f"{subdir}/{filename}" if subdir else filename
             self._url_file_map[response.url] = {
@@ -796,6 +818,7 @@ class GenericScrapingBeeSpider(Spider):
         out_path.mkdir(parents=True, exist_ok=True)
         out_path = out_path / f"{n + 1}.{ext}"
         out_path.write_bytes(response.body)
+        return True
 
     def closed(self, reason: str) -> None:
         """Write manifest.json (URL → relative filename) when the crawl ends."""
@@ -910,9 +933,8 @@ class GenericScrapingBeeSpider(Spider):
         self._fetch_count += 1
         self.logger.info("Fetched %s (%d bytes)", response.url, len(response.body))
         try:
-            self._save_response(response)
-            self._save_count += 1
-            self._push_saved_status()
+            if self._save_response(response):
+                self._push_saved_status()
         except CloseSpider:
             # The cap-reached signal from _push_saved_status MUST
             # propagate to Scrapy's engine — catching it as a generic
@@ -960,9 +982,8 @@ class GenericScrapingBeeSpider(Spider):
             )
             if save_this and within_cap:
                 try:
-                    self._save_response(response)
-                    self._save_count += 1
-                    self._push_saved_status()
+                    if self._save_response(response):
+                        self._push_saved_status()
                 except _CloseSpider:
                     raise
                 except Exception as e:
@@ -1039,9 +1060,8 @@ class GenericScrapingBeeSpider(Spider):
 
         self.logger.info("Fetched %s (%d bytes) [save]", response.url, len(response.body))
         try:
-            self._save_response(response)
-            self._save_count += 1
-            self._push_saved_status()
+            if self._save_response(response):
+                self._push_saved_status()
         except CloseSpider:
             raise
         except Exception as e:

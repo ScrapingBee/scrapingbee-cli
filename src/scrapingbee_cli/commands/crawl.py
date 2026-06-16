@@ -7,6 +7,7 @@ from click_option_group import optgroup
 
 from ..batch import get_batch_usage, resolve_batch_concurrency
 from ..cli_utils import (
+    BOOL_STR,
     DEVICE_DESKTOP_MOBILE,
     WAIT_BROWSER_HELP,
     _output_options,
@@ -131,7 +132,7 @@ def _crawl_build_params(
 @optgroup.group("Rendering", help="JavaScript rendering and viewport options")
 @optgroup.option(
     "--render-js",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Enable/disable JS rendering (true/false). When omitted, parameter is not sent (API default may apply).",
 )
@@ -148,18 +149,24 @@ def _crawl_build_params(
     "--wait-for", type=str, default=None, help="CSS or XPath selector to wait for before returning."
 )
 @optgroup.option("--wait-browser", type=str, default=None, help=WAIT_BROWSER_HELP)
-@optgroup.option("--block-ads", type=str, default=None, help="Block ads (true/false).")
+@optgroup.option("--block-ads", type=BOOL_STR, default=None, help="Block ads (true/false).")
 @optgroup.option(
-    "--block-resources", type=str, default=None, help="Block images and CSS (true/false)."
+    "--block-resources", type=BOOL_STR, default=None, help="Block images and CSS (true/false)."
 )
 @optgroup.option("--window-width", type=int, default=None, help="Viewport width in pixels.")
 @optgroup.option("--window-height", type=int, default=None, help="Viewport height in pixels.")
 @optgroup.group("Proxy", help="Proxy and geo options")
 @optgroup.option(
-    "--premium-proxy", type=str, default=None, help="Use premium/residential proxies (true/false)."
+    "--premium-proxy",
+    type=BOOL_STR,
+    default=None,
+    help="Use premium/residential proxies (true/false).",
 )
 @optgroup.option(
-    "--stealth-proxy", type=str, default=None, help="Use stealth proxies (true/false). 75 credits."
+    "--stealth-proxy",
+    type=BOOL_STR,
+    default=None,
+    help="Use stealth proxies (true/false). 75 credits.",
 )
 @optgroup.option("--country-code", type=str, default=None, help="Proxy country code (ISO 3166-1).")
 @optgroup.option("--own-proxy", type=str, default=None, help="Your proxy: user:pass@host:port.")
@@ -169,44 +176,44 @@ def _crawl_build_params(
 )
 @optgroup.option(
     "--forward-headers",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Forward custom headers to target (true/false). Use -H with Spb- prefix for GET.",
 )
 @optgroup.option(
     "--forward-headers-pure",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Forward only custom headers (true/false).",
 )
 @optgroup.group("Output", help="Response format")
 @optgroup.option(
-    "--json-response", type=str, default=None, help="Wrap response in JSON (true/false)."
+    "--json-response", type=BOOL_STR, default=None, help="Wrap response in JSON (true/false)."
 )
 @optgroup.option(
     "--return-page-source",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Return unaltered HTML. Value: true or false (e.g. --return-page-source true).",
 )
 @optgroup.option(
     "--return-page-markdown",
     "return_page_markdown",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Return main content as markdown. Value: true or false (e.g. --return-page-markdown true).",
 )
 @optgroup.option(
     "--return-page-text",
     "return_page_text",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Return main content as plain text. Value: true or false (e.g. --return-page-text true).",
 )
 @optgroup.group("Screenshot", help="Screenshot capture options")
 @optgroup.option(
     "--screenshot",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Capture screenshot (true/false). Requires render_js=true.",
 )
@@ -214,7 +221,7 @@ def _crawl_build_params(
     "--screenshot-selector", type=str, default=None, help="CSS selector for screenshot area."
 )
 @optgroup.option(
-    "--screenshot-full-page", type=str, default=None, help="Full page screenshot (true/false)."
+    "--screenshot-full-page", type=BOOL_STR, default=None, help="Full page screenshot (true/false)."
 )
 @optgroup.group("Extraction", help="CSS/XPath and AI extraction (+5 credits for AI)")
 @optgroup.option(
@@ -242,11 +249,11 @@ def _crawl_build_params(
     help="Device: desktop or mobile.",
 )
 @optgroup.option(
-    "--custom-google", type=str, default=None, help="Scrape Google domains (true/false)."
+    "--custom-google", type=BOOL_STR, default=None, help="Scrape Google domains (true/false)."
 )
 @optgroup.option(
     "--transparent-status-code",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Return target status as-is (true/false).",
 )

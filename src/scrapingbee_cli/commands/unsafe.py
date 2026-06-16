@@ -51,6 +51,7 @@ from ..exec_gate import (
     default=None,
     help="Show entries until this time (e.g. '2026-03-31', '2026-03-31T18:00').",
 )
+@click.argument("extra", nargs=-1)
 @click.pass_obj
 def unsafe_cmd(
     obj: dict,
@@ -60,12 +61,30 @@ def unsafe_cmd(
     audit_lines: int,
     audit_since: str | None,
     audit_until: str | None,
+    extra: tuple[str, ...],
 ) -> None:
     """Manage unsafe shell execution features.
 
     Use --list to check status, --disable to turn off, --audit to review log.
     To enable unsafe mode, use: scrapingbee auth --unsafe
     """
+    if extra:
+        word = extra[0].lower()
+        suggestion = {
+            "status": "--list",
+            "show": "--list",
+            "list": "--list",
+            "audit": "--audit",
+            "log": "--audit",
+            "logs": "--audit",
+            "disable": "--disable",
+            "off": "--disable",
+        }.get(word)
+        hint = f" Did you mean 'unsafe {suggestion}'?" if suggestion else ""
+        raise click.UsageError(
+            f"'{extra[0]}' is not a sub-command — 'unsafe' is controlled by flags."
+            f"{hint} See 'unsafe --help'."
+        )
     if disable:
         if not is_exec_enabled():
             click.echo("Unsafe mode is already disabled.", err=True)

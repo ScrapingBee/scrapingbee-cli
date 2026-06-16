@@ -40,6 +40,8 @@ def usage_cmd(obj: dict, **kwargs) -> None:
             # Warm the shared file cache so concurrent batch subprocesses skip the API call.
             write_usage_file_cache(key, parse_usage(data))
 
+            # Intentional: REPL prints a human dashboard; plain CLI prints raw JSON so a
+            # script or AI can parse `usage`. Do not "fix" the CLI branch to human output.
             if is_repl_mode():
                 _show_repl_usage(data)
             else:

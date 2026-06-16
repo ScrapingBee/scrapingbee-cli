@@ -5,6 +5,7 @@ Command-line client for the [ScrapingBee](https://www.scrapingbee.com/) API: scr
 ## Requirements
 
 - **Python 3.10+**
+- **Linux:** clipboard copy (e.g. selecting text in the interactive REPL's `:view` pager) needs one of `wl-copy`, `xclip`, or `xsel` installed. macOS (`pbcopy`) and Windows (`clip`) work out of the box.
 
 **Setup:** Install (below), then authenticate (Configuration). You need a ScrapingBee API key before any command will work.
 
@@ -72,6 +73,7 @@ scrapingbee [command] [arguments] [options]
 
 ### Key features
 
+- **Interactive REPL:** run `scrapingbee` with no command to open an interactive shell — a live toolbar (credits, concurrency, elapsed), `:`-commands (`:help`, `:set` for session defaults, `:view` to page the last output, `:q` to quit), and any command run inline with completion and history. Drag across scrollback output to copy it to the clipboard; pass `--no-drag-copy` to use the Scroll/Select toggle (Shift+Tab) instead.
 - **AI extraction:** `--ai-extract-rules '{"price": "product price", "title": "product name"}'` pulls structured data from any page using natural language — no CSS selectors needed. Works with `scrape`, `crawl`, and batch mode.
 - **CSS/XPath extraction:** `--extract-rules '{"title": "h1", "price": ".price"}'` for consistent, cheaper production scraping. Find selectors in browser DevTools.
 - **Pipelines:** Chain commands with `--extract-field` — e.g. `google QUERY --extract-field organic_results.url > urls.txt` then `scrape --input-file urls.txt`. Use `--fields` to filter JSON output keys; supports dot notation (e.g. `--fields product.title,product.price`).

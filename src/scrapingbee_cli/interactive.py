@@ -33,6 +33,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterable
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
@@ -388,6 +389,71 @@ def _split_fragments_to_width(
     return out
 
 
+def _styled_with_selection(
+    row: list[tuple[str, str]],
+    line_index: int,
+    start_char: int,
+    lo: tuple[int, int],
+    hi: tuple[int, int],
+) -> list[tuple[str, str]]:
+    """Apply a ``reverse`` highlight to the portion of one visual ``row`` covered
+    by a drag-selection ``[lo, hi]`` (stable ``(line, char)`` coords, lo <= hi).
+    ``row`` is a visual row of logical line ``line_index`` beginning at absolute
+    char ``start_char``. Splits fragments at the selection boundaries and tags
+    the covered slice with ``reverse`` (composes with existing styling). Pure and
+    side-effect-free so it's unit-testable.
+    """
+    lo_line, lo_char = lo
+    hi_line, hi_char = hi
+    if line_index < lo_line or line_index > hi_line:
+        return row
+    row_len = sum(len(t) for _, t in row)
+    if row_len == 0:
+        return row
+    sel_a = lo_char if line_index == lo_line else 0
+    sel_b = hi_char if line_index == hi_line else start_char + row_len
+    a = max(0, max(start_char, sel_a) - start_char)
+    b = min(row_len, sel_b - start_char)
+    if a >= b:
+        return row
+    out: list[tuple[str, str]] = []
+    cursor = 0
+    for style, text in row:
+        if not text:
+            out.append((style, text))
+            continue
+        seg_end = cursor + len(text)
+        hl_s = max(a, cursor)
+        hl_e = min(b, seg_end)
+        if hl_s >= hl_e:
+            out.append((style, text))
+        else:
+            ls = hl_s - cursor
+            le = hl_e - cursor
+            if ls > 0:
+                out.append((style, text[:ls]))
+            out.append((f"{style} reverse".strip(), text[ls:le]))
+            if le < len(text):
+                out.append((style, text[le:]))
+        cursor = seg_end
+    return out
+
+
+def _slice_selection(texts: list[str], lo: tuple[int, int], hi: tuple[int, int]) -> str:
+    """Extract a drag-selection's text from ``texts`` (the logical line strings from
+    line ``lo[0]`` to ``hi[0]``, inclusive). Same line → substring; spanning lines →
+    first-line tail + whole middle lines + last-line head, joined with newlines. Pure
+    and unit-testable; the closure wires it to ``ScrollbackBuffer.snapshot_line_texts``.
+    """
+    if not texts:
+        return ""
+    lo_line, lo_char = lo
+    hi_line, hi_char = hi
+    if lo_line == hi_line:
+        return texts[0][lo_char:hi_char]
+    return "\n".join([texts[0][lo_char:], *texts[1:-1], texts[-1][:hi_char]])
+
+
 class ScrollbackBuffer:
     """In-memory line buffer that backs the scrollable output Window.
 
@@ -530,19 +596,43 @@ class ScrollbackBuffer:
         JSON blob that wraps to dozens of rows. This is what makes
         wheel/trackpad scrolling feel consistent regardless of line
         length.
+
+        Thin wrapper over ``get_visible_visual_with_meta`` (single source of
+        truth for the bottom-up walk + scroll clamp); discards provenance.
+        """
+        rows, _meta = self.get_visible_visual_with_meta(height, width)
+        return rows
+
+    def get_visible_visual_with_meta(
+        self, height: int, width: int
+    ) -> tuple[list[list[tuple[str, str]]], list[tuple[int, int]]]:
+        """Like ``get_visible_visual`` but also return, per visual row, its
+        provenance ``(line_index, start_char)`` — the index into ``self.lines``
+        and the absolute character offset within that logical line where the
+        visual row begins. This lets a mouse ``(y, x)`` map to a *stable*
+        (line, char) position so drag-selection survives scrolling. ``rows`` is
+        identical to what ``get_visible_visual`` returns. ``line_index`` is
+        ``-1`` for the ``width <= 1`` fallback (selection disabled there).
         """
         if width <= 1:
-            return self.get_visible_window(height)
+            rows = self.get_visible_window(height)
+            return rows, [(-1, 0)] * len(rows)
         with self._lock:
-            # Walk from the bottom up, accumulating visual rows until we
-            # have enough to fill the window at the requested scroll offset.
-            # Stops early on large buffers — we don't need to wrap content
-            # the user can't see this frame.
+            # Walk from the bottom up, accumulating (visual_row, provenance)
+            # until we have enough to fill the window at the requested offset.
             need = max(0, self.scroll_offset) + max(1, height)
-            collected: list[list[tuple[str, str]]] = []  # newest-first
-            for line in reversed(self.lines):
-                for visual_row in reversed(_split_fragments_to_width(line, width)):
-                    collected.append(visual_row)
+            collected: list[tuple[list[tuple[str, str]], tuple[int, int]]] = []  # newest-first
+            n_lines = len(self.lines)
+            for k, line in enumerate(reversed(self.lines)):
+                line_index = n_lines - 1 - k
+                sub = _split_fragments_to_width(line, width)
+                start_char = 0
+                starts: list[int] = []
+                for vr in sub:
+                    starts.append(start_char)
+                    start_char += sum(len(t) for _, t in vr)
+                for vr, sc in zip(reversed(sub), reversed(starts)):
+                    collected.append((vr, (line_index, sc)))
                 if len(collected) >= need:
                     break
             collected.reverse()  # back to oldest-first
@@ -552,7 +642,18 @@ class ScrollbackBuffer:
                 self.scroll_offset = max_offset
             end = total - self.scroll_offset
             start = max(0, end - height)
-            return collected[start:end]
+            window = collected[start:end]
+            return [r for r, _ in window], [m for _, m in window]
+
+    def snapshot_line_texts(self, start: int, end: int) -> list[str]:
+        """Concatenated text of logical lines ``[start..end]`` (inclusive,
+        clamped to range), under the lock — used to extract a drag-selection's
+        text from the stable model rather than the scrolled view.
+        """
+        with self._lock:
+            lo = max(0, start)
+            hi = min(len(self.lines) - 1, end)
+            return ["".join(t for _, t in self.lines[i]) for i in range(lo, hi + 1)]
 
     def scroll_up(self, n: int = 1) -> None:
         with self._lock:
@@ -756,6 +857,9 @@ class SessionState:
         # "select" = mouse_support off (native drag-select works everywhere
         # without a modifier, but wheel scroll stops). Alt+S toggles.
         self.mouse_mode: str = "scroll"
+        # True only under the --no-drag-copy launch flag; gates the scroll/select toggle
+        # above. Default (False) = drag-to-copy scrollback, set from run_repl().
+        self.classic_mouse: bool = False
 
     def apply_settings_to_args(
         self, args: list[str], accepted: set[str] | None = None
@@ -957,6 +1061,84 @@ def _make_lexer():
 
 
 # ---------------------------------------------------------------------------
+# Responsive layout tiers
+# ---------------------------------------------------------------------------
+#
+# The REPL adapts its chrome to the live terminal size: full ASCII banner and
+# all decorations at a comfortable width, progressively shedding visuals as the
+# window shrinks, and a blocking "too small" message below a usable floor.
+# prompt_toolkit re-renders on every resize (SIGWINCH), so each render/height/
+# visibility decision just calls _layout_tier() per frame and the UI tracks the
+# window live — no manual resize handler needed.
+
+# Width breakpoints (columns) and the usable floor. Tunable.
+_FULL_BANNER_COLS = 90  # full ASCII wordmark's widest row is 90 cols
+_COMPACT_COLS = 60  # below this, drop the tagline/hint
+_MINIMAL_COLS = 40  # below this, drop the banner entirely (BARE)
+_MIN_COLS = 30  # below this (or _MIN_ROWS) → blocking message
+_MIN_ROWS = 10  # below this many rows → blocking message
+# Banner collapses vertically when rows are scarce, even at full width, so it
+# never crowds out the scrollback (where command/help output lives):
+_BANNER_FULL_MIN_ROWS = 20  # below this → 3-row compact banner instead of full
+_BANNER_COMPACT_MIN_ROWS = 12  # below this → 1-row banner
+# Best-effort "ideal" size requested on startup (grow-only): just enough for
+# the full banner plus comfortable scrollback — not the old 150x50 grab.
+_IDEAL_COLS = 92
+_IDEAL_ROWS = 30
+
+
+class _Tier(IntEnum):
+    """Ordered layout tiers — higher means more room. Compare with >=."""
+
+    TOO_SMALL = 0  # blocking message; input paused
+    BARE = 1  # bare prompt + mode-only toolbar, no banner/chrome
+    MINIMAL = 2  # one-line wordmark + separator + credits-first toolbar
+    COMPACT = 3  # one-line wordmark + tagline/hint + full chrome
+    FULL = 4  # full ASCII banner
+
+
+def _term_size() -> tuple[int, int]:
+    """(columns, rows) from the live prompt_toolkit app when one is running,
+    else from shutil. ``get_app()`` returns a dummy outside a real run loop
+    whose size is a useless constant, so we only trust it while running.
+    """
+    try:
+        from prompt_toolkit.application import get_app as _get_app
+
+        _app = _get_app()
+        if getattr(_app, "is_running", False):
+            size = _app.output.get_size()
+            return size.columns, size.rows
+    except Exception:
+        pass
+    import shutil
+
+    s = shutil.get_terminal_size((80, 24))
+    return s.columns, s.lines
+
+
+def _layout_tier(cols: int | None = None, rows: int | None = None) -> _Tier:
+    """Classify the (live, or injected) terminal size into a layout tier.
+
+    cols/rows are injectable so the tier boundaries are unit-testable without
+    a real terminal.
+    """
+    if cols is None or rows is None:
+        live_cols, live_rows = _term_size()
+        cols = live_cols if cols is None else cols
+        rows = live_rows if rows is None else rows
+    if cols < _MIN_COLS or rows < _MIN_ROWS:
+        return _Tier.TOO_SMALL
+    if cols < _MINIMAL_COLS:
+        return _Tier.BARE
+    if cols < _COMPACT_COLS:
+        return _Tier.MINIMAL
+    if cols < _FULL_BANNER_COLS:
+        return _Tier.COMPACT
+    return _Tier.FULL
+
+
+# ---------------------------------------------------------------------------
 # Bottom toolbar
 # ---------------------------------------------------------------------------
 
@@ -975,26 +1157,32 @@ def _make_toolbar(state: SessionState):
     """
 
     def render() -> list[tuple[str, str]]:
-        # Width: prefer prompt_toolkit's live SIGWINCH-tracked size when an
-        # app is actually running (so the toolbar stays in lockstep with
-        # what prompt_toolkit's own renderer is using). Outside a run loop,
-        # ``get_app()`` returns a dummy whose output reports a constant 80
-        # — useless — so we fall through to shutil in that case.
-        width = 0
-        try:
-            from prompt_toolkit.application import get_app as _get_app
-
-            _app = _get_app()
-            # get_app() returns a dummy outside a real run loop; its output
-            # reports a constant 80 — useless. Only trust the live app.
-            if getattr(_app, "is_running", False):
-                width = _app.output.get_size().columns
-        except Exception:
-            pass
-        if not width:
-            import shutil
-
-            width = shutil.get_terminal_size((80, 24)).columns
+        # Live SIGWINCH-tracked size via the shared helper (falls back to
+        # shutil outside a run loop). See _term_size / _layout_tier.
+        width, rows = _term_size()
+        # At the narrowest usable tier the strip collapses to just the mouse-
+        # mode indicator (Scroll / Select) — the one piece of state needed to
+        # operate; the full field set needs more room than BARE has. (First
+        # run: show the auth hint instead.) Wider tiers keep the greedy packer
+        # below, which already leads with Available Credits when idle.
+        if _layout_tier(width, rows) <= _Tier.BARE:
+            if not state.api_key_set:
+                return [
+                    ("class:toolbar", "  "),
+                    ("class:toolbar.hint", "type `auth` to set API key"),
+                ]
+            if getattr(state, "classic_mouse", False):
+                mode_label = "Scroll mode" if state.mouse_mode == "scroll" else "Select mode"
+                return [("class:toolbar", "  "), ("class:toolbar.value", mode_label)]
+            # Default (drag-copy) mode has no mouse-mode chip — surface the most
+            # useful single datum (Available Credits) instead, else just spacing.
+            if state.credits is not None:
+                return [
+                    ("class:toolbar", "  "),
+                    ("class:toolbar.label", "Available Credits "),
+                    ("class:toolbar.value", _format_credits(state.credits)),
+                ]
+            return [("class:toolbar", "  ")]
         segs: list[tuple[str, str]] = [("class:toolbar", "  ")]
 
         # Unified toolbar pipeline for both idle and in-flight modes:
@@ -1071,20 +1259,23 @@ def _make_toolbar(state: SessionState):
                 display_v = v if len(v) <= _max_chip_value else v[: _max_chip_value - 1] + "…"
                 fields.append([("class:toolbar.chip", f" {k}={display_v} ")])
 
-        # Hint chunk pinned bottom-right. Always shows the active mouse
-        # mode label (Scroll / Select) so the user can see what mouse
-        # behaviour they have at a glance — even while a command is
-        # running. The Shift+Tab toggle is documented in ``:help`` to
-        # keep this strip clean. While running we additionally append
-        # ``Ctrl+C to stop`` so the cancel affordance stays visible.
+        # Hint chunk pinned bottom-right (highest-priority strip content). Holds, by branch
+        # order: the "set API key" nudge until authed; under --no-drag-copy the active mouse
+        # mode label (Scroll / Select) so the toggle state is visible at a glance; otherwise
+        # nothing — default drag-copy mode keeps the strip clean. While a command runs we
+        # additionally append ``Ctrl+C to stop`` so the cancel affordance stays visible.
         if not state.api_key_set:
             hint_text = "type `auth` to set API key"
             hint_chunk: list[tuple[str, str]] = [("class:toolbar.hint", hint_text)]
-        else:
+        elif getattr(state, "classic_mouse", False):
             mode_label = "Scroll mode" if state.mouse_mode == "scroll" else "Select mode"
             hint_chunk = [("class:toolbar.value", mode_label)]
             if state.is_running:
                 hint_chunk.append(("class:toolbar.hint", "  ·  Ctrl+C to stop"))
+        else:
+            # Default (drag-copy) mode: no mode chip in the pinned slot — only the
+            # running-state cancel hint, if a command is in flight.
+            hint_chunk = [("class:toolbar.hint", "Ctrl+C to stop")] if state.is_running else []
 
         _leading = "  "
         _sep = "  ·  "
@@ -1093,11 +1284,10 @@ def _make_toolbar(state: SessionState):
         def _seg_len(chunk: list[tuple[str, str]]) -> int:
             return sum(len(t) for _, t in chunk)
 
-        # The mode hint ("Scroll mode · Tab to switch" / auth nudge) is the
-        # one piece of toolbar content the user needs to see at all times —
-        # it advertises the only globally-mutable runtime mode. Pin it on
-        # every page by reserving its width up-front and pagination only
-        # packs the *other* fields into the remaining space.
+        # Pin the hint chunk on every page: reserve its width up-front and let pagination
+        # pack only the *other* fields into the remaining space (it's the auth / mouse-mode /
+        # cancel affordance, so it must never be paginated away). When the chunk is empty —
+        # default mode with nothing running — this is a no-op.
         hint_len = _seg_len(hint_chunk)
         budget = max(10, width - 2)
         # Reserve room for hint + separator on every page. If the hint alone
@@ -1394,27 +1584,33 @@ def _print_help(commands: dict[str, str]) -> None:
     """Print the REPL command list with a two-column layout.
 
     Long descriptions wrap with a hanging indent so continuation lines line
-    up under the description column instead of flowing back to column 0.
-    Column widths:
-        4 (leading)  +  20 (cmd col)  +  2 (gap)  =  26-col indent for
-    continuation lines. The description column gets the rest of the
-    terminal width.
+    up under the description column instead of flowing back to column 0. The
+    column widths adapt to the terminal: 4 (leading) + 20 (cmd) + 2 (gap)
+    normally, shrinking to 2 + 16 + 1 on narrow (<60 col) terminals so the
+    description column never overflows.
     """
     import shutil
     import textwrap
-
-    cmd_col = 20
-    leading = 4
-    gap = 2
-    indent_width = leading + cmd_col + gap  # 26
-    indent_str = " " * indent_width
 
     def _print_row(cmd: str, desc: str) -> None:
         try:
             term_w = shutil.get_terminal_size((80, 24)).columns
         except Exception:
             term_w = 80
-        desc_w = max(20, term_w - indent_width)
+        # Two-column layout that adapts to width. On narrow terminals shrink the
+        # command column + leading/gap so the description column keeps a usable
+        # width instead of overflowing (the old fixed 26-col indent forced a
+        # ~46-col minimum line).
+        if term_w < 60:
+            leading, gap, cmd_col = 2, 1, 16
+        else:
+            leading, gap, cmd_col = 4, 2, 20
+        indent_width = leading + cmd_col + gap
+        # The scrollback re-wraps at width-1 (a terminal last-column quirk), so
+        # target term_w-1 — otherwise a full-width row spills its last char onto
+        # a new line at column 0 (garbled help) and the extra visual rows push
+        # the top of a long help past the scroll cap (unreachable by scrolling).
+        desc_w = max(8, term_w - indent_width - 1)
         lines = textwrap.wrap(desc, width=desc_w) or [""]
         # Build Text objects directly instead of using Rich's markup
         # parser — markup strings like ``[dim]...[/]`` go through Rich's
@@ -1430,7 +1626,7 @@ def _print_help(commands: dict[str, str]) -> None:
         err_console.print(first, soft_wrap=True)
         for line in lines[1:]:
             cont = Text()
-            cont.append(indent_str)
+            cont.append(" " * indent_width)
             cont.append(line, style=BEE_DIM)
             err_console.print(cont, soft_wrap=True)
 
@@ -1455,7 +1651,7 @@ def _print_help(commands: dict[str, str]) -> None:
     err_console.print(f"  [{BEE_DIM}]REPL[/]")
     for cmd, desc in [
         (":help, :?", "Show this command list"),
-        (":clear", "Clear the screen"),
+        (":clear", "Clear the scrollback buffer"),
         (
             ":view",
             "Scroll the last command's output (auto-picks crawl.log after crawl; pass a path to view any file)",
@@ -1463,7 +1659,8 @@ def _print_help(commands: dict[str, str]) -> None:
         (":set K=V ...", "Set one or more session defaults"),
         (":unset K", "Remove a session default ('all' or '*' clears every)"),
         (":reset", "Clear every session default"),
-        (":show, :list", "Show current session defaults"),
+        (":show", "Show current session defaults"),
+        (":list", "List active scheduled jobs"),
         ("!<cmd>", "Run a shell command (requires unsafe mode)"),
         (":q, :quit", "Quit the REPL"),
     ]:
@@ -1472,7 +1669,7 @@ def _print_help(commands: dict[str, str]) -> None:
     err_console.print(f"  [{BEE_DIM}]Shortcuts[/]")
     for cmd, desc in [
         ("Tab", "Complete (inline if 1 match, popup if many, ghost word otherwise)"),
-        ("Shift+Tab", "Cycle popup back / toggle Scroll ↔ Select mode"),
+        ("Shift+Tab", "Cycle the completion popup backwards"),
         ("Esc", "Close the completion popup"),
         ("→", "Accept the next word of the ghost suggestion"),
         ("End", "Accept the whole ghost suggestion"),
@@ -1481,7 +1678,8 @@ def _print_help(commands: dict[str, str]) -> None:
         ("Ctrl+Home/End", "Jump to top / bottom of scrollback"),
         ("Ctrl+J", "Insert a newline (multi-line compose; also Alt/Option+Enter)"),
         ("Ctrl+W", "Delete the word before the cursor (also Alt/Option+⌫)"),
-        ("Click", "Open a highlighted path in Finder / default app"),
+        ("Click a path", "Open it in Finder / default app"),
+        ("Click + drag", "Select scrollback text, copied to the clipboard"),
         ("Ctrl+C", "Stop running command / cancel queue / clear multi-line / exit when idle"),
         ("Ctrl+D", "Exit the REPL (when no command is running)"),
     ]:
@@ -1494,6 +1692,11 @@ def _print_command_header(args: list[str]) -> None:
 
     width = shutil.get_terminal_size((80, 24)).columns
     label = " " + " ".join(args) + " "
+    # Truncate the label so the rule never exceeds the terminal width ("─── "
+    # prefix = 4; the -6 below keeps a small right margin once it fits).
+    max_label = max(0, width - 9)
+    if len(label) > max_label:
+        label = label[:max_label].rstrip() + "…"
     fill = max(3, width - len(label) - 6)
     line = Text()
     line.append("─── ", style=BEE_DIM)
@@ -1521,6 +1724,32 @@ def _print_command_footer(status: str, duration: float) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _copy_to_clipboard(text: str) -> bool:
+    """Best-effort copy to the OS clipboard via the platform's CLI tool — no
+    third-party dependency (pyperclip isn't installed). Returns True on success.
+    """
+    if not text:
+        return False
+    import shutil
+    import subprocess
+
+    if sys.platform == "darwin":
+        candidates = [["pbcopy"]]
+    elif sys.platform.startswith("win"):
+        candidates = [["clip"]]
+    else:
+        candidates = [["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-ib"]]
+    for cmd in candidates:
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            subprocess.run(cmd, input=text.encode("utf-8"), check=True)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _open_pager(path: str) -> None:
     """Cross-platform scrollable pager built on prompt_toolkit.
 
@@ -1529,7 +1758,7 @@ def _open_pager(path: str) -> None:
     install. Arrow keys / page up-down / home / end / mouse wheel scroll;
     `q` or `Esc` exits back to the REPL. Long lines wrap to the terminal
     width so you can see all of a wide JSON or HTML response without
-    horizontal scrolling. Press `p` to toggle pretty-printed JSON.
+    horizontal scrolling. Press `r` to toggle pretty-printed JSON.
     """
     import json
     from pathlib import Path
@@ -1543,6 +1772,7 @@ def _open_pager(path: str) -> None:
     from prompt_toolkit.layout.containers import HSplit, Window
     from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
     from prompt_toolkit.layout.dimension import D
+    from prompt_toolkit.mouse_events import MouseEventType
     from prompt_toolkit.styles import Style
 
     raw_text = Path(path).read_text(encoding="utf-8", errors="replace")
@@ -1590,8 +1820,35 @@ def _open_pager(path: str) -> None:
     def _current_line_count() -> int:
         return buffer.document.line_count
 
+    class _ScrollBufferControl(BufferControl):
+        # The mouse stays captured (mouse_support on) at all times, which lets
+        # us own two interactions the terminal would otherwise take:
+        #   • Wheel → cursor moves. BufferControl reports wheel as
+        #     NotImplemented and, since this control is focused, the Window
+        #     snaps back to keep the cursor visible — so plain viewport scroll
+        #     gets reverted. Moving the cursor (like ↑/↓) makes it stick.
+        #   • Drag → copy. prompt_toolkit enables motion tracking (mode 1003),
+        #     so the base handler builds a selection from the drag; on release
+        #     we copy it to the OS clipboard. Keeping the mouse captured avoids
+        #     handing scroll to the terminal, which in the alt screen would peek
+        #     at the pre-REPL scrollback.
+        def mouse_handler(self, mouse_event):
+            et = mouse_event.event_type
+            if et == MouseEventType.SCROLL_UP:
+                buffer.cursor_up(count=3)
+                return None
+            if et == MouseEventType.SCROLL_DOWN:
+                buffer.cursor_down(count=3)
+                return None
+            result = super().mouse_handler(mouse_event)
+            if et == MouseEventType.MOUSE_UP and buffer.selection_state is not None:
+                start, end = buffer.document.selection_range()
+                if end > start:
+                    _copy_to_clipboard(buffer.document.text[start:end])
+            return result
+
     text_window = Window(
-        content=BufferControl(buffer=buffer),
+        content=_ScrollBufferControl(buffer=buffer),
         # Wrap long lines so a multi-KB JSON / HTML response is fully
         # visible without horizontal scrolling. The previous default
         # (wrap_lines=False) clipped at column-N and the rest was just
@@ -1600,28 +1857,36 @@ def _open_pager(path: str) -> None:
     )
 
     def _status_line():
+        width, _ = _term_size()
         cursor_line = buffer.document.cursor_position_row + 1
         total = _current_line_count()
         pct = int(cursor_line / max(1, total) * 100)
-        mode_label = "pretty" if mode[0] == "pretty" else "raw"
-        # `r` toggles raw on/off. Hidden when there's no pretty version
-        # available (non-JSON content) — there'd be nothing to toggle to.
-        toggle_hint = (
-            ("r: pretty" if mode[0] == "raw" else "r: raw") if pretty_text is not None else ""
-        )
-        right_hint = (
-            "↑↓ PgUp/PgDn scroll"
-            + (f"  ·  {toggle_hint}" if toggle_hint else "")
-            + "  ·  q to exit"
-        )
-        return [
-            ("class:pager.bar", "  "),
-            ("class:pager.value", f"{cursor_line}/{total}"),
-            ("class:pager.bar", f"  ({pct}%)  ·  {mode_label}  ·  "),
-            ("class:pager.label", path),
-            ("class:pager.bar", "    "),
-            ("class:pager.hint", right_hint),
+
+        # One mode now (mouse always captured: wheel scrolls, drag copies), so
+        # there's no Scroll/Select chip — just position, keys, and the path,
+        # packed left and dropped from the end as the window narrows.
+        segments: list[tuple[str, str]] = [
+            (f"{cursor_line}/{total} ({pct}%)", "class:pager.value"),
+            ("q exit", "class:pager.hint"),
         ]
+        if pretty_text is not None:
+            segments.append((f"r: {'pretty' if mode[0] == 'raw' else 'raw'}", "class:pager.hint"))
+        segments.append(("click & drag to copy", "class:pager.hint"))
+        segments.append((path, "class:pager.label"))
+
+        sep = "  ·  "
+        frags: list[tuple[str, str]] = [("class:pager.bar", "  ")]
+        used = 2  # 2-space left margin
+        for text, style in segments:
+            prefix = sep if used > 2 else ""
+            # Strict priority — stop at the first that doesn't fit (clean prefix).
+            if used + len(prefix) + len(text) > width - 1:  # -1 = last-col guard
+                break
+            if prefix:
+                frags.append(("class:pager.bar", prefix))
+            frags.append((style, text))
+            used += len(prefix) + len(text)
+        return frags
 
     status_window = Window(
         content=FormattedTextControl(_status_line),
@@ -1840,7 +2105,15 @@ def _handle_meta(
             sys.stderr.write("\033[2J\033[H")
             sys.stderr.flush()
         return "ok"
-    if head_low in (":show", ":list"):
+    if head_low == ":list":
+        # List active scheduled jobs (the documented behavior). This used to
+        # alias :show — which only shows session defaults — so a live schedule
+        # never appeared. Reuse the same registry + printer as `schedule --list`.
+        from .commands.schedule import _load_registry, _print_schedules
+
+        _print_schedules(_load_registry())
+        return "ok"
+    if head_low == ":show":
         if not state.settings:
             err_console.print(f"  [{BEE_DIM}]No session defaults set.[/]")
         else:
@@ -2096,7 +2369,9 @@ def _make_completer(
 _INTERACTIVE_COMMANDS = {"tutorial", "auth"}
 
 
-def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
+def run_repl(
+    cli_group: Any, version: str, *, keep_bg: bool = False, classic_mouse: bool = False
+) -> None:
     """Run the REPL with the Ink-style hybrid pattern.
 
     Banner is printed to real stdout, lands in scrollback. The input + toolbar
@@ -2189,6 +2464,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         all_known_flags.update(flags_list)
 
     state = SessionState()
+    state.classic_mouse = classic_mouse
     state.refresh_credits_from_cache()
 
     from .config import get_api_key_if_set
@@ -2220,22 +2496,21 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         sys.stdout.write("\033]10;#EAEAEA\007")
         sys.stdout.flush()
 
-    # ── Request a usable terminal size (best-effort) ────────────────────────
-    # The banner is 90 cols wide; with margins + input + toolbar the REPL
-    # really wants ~100 cols × ~30 rows. XTERM Window Manipulation
-    # sequence "CSI 8 ; H ; W t" asks the terminal to resize itself to
-    # the given rows/cols. Honoured by xterm (with allowWindowOps),
-    # iTerm2, kitty, alacritty, WezTerm, Windows Terminal, GNOME
-    # Terminal. macOS Terminal.app and SSH/tmux sessions ignore it —
-    # we silently accept whatever size we end up with. Only fires when
-    # the current size is below the target so a user who's already on a
-    # large window isn't disrupted.
+    # ── Best-effort: open at a comfortable size (grow-only) ─────────────────
+    # The full ASCII banner needs 90 cols; _IDEAL_COLS/_IDEAL_ROWS (~92×30) is
+    # just enough for it plus a comfortable scrollback. The XTERM Window
+    # Manipulation sequence "CSI 8 ; H ; W t" asks the terminal to resize to
+    # the given rows/cols. Honoured by xterm (allowWindowOps), iTerm2, kitty,
+    # alacritty, WezTerm, Windows Terminal, GNOME Terminal; macOS Terminal.app
+    # and SSH/tmux ignore it. This is now a pure nicety, NOT a requirement: the
+    # REPL degrades gracefully to whatever size it actually gets (see
+    # _layout_tier), so we never force a larger window and never shrink one the
+    # user already sized up — we only nudge upward when below the ideal.
     try:
         _cur_cols, _cur_rows = shutil.get_terminal_size((80, 24))
-        _min_cols, _min_rows = 150, 50
-        if _cur_cols < _min_cols or _cur_rows < _min_rows:
-            _new_cols = max(_cur_cols, _min_cols)
-            _new_rows = max(_cur_rows, _min_rows)
+        if _cur_cols < _IDEAL_COLS or _cur_rows < _IDEAL_ROWS:
+            _new_cols = max(_cur_cols, _IDEAL_COLS)
+            _new_rows = max(_cur_rows, _IDEAL_ROWS)
             sys.stdout.write(f"\033[8;{_new_rows};{_new_cols}t")
             sys.stdout.flush()
     except Exception:
@@ -2459,6 +2734,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # don't have their own scroll handler.
     from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.mouse_events import (
+        MouseButton,
         MouseEventType,
     )
 
@@ -2512,17 +2788,48 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # The scrollback renderer caches the visible visual rows here so the
     # click handler can find what text was at the click position without
     # re-running expensive layout calculations.
-    _last_scrollback_view: dict[str, list] = {"rows": []}
+    _last_scrollback_view: dict[str, list] = {"rows": [], "meta": []}
+    # Drag-to-select state for the scrollback (default mouse mode). Stable
+    # coords (logical line_index, char_offset within that line) so the
+    # highlight survives scrolling. Mutated by the scrollback control's
+    # mouse_handler; read by _scrollback_render. ``seen_len`` snapshots the
+    # buffer length when a selection starts so new output clears a stale one.
+    _selection: dict = {"anchor": None, "cursor": None, "active": False, "seen_len": 0}
+
+    def _clear_selection() -> None:
+        _selection.update(anchor=None, cursor=None, active=False)
+
+    def _view_yx_to_stable(y: int, x: int) -> tuple[int, int] | None:
+        """Map a click/drag (row ``y``, col ``x``) in the rendered scrollback to a
+        stable ``(logical line_index, char_offset)`` using the cached view +
+        provenance. ``None`` if outside content (or the width<=1 fallback)."""
+        rows = _last_scrollback_view.get("rows") or []
+        meta = _last_scrollback_view.get("meta") or []
+        if y < 0 or y >= len(rows) or y >= len(meta):
+            return None
+        line_index, start_char = meta[y]
+        if line_index < 0:
+            return None
+        row_len = sum(len(t) for _, t in rows[y])
+        col = max(0, min(x, row_len))
+        return (line_index, start_char + col)
+
+    def _extract_selection(lo: tuple[int, int], hi: tuple[int, int]) -> str:
+        """Text of the selection ``[lo, hi]`` (stable coords, lo <= hi), read from
+        the logical lines (not the scrolled view, so off-screen parts are caught).
+        Delegates the slicing to the pure, unit-tested ``_slice_selection``."""
+        return _slice_selection(scrollback.snapshot_line_texts(lo[0], hi[0]), lo, hi)
 
     class _ScrollForwardingFTC(FormattedTextControl):
-        """Wheel forwarder + optional modifier+click → path opener.
-
-        ``click_handler`` is invoked on MOUSE_DOWN events that carry a
-        modifier (Ctrl, Alt, or Shift). Plain clicks are ignored so the
-        terminal's native drag-select stays functional.
+        """Forwards wheel-scroll to the scrollback for every fixed widget, and —
+        on the scrollback instance only (``_selectable``) — implements
+        click-to-open-path and click-drag-to-select-and-copy. Under
+        ``--no-drag-copy`` it falls back to the old behavior (plain click opens
+        a path; drag-select via the capture-off Scroll/Select toggle).
         """
 
         _click_handler = None
+        _selectable = False  # True only on the scrollback instance
 
         def set_click_handler(self, handler) -> None:
             self._click_handler = handler
@@ -2530,6 +2837,8 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         def mouse_handler(self, mouse_event):
             et = mouse_event.event_type
             if et == MouseEventType.SCROLL_UP:
+                if self._selectable and not classic_mouse:
+                    _clear_selection()
                 scrollback.scroll_up(1)
                 try:
                     app.invalidate()
@@ -2537,24 +2846,83 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                     pass
                 return None
             if et == MouseEventType.SCROLL_DOWN:
+                if self._selectable and not classic_mouse:
+                    _clear_selection()
                 scrollback.scroll_down(1)
                 try:
                     app.invalidate()
                 except Exception:
                     pass
                 return None
-            if et == MouseEventType.MOUSE_DOWN and self._click_handler is not None:
-                # Plain click opens highlighted paths. The scrollback is
-                # read-only so a click has no other purpose there. The
-                # click handler returns NotImplemented when the click
-                # didn't land on a path, which falls through to default
-                # mouse handling — drag-to-select still works in Select
-                # mode (toggle with Shift+Tab) because that mode turns
-                # mouse capture off entirely.
+            # Only the scrollback handles clicks/drags; the bee-fact and
+            # crawl-status widgets just forward scroll (handled above).
+            if not self._selectable:
+                return NotImplemented
+            if classic_mouse:
+                # Backup mode: plain click opens a path; drag-select is the
+                # capture-off "select mode" toggle, not handled here.
+                if et == MouseEventType.MOUSE_DOWN and self._click_handler is not None:
+                    try:
+                        return self._click_handler(mouse_event)
+                    except Exception:
+                        pass
+                return NotImplemented
+            # Default mode: hand-built drag-to-select-and-copy. Path-open is
+            # deferred to MOUSE_UP-with-no-drag so a click is distinct from a drag.
+            pos = mouse_event.position
+            if et == MouseEventType.MOUSE_DOWN:
+                stable = _view_yx_to_stable(pos.y, pos.x)
+                _selection.update(
+                    anchor=stable,
+                    cursor=stable,
+                    active=stable is not None,
+                    seen_len=scrollback.current_length(),
+                )
                 try:
-                    return self._click_handler(mouse_event)
+                    app.invalidate()
                 except Exception:
                     pass
+                return None
+            if et == MouseEventType.MOUSE_MOVE and mouse_event.button == MouseButton.LEFT:
+                if _selection.get("anchor") is None:
+                    return NotImplemented
+                stable = _view_yx_to_stable(pos.y, pos.x)
+                if stable is not None:
+                    _selection["cursor"] = stable
+                # Edge auto-scroll: dragging past the top/bottom visible row
+                # extends the selection through off-screen content.
+                rows = _last_scrollback_view.get("rows") or []
+                if pos.y <= 0:
+                    scrollback.scroll_up(1)
+                elif pos.y >= len(rows) - 1:
+                    scrollback.scroll_down(1)
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+                return None
+            if et == MouseEventType.MOUSE_UP:
+                anchor = _selection.get("anchor")
+                cursor = _selection.get("cursor")
+                if anchor is not None and cursor is not None and anchor != cursor:
+                    lo, hi = sorted((anchor, cursor))
+                    text = _extract_selection(lo, hi)
+                    if text:
+                        _copy_to_clipboard(text)
+                    _selection["active"] = True  # keep the highlight visible
+                    try:
+                        app.invalidate()
+                    except Exception:
+                        pass
+                    return None
+                # No drag → plain click: open a path under the cursor, if any.
+                _clear_selection()
+                if self._click_handler is not None:
+                    try:
+                        return self._click_handler(mouse_event)
+                    except Exception:
+                        pass
+                return NotImplemented
             return NotImplemented
 
     # ── Path-existence cache for render-time linkification ───────────────────
@@ -2760,10 +3128,13 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         if cs is None and ps is None:
             return []
 
+        tier = _layout_tier()
+        width, _rows = _term_size()
         frags: list[tuple[str, str]] = []
 
-        # Honeycomb row when progress total is known.
-        if ps is not None:
+        # Honeycomb row when progress total is known and there's room (above
+        # BARE — the honeycomb is wider than a BARE terminal can show).
+        if ps is not None and tier > _Tier.BARE:
             try:
                 rows = format_honeycomb_grid(
                     completed=ps["completed"],
@@ -2786,34 +3157,50 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                     frags.append(("", "\n"))
             except Exception:
                 pass
+        elif ps is not None and cs is None:
+            # BARE + batch (no per-item URL): compact done/total counter so the
+            # widget still conveys progress without the (too-wide) honeycomb.
+            done = ps.get("completed") or 0
+            total = ps.get("total") or 0
+            frags.append((f"{BEE_DIM}", f"  {done}/{total}"))
 
         # URL / fetched-count line — crawl only.
         if cs is not None:
-            phase = cs.get("phase") or "fetching"
-            url = cs.get("current_url")
             fetched = cs.get("fetched") or 0
             saved = cs.get("saved") or 0
-            if url and len(url) > 80:
-                url = url[:48] + "…" + url[-25:]
-            frags.append(("", "  "))
-            frags.append((f"bold {BEE_YELLOW}", f"{phase}: "))
-            if url:
-                frags.append((BEE_WHITE, url))
+            counts = f"{fetched} fetched" + (f", {saved} saved" if saved else "")
+            if tier <= _Tier.BARE:
+                # Minimal: counts only — the phase label + URL don't fit at BARE.
+                frags.append(("", "  "))
+                frags.append((f"{BEE_DIM}", counts))
             else:
-                frags.append((f"{BEE_DIM}", "…"))
-            suffix = f"  ({fetched} fetched"
-            if saved:
-                suffix += f", {saved} saved"
-            suffix += ")"
-            frags.append((f"{BEE_DIM}", suffix))
+                phase = cs.get("phase") or "fetching"
+                url = cs.get("current_url")
+                prefix = f"{phase}: "
+                suffix = f"  ({counts})"
+                # Truncate the URL so "  " + prefix + url + suffix fits the live
+                # width — the widget Window doesn't wrap, so overflow would clip.
+                if url:
+                    avail = max(0, width - 2 - len(prefix) - len(suffix))
+                    if avail < 10:
+                        url = None  # too narrow for a URL — show counts only
+                    elif len(url) > avail:
+                        tail = min(20, avail // 3)
+                        url = url[: avail - 1 - tail] + "…" + url[-tail:]
+                frags.append(("", "  "))
+                frags.append((f"bold {BEE_YELLOW}", prefix))
+                if url:
+                    frags.append((BEE_WHITE, url))
+                else:
+                    frags.append((f"{BEE_DIM}", "…"))
+                frags.append((f"{BEE_DIM}", suffix))
         return frags
 
-    def _crawl_status_height() -> D:
-        """Compute widget height based on what's shown.
-        Cases:
-          • crawl only (no progress)            → 1 row (URL line)
-          • crawl + progress (known total)      → 2 rows
-          • batch only (progress, no crawl URL) → 1 row (honeycomb only)
+    def _crawl_status_rows() -> int:
+        """Rows the active-job widget occupies (1 or 2). Honeycomb + crawl URL
+        is 2 rows, but only above BARE (where the honeycomb shows); every other
+        shown state is a single line. Shared by _crawl_status_height and
+        _scrollback_render's reserve math so the two can't disagree.
         """
         cs_set = _has_crawl_status_safe()
         try:
@@ -2822,9 +3209,12 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             ps_set = has_progress_state()
         except Exception:
             ps_set = False
-        if cs_set and ps_set:
-            return D.exact(2)
-        return D.exact(1)
+        if _layout_tier() > _Tier.BARE and cs_set and ps_set:
+            return 2
+        return 1
+
+    def _crawl_status_height() -> D:
+        return D.exact(_crawl_status_rows())
 
     crawl_status_window = ConditionalContainer(
         content=Window(
@@ -2847,31 +3237,25 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             _app = _get_app()
             if getattr(_app, "is_running", False):
                 size = _app.output.get_size()
-                # Reserve rows for the banner + everything below the
-                # scrollback in the layout: banner_height + spacer_top(1)
-                # + separator(1) + running_or_input(1) + spacer_bottom(1)
-                # + toolbar(1) = banner + 5. Banner is now dynamic
-                # (full ASCII when idle, single line during crawl /
-                # batch), so we ask ``_banner_height`` for the live
-                # value rather than using the static visual height.
-                banner_h = 1 if _active_job_in_progress() else _banner_visual_height
-                reserved = banner_h + 5
+                # Reserve exactly the rows consumed by every fixed-height
+                # window around the scrollback so it fills the remaining space
+                # precisely. Banner rows and chrome are tier-dependent, so we
+                # read the SAME helpers the layout's ConditionalContainers use
+                # (_banner_rows / _show_spacers / _show_separator) — keep these
+                # in lockstep or the scrollback mis-sizes. The constant +2 is
+                # the input row + toolbar row (always present while the main UI
+                # is shown; the TOO_SMALL tier swaps the whole layout out).
+                reserved = _banner_rows() + 2
+                if _show_spacers():
+                    reserved += 2  # spacer_top + spacer_bottom
+                if _show_separator():
+                    reserved += 1  # dim horizontal rule
                 if state.is_running:
-                    # bee_fact_window row above the (collapsed) input.
-                    reserved += 1
+                    reserved += 1  # bee_fact_window row above the input
                 if _has_active_job_status():
-                    # The active-job status widget is pinned right under
-                    # the banner — 2 rows when both crawl URL and
-                    # honeycomb are shown, otherwise 1 row (URL-only
-                    # crawl, or honeycomb-only batch).
-                    cs_set = _has_crawl_status_safe()
-                    try:
-                        from .theme import has_progress_state
-
-                        ps_set = has_progress_state()
-                    except Exception:
-                        ps_set = False
-                    reserved += 2 if (cs_set and ps_set) else 1
+                    # Active-job widget pinned under the banner (1 or 2 rows);
+                    # _crawl_status_rows() is the shared source of truth.
+                    reserved += _crawl_status_rows()
                 height = max(1, size.rows - reserved)
                 width = max(1, size.columns)
         except Exception:
@@ -2881,15 +3265,28 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # otherwise wrap into many visual rows. We split at width-1 so a
         # full-width row never accidentally pushes the cursor onto the
         # next terminal row (which some terminals do at col == width).
-        visual_rows = scrollback.get_visible_visual(height, max(1, width - 1))
+        visual_rows, meta = scrollback.get_visible_visual_with_meta(height, max(1, width - 1))
         # Re-style each row so path-like substrings that exist on disk
         # are rendered in brand-yellow with an underline — a visible
-        # affordance for the Ctrl/Alt+Click open-in-Finder feature.
+        # affordance for the Click→open-in-Finder feature.
         visual_rows = [_styled_with_links(row) for row in visual_rows]
-        # Cache so the modifier+click handler on the scrollback Window
-        # can look up what text was at the click position without
-        # recomputing wrap/scroll math.
+        # Drag-selection highlight (default mouse mode). New output since the
+        # selection began clears it (logical line indices would otherwise
+        # drift); otherwise paint ``reverse`` over each row's selected span.
+        if _selection.get("active") and _selection["anchor"] is not None:
+            if scrollback.current_length() != _selection.get("seen_len"):
+                _clear_selection()
+            else:
+                lo, hi = sorted((_selection["anchor"], _selection["cursor"]))
+                visual_rows = [
+                    _styled_with_selection(row, meta[i][0], meta[i][1], lo, hi)
+                    for i, row in enumerate(visual_rows)
+                ]
+        # Cache rows + provenance so the scrollback mouse_handler can map a
+        # click/drag position to a stable (line, char) without recomputing
+        # wrap/scroll math.
         _last_scrollback_view["rows"] = visual_rows
+        _last_scrollback_view["meta"] = meta
         out: list[tuple[str, str]] = []
         for i, row in enumerate(visual_rows):
             if i > 0:
@@ -2903,6 +3300,7 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # additionally opens path-like substrings under Ctrl/Alt/Shift+Click.
     _scrollback_ftc = _ScrollForwardingFTC(_scrollback_render)
     _scrollback_ftc.set_click_handler(_scrollback_click_handler)
+    _scrollback_ftc._selectable = True  # drag-to-select-and-copy lives only here
     scrollback_window = Window(
         content=_scrollback_ftc,
         # We pre-wrap content ourselves (see _split_fragments_to_width) so
@@ -2922,36 +3320,38 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     _banner_visual_height = len(_SCRAPINGBEE_LOGO) + 5  # logo + 5 text rows
 
     def _banner_render() -> list[tuple[str, str]]:
-        # While a long-running command (crawl / batch scrape) is in
-        # flight, collapse the ASCII wordmark to a single-line
-        # ``ScrapingBee v1.5.0`` so the freed rows above scrollback can
-        # show the live task widget — URL, fetched count, honeycomb
-        # progress bar. The big banner returns once the run ends.
-        if _active_job_in_progress():
+        # Form derived from _banner_rows() so content and height can't disagree:
+        #   0 → nothing,  1 → one-liner,  3 → one-liner + footer,  else → full.
+        # _banner_rows() folds in width tier, active job, AND scarce rows (a
+        # short terminal collapses the banner even at full width, so it never
+        # crowds out the scrollback).
+        n = _banner_rows()
+        if n == 0:
+            return []
+        if n == 1:
             line = Text()
             line.append("  ScrapingBee ", style=f"bold {BEE_YELLOW}")
             line.append(f"v{version}", style="bold white")
             return _text_to_fragments(line)
+        # n == 3 (compact) and full both append the tagline + hint footer below;
+        # they differ only in the header (one-line wordmark vs ASCII + version).
         out: list[tuple[str, str]] = []
-        # SCRAPING half in brand yellow, BEE half in white — matches the
-        # wordmark in the official brand assets.
-        for i, logo_line in enumerate(_SCRAPINGBEE_LOGO):
-            if i > 0:
-                out.append(("", "\n"))
-            left = logo_line[:_BEE_OFFSET]
-            right = logo_line[_BEE_OFFSET:]
-            out.append((f"bold {BEE_YELLOW}", left))
-            out.append(("bold white", right))
-        # Spacer row
-        out.append(("", "\n"))
-        # v1.5.0
-        out.append(("", "\n"))
-        out.append((f"bold {BEE_YELLOW}", f"  v{version}"))
-        # Tagline
+        if n == 3:
+            out.append((f"bold {BEE_YELLOW}", "  ScrapingBee "))
+            out.append(("bold white", f"v{version}"))
+        else:  # full ASCII — SCRAPING half in brand yellow, BEE half in white.
+            for i, logo_line in enumerate(_SCRAPINGBEE_LOGO):
+                if i > 0:
+                    out.append(("", "\n"))
+                out.append((f"bold {BEE_YELLOW}", logo_line[:_BEE_OFFSET]))
+                out.append(("bold white", logo_line[_BEE_OFFSET:]))
+            out.append(("", "\n"))  # spacer row
+            out.append(("", "\n"))  # blank before version
+            out.append((f"bold {BEE_YELLOW}", f"  v{version}"))
+        # Shared footer: tagline + hint.
         out.append(("", "\n"))
         out.append((f"{BEE_DIM}", "  Web scraping from the terminal"))
         out.append(("", "\n"))
-        # Hint
         out.append((f"{BEE_DIM}", "  Type "))
         out.append((f"bold {BEE_YELLOW}", ":help"))
         out.append((f"{BEE_DIM}", " for commands, "))
@@ -2998,12 +3398,39 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         except Exception:
             return [("", t.plain)]
 
+    def _banner_rows() -> int:
+        """Rows the top banner occupies — the single source of truth shared by
+        ``_banner_height`` (the Window height), ``_banner_render`` (the content),
+        and ``_scrollback_render`` (which reserves rows below it). All three MUST
+        agree or the banner clips / the scrollback mis-sizes, so all three call
+        this. Collapses by BOTH width (tier) and height (scarce rows).
+        """
+        tier = _layout_tier()
+        if tier <= _Tier.BARE:
+            return 0  # no banner at BARE / TOO_SMALL
+        _, rows = _term_size()
+        # Even at full width, a short terminal must not let the 11-row banner
+        # crowd out the scrollback — collapse it as vertical space shrinks.
+        if _active_job_in_progress() or tier == _Tier.MINIMAL or rows < _BANNER_COMPACT_MIN_ROWS:
+            return 1  # single-line "ScrapingBee vX.Y.Z"
+        if tier == _Tier.COMPACT or rows < _BANNER_FULL_MIN_ROWS:
+            return 3  # one-liner + tagline + hint
+        return _banner_visual_height  # FULL: ASCII wordmark + text rows
+
+    def _show_spacers() -> bool:
+        """Blank rows above the separator and below the toolbar — kept only when
+        there's vertical breathing room (COMPACT and up)."""
+        return _layout_tier() >= _Tier.COMPACT
+
+    def _show_separator() -> bool:
+        """The dim horizontal rule between scrollback and input — kept down to
+        MINIMAL, dropped at BARE."""
+        return _layout_tier() >= _Tier.MINIMAL
+
     def _banner_height() -> D:
-        # Compact one-liner while a crawl / batch is active; full ASCII
-        # banner otherwise.
-        if _active_job_in_progress():
-            return D.exact(1)
-        return D.exact(_banner_visual_height)
+        # Row count is centralised in _banner_rows() so the scrollback reserve
+        # math (which also calls it) stays in lockstep.
+        return D.exact(_banner_rows())
 
     banner_window = Window(
         content=_ScrollForwardingFTC(_banner_render),
@@ -3030,13 +3457,26 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             cols = 80
         return [("class:toolbar.hint", "─" * max(1, cols))]
 
-    spacer_top = Window(height=D.exact(1), char=" ")
-    separator = Window(
-        content=FormattedTextControl(_hr_render),
-        height=D.exact(1),
-        always_hide_cursor=True,
+    # Spacers and the separator rule are shed as the window narrows: spacers
+    # drop below COMPACT, the separator drops below MINIMAL. These filters use
+    # the SAME predicates as _scrollback_render's reserve math so the two never
+    # disagree about which rows are present.
+    spacer_top = ConditionalContainer(
+        content=Window(height=D.exact(1), char=" "),
+        filter=Condition(_show_spacers),
     )
-    spacer_bottom = Window(height=D.exact(1), char=" ")
+    separator = ConditionalContainer(
+        content=Window(
+            content=FormattedTextControl(_hr_render),
+            height=D.exact(1),
+            always_hide_cursor=True,
+        ),
+        filter=Condition(_show_separator),
+    )
+    spacer_bottom = ConditionalContainer(
+        content=Window(height=D.exact(1), char=" "),
+        filter=Condition(_show_spacers),
+    )
 
     # FloatContainer wraps the main layout so we can hover a completion
     # popup near the cursor. Without the Float + CompletionsMenu prompt-
@@ -3062,16 +3502,50 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             toolbar_window,
         ]
     )
+    _float_root = FloatContainer(
+        content=main_split,
+        floats=[
+            Float(
+                xcursor=True,
+                ycursor=True,
+                content=CompletionsMenu(max_height=10, scroll_offset=1),
+            ),
+        ],
+    )
+
+    # Below the usable floor (_MIN_COLS × _MIN_ROWS) the normal layout can't
+    # render legibly, so we swap the whole UI for a short "too small" notice and
+    # pause command submission (see the enter binding's _not_too_small filter).
+    # prompt_toolkit re-renders on resize, so growing the window back past the
+    # floor restores the UI automatically — no restart.
+    def _too_small_render() -> list[tuple[str, str]]:
+        cols, rows = _term_size()
+        t = Text()
+        t.append("  Terminal too small\n", style=f"bold {BEE_YELLOW}")
+        t.append(f"  Resize to at least {_MIN_COLS}×{_MIN_ROWS}", style=BEE_DIM)
+        t.append(f"  (now {cols}×{rows})", style=BEE_DIM)
+        frags = _text_to_fragments(t)
+        pad = max(0, rows // 2 - 1)  # roughly vertically centred
+        return ([("", "\n" * pad)] + frags) if pad else frags
+
+    too_small_window = Window(
+        content=FormattedTextControl(_too_small_render),
+        wrap_lines=True,
+        always_hide_cursor=True,
+    )
+
     layout = Layout(
-        FloatContainer(
-            content=main_split,
-            floats=[
-                Float(
-                    xcursor=True,
-                    ycursor=True,
-                    content=CompletionsMenu(max_height=10, scroll_offset=1),
+        HSplit(
+            [
+                ConditionalContainer(
+                    content=_float_root,
+                    filter=Condition(lambda: _layout_tier() != _Tier.TOO_SMALL),
                 ),
-            ],
+                ConditionalContainer(
+                    content=too_small_window,
+                    filter=Condition(lambda: _layout_tier() == _Tier.TOO_SMALL),
+                ),
+            ]
         )
     )
 
@@ -3148,6 +3622,13 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
     # promptly).
     def _execute_shell(shell_cmd: str, original_line: str, echo_idx: int) -> None:
         import subprocess
+
+        from .audit import log_exec
+
+        # SCR-320: audit-log every shell-exec. The gate (is_exec_enabled +
+        # whitelist) has already passed by the time we reach here, so this
+        # records exactly the commands that were permitted to run.
+        log_exec("shell", shell_cmd)
 
         output_start_index = echo_idx
         start = time.monotonic()
@@ -3725,6 +4206,14 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
                 scrollback.insert_line(shell_echo_idx, _echo_fragments)
             except Exception:
                 _echo_to_scrollback(line)
+            # M4: a refused or empty `!` is an error, not a runnable command —
+            # clear the input line (it stays echoed in scrollback above) so the
+            # next keystrokes don't concatenate onto the rejected text. The
+            # allowed path returned earlier, so this only hits the error cases.
+            try:
+                input_buffer.reset()
+            except Exception:
+                pass
             return True
 
         # Tolerate users typing `scrapingbee ...` out of muscle memory.
@@ -4050,11 +4539,16 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
 
     kb = KeyBindings()
 
+    # Below the usable floor the UI is replaced by the "too small" notice; gate
+    # command submission so Enter is a no-op until the window grows back. Quit
+    # bindings (Ctrl+C / Ctrl+D) stay live so the user is never trapped.
+    _not_too_small = Condition(lambda: _layout_tier() != _Tier.TOO_SMALL)
+
     @kb.add("enter", filter=has_completions)
     def _accept(event):
         event.current_buffer.complete_state = None
 
-    @kb.add("enter", filter=~has_completions)
+    @kb.add("enter", filter=~has_completions & _not_too_small)
     def _submit(event):
         text = input_buffer.text
         stripped = text.strip()
@@ -4070,16 +4564,21 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             # than starting fresh from the most recent command.
             input_buffer.reset()
             return
+        # Quit tokens (:q, :quit, exit, …) exit from BOTH the first-run API
+        # key prompt and normal command mode. Checked *before* the first-run
+        # branch so the advertised ":q to quit" works even when no key is set
+        # yet — otherwise the token would be sent to _handle_first_run_key and
+        # rejected as an invalid API key, trapping the user (only Ctrl-C left).
+        if stripped.lower() in _quit_tokens:
+            input_buffer.reset()
+            event.app.exit()
+            return
         # First-run API key entry path — text in the buffer is the raw key
         # the user just pasted. Validate against /usage and, on success,
         # persist + transition to normal command mode in place.
         if _first_run_needs_key[0]:
             input_buffer.reset()
             _handle_first_run_key(stripped, text)
-            return
-        if stripped.lower() in _quit_tokens:
-            input_buffer.reset()
-            event.app.exit()
             return
         # Multi-line submission (typically a paste of several commands):
         # run the first line immediately, queue the rest. ``_ticker``
@@ -4226,6 +4725,12 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
         # closed a multi-line paste preview, that was the user's intent
         # for this Ctrl+C — don't also exit the REPL on top of it.
         if cleared_queue or cleared_multiline:
+            return
+        # Idle: a half-typed line + Ctrl+C should abandon the line (readline /
+        # bash habit), not nuke the session. Clear it and stay; only exit when
+        # the line is already empty (Ctrl+D / :q are the explicit-exit paths).
+        if input_buffer.text:
+            input_buffer.reset()
             return
         event.app.exit()
 
@@ -4590,13 +5095,15 @@ def run_repl(cli_group: Any, version: str, *, keep_bg: bool = False) -> None:
             pass
 
     # ── Mouse mode toggle (Alt+S = Esc S in terminal protocol) ─────────────
-    # Flips between "scroll mode" (mouse_support on — wheel scrolls our
-    # virtual buffer, drag-select needs per-terminal modifier like
-    # Option/Shift) and "select mode" (mouse_support off — drag-select
-    # works without any modifier on every terminal, wheel scrolling falls
-    # back to PgUp/PgDn/Ctrl-arrows). Toolbar shows the active mode.
+    # ONLY active under --no-drag-copy (the backup). Flips between "scroll
+    # mode" (mouse_support on — wheel scrolls our virtual buffer) and "select
+    # mode" (mouse_support off — terminal-native drag-select; wheel falls back
+    # to PgUp/PgDn). In the default drag-copy mode this is a no-op (mouse stays
+    # captured). Also gates the Shift+Tab toggle, which calls through here.
     @kb.add("escape", "s", eager=True)
     def _toggle_mouse_mode(_event):
+        if not classic_mouse:
+            return
         if state.mouse_mode == "scroll":
             state.mouse_mode = "select"
             try:

@@ -78,8 +78,17 @@ def _show_active_schedules_hint() -> None:
     help="Keep the terminal's current background and theme colours instead "
     "of forcing the REPL to black/light-grey.",
 )
+@click.option(
+    "--no-drag-copy",
+    "classic_mouse",  # user-facing flag; internal name stays classic_mouse (True = old mode)
+    is_flag=True,
+    default=False,
+    help="REPL: disable click-drag-to-copy and use the Scroll/Select mouse-mode "
+    "toggle (Shift+Tab) instead — a fallback for terminals where drag-copy "
+    "misbehaves.",
+)
 @click.pass_context
-def cli(ctx: click.Context, keep_bg: bool) -> None:
+def cli(ctx: click.Context, keep_bg: bool, classic_mouse: bool) -> None:
     """ScrapingBee CLI - Web scraping API client.
 
     Commands: scrape (single or batch), crawl (Scrapy/quick-crawl), usage,
@@ -96,7 +105,7 @@ def cli(ctx: click.Context, keep_bg: bool) -> None:
 
         _in_repl = True
         try:
-            run_repl(cli, __version__, keep_bg=keep_bg)
+            run_repl(cli, __version__, keep_bg=keep_bg, classic_mouse=classic_mouse)
         finally:
             _in_repl = False
 

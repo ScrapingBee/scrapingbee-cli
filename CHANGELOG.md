@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-06-15
+
+### Added
+
+- **Interactive REPL** — running `scrapingbee` with no command opens an interactive shell: a live status toolbar (available credits, concurrency, elapsed time), `:`-commands (`:help`; `:set`/`:show`/`:unset`/`:reset` for session option defaults; `:list`; `:view` to page the last output; `:clear`; `:q`), and any CLI command run inline with completion and history. `--keep-bg` keeps your terminal's own background/theme colours.
+- **Scrollback drag-to-copy (REPL)** — click and drag across scrollback output to select it; releasing copies the selection to the clipboard (`pbcopy` / `clip` / `wl-copy` / `xclip` / `xsel`). Plain clicks still open file paths. Pass **`--no-drag-copy`** to disable that and use the Scroll/Select mouse-mode toggle (Shift+Tab) instead — a fallback for terminals where drag-copy misbehaves.
+- **Cross-platform CI** — the test suite now runs on Linux, macOS, and Windows across Python 3.10–3.13.
+
+### Changed
+
+- **Boolean options validate at parse time** — `--render-js`, `--screenshot`, `--premium-proxy`, `--json-response`, and every other true/false option now reject a missing or non-boolean value (e.g. `--render-js --output-file x`, or a typo like `treu`) with a clear *"Invalid boolean … Use true/false, 1/0, or yes/no"* instead of the misleading *"unexpected extra argument"*. `--help` shows these as `TRUE|FALSE`. Accepted values are unchanged.
+
+### Fixed
+
+- **Onboarding `:q` trap (REPL)** — at the first-run "API key:" prompt, `:q`/`quit`/`exit` now quit as advertised instead of being validated as an API key.
+- **Validation order** — `google`, `fast-search`, `chatgpt`, `amazon-*`, `youtube-*`, and `walmart-*` now report a missing required argument before "API key not set", matching `scrape`.
+- **`schedule`/`unsafe` subcommand-style typos** — `schedule list` / `unsafe status` (and similar) now show a "did you mean `--list` / `--audit` / …" hint instead of a confusing error.
+- **`schedule` on Windows** — `schedule --every …` / `--stop …` now fail with a clean "scheduling requires cron (macOS/Linux)" message instead of a raw `FileNotFoundError` when `crontab` is absent.
+
 ## [1.4.3] - 2026-05-28
 
 ### Added

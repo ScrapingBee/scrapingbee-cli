@@ -11,6 +11,7 @@ import click
 import pytest
 
 from scrapingbee_cli.cli_utils import (
+    BOOL_STR,
     NormalizedChoice,
     build_scrape_kwargs,
     chunk_text,
@@ -123,6 +124,36 @@ class TestParseBool:
     def test_whitespace_stripped(self) -> None:
         assert parse_bool("  true  ") is True
         assert parse_bool("  false  ") is False
+
+
+class TestBoolStringParamType:
+    """BOOL_STR validates a true/false option value at click parse time (the #1 fix).
+
+    The value style (``--render-js true``, not a bare ``--render-js`` flag) is intentional
+    and consistent across all bool options; this type only makes a bad or missing value
+    fail with a clear message instead of being swallowed as 'unexpected extra argument'.
+    """
+
+    def test_accepts_valid_values_unchanged(self) -> None:
+        # Returns the original string verbatim; build_scrape_kwargs/parse_bool convert it.
+        for val in ("true", "false", "1", "0", "yes", "no", "TRUE", "False"):
+            assert BOOL_STR.convert(val, None, None) == val
+
+    def test_empty_is_passed_through(self) -> None:
+        # parse_bool("") is None (unset) -> no error; value returned as-is.
+        assert BOOL_STR.convert("", None, None) == ""
+
+    def test_option_like_value_is_rejected(self) -> None:
+        # The footgun: `--render-js --output-file x` swallows the next option as the value.
+        with pytest.raises(click.BadParameter, match="Invalid boolean"):
+            BOOL_STR.convert("--output-file", None, None)
+
+    def test_typo_is_rejected(self) -> None:
+        with pytest.raises(click.BadParameter, match="Invalid boolean"):
+            BOOL_STR.convert("treu", None, None)
+
+    def test_metavar_advertises_true_false(self) -> None:
+        assert BOOL_STR.name == "true|false"
 
 
 class TestDurationToCron:
@@ -455,14 +486,17 @@ class TestWriteOutput:
         )
         err = capsys.readouterr().err
         assert "Credit Cost: 25" in err
-        assert "estimated" not in err.lower()
+        assert "Credit Cost (estimated)" not in err
 
     def test_verbose_no_estimated_when_command_is_none(self, tmp_path, capsys) -> None:
         """When command is None, no estimated credit line is shown."""
         out = tmp_path / "out.json"
         write_output(b'{"q":"test"}', {}, 200, str(out), verbose=True, command=None)
         err = capsys.readouterr().err
-        assert "estimated" not in err.lower()
+        # Match the real message, not a bare "estimated" — the temp path can
+        # contain that substring (e.g. this test's own name) once write_output
+        # echoes the saved path.
+        assert "Credit Cost (estimated)" not in err
 
 
 class TestEstimatedCredits:

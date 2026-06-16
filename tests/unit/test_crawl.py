@@ -94,6 +94,21 @@ class TestPreferredExtensionFromScrapeParams:
     def test_screenshot_only(self):
         assert _preferred_extension_from_scrape_params({"screenshot": True}) == "png"
 
+    def test_screenshot_full_page_only(self):
+        # Regression (C1): full-page screenshots must map to .png, not .html.
+        assert _preferred_extension_from_scrape_params({"screenshot_full_page": True}) == "png"
+
+    def test_screenshot_selector_only(self):
+        assert _preferred_extension_from_scrape_params({"screenshot_selector": "#main"}) == "png"
+
+    def test_screenshot_full_page_with_json_response(self):
+        assert (
+            _preferred_extension_from_scrape_params(
+                {"screenshot_full_page": "true", "json_response": True}
+            )
+            == "json"
+        )
+
     def test_return_markdown(self):
         assert _preferred_extension_from_scrape_params({"return_page_markdown": True}) == "md"
 
@@ -396,3 +411,42 @@ class TestDefaultCrawlOutputDir:
         rest = name.replace("crawl_", "")
         assert len(rest) == 15  # YYYYMMDD_HHMMSS
         assert rest[8] == "_"
+
+
+class TestMaxPagesHardCap:
+    """`--max-pages N` must be a hard cap on saved files regardless of crawl
+    concurrency (report C1/M3): responses already in flight when the cap trips
+    must be dropped, not written. Enforced centrally in _save_response."""
+
+    def _spider(self, tmp_path, max_pages):
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        return GenericScrapingBeeSpider(
+            start_urls=["http://example.com"],
+            scrape_params={},
+            output_dir=str(tmp_path),
+            max_pages=max_pages,
+            name="t",
+        )
+
+    def _resp(self, url):
+        from scrapy.http import Request, Response
+
+        return Response(url=url, body=b"data", status=200, headers={}, request=Request(url=url))
+
+    def test_overshoot_is_dropped(self, tmp_path):
+        sp = self._spider(tmp_path, 2)
+        assert sp._save_response(self._resp("http://example.com/a")) is True
+        assert sp._save_response(self._resp("http://example.com/b")) is True
+        # A response that was already in flight when the cap tripped
+        # (concurrency > 1) — must be dropped, not written.
+        assert sp._save_response(self._resp("http://example.com/c")) is False
+        assert sp._save_count == 2
+        written = [p for p in tmp_path.rglob("*") if p.is_file()]
+        assert len(written) == 2
+
+    def test_zero_means_unlimited(self, tmp_path):
+        sp = self._spider(tmp_path, 0)
+        for i in range(4):
+            assert sp._save_response(self._resp(f"http://example.com/{i}")) is True
+        assert sp._save_count == 4
