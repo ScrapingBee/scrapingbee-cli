@@ -2435,18 +2435,35 @@ def run_repl(
         return loop
 
     def _tracking_asyncio_run(main, *, debug=None, loop_factory=None):
-        # Same guard on the cleanup side — only clear the worker-loop
-        # ref if THIS call was a worker-thread call. If we're on the main
-        # thread we never touched the ref in the first place.
-        # ``loop_factory`` was added to ``asyncio.run`` in Python 3.12;
-        # we pass it through ``**kwargs`` so the call works on both 3.11
-        # (no kwarg) and 3.12+, and so the type checker doesn't reject
-        # the kwarg against the older stub.
+        # ``loop_factory`` was only added to ``asyncio.run`` in Python 3.12, so on
+        # 3.10/3.11 the real ``asyncio.run`` rejects the kwarg (a TypeError that
+        # crashed the REPL at startup). There we drive a factory-made loop ourselves,
+        # mirroring asyncio.run — this is what registers the worker loop so the Ctrl+C
+        # handler can cancel it. The worker-loop ref is cleared in the finally only for
+        # worker-thread calls (the main thread never sets it — see _tracking_loop_factory).
+        factory = loop_factory or _tracking_loop_factory
         try:
-            kwargs: dict = {"debug": debug}
-            factory = loop_factory or _tracking_loop_factory
-            kwargs["loop_factory"] = factory
-            return _original_asyncio_run(main, **kwargs)
+            if sys.version_info >= (3, 12):
+                return _original_asyncio_run(main, debug=debug, loop_factory=factory)
+            loop = factory()
+            try:
+                _asyncio_mod.set_event_loop(loop)
+                if debug is not None:
+                    loop.set_debug(debug)
+                return loop.run_until_complete(main)
+            finally:
+                try:
+                    _pending = [t for t in _asyncio_mod.all_tasks(loop) if not t.done()]
+                    for _t in _pending:
+                        _t.cancel()
+                    if _pending:
+                        loop.run_until_complete(
+                            _asyncio_mod.gather(*_pending, return_exceptions=True)
+                        )
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                finally:
+                    _asyncio_mod.set_event_loop(None)
+                    loop.close()
         finally:
             if _threading_mod.current_thread() is not _main_thread:
                 _active_worker_loop[0] = None
