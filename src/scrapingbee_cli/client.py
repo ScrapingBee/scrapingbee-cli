@@ -297,6 +297,9 @@ class Client:
         sort_by: str | None = None,
         min_price: float | None = None,
         max_price: float | None = None,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        radius: int | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -316,6 +319,9 @@ class Client:
             "sort_by": sort_by,
             "min_price": min_price,
             "max_price": max_price,
+            "latitude": latitude,
+            "longitude": longitude,
+            "radius": radius,
         }
         return await self._get_with_retry(
             "/google",

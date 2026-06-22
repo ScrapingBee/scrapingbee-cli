@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+<<<<<<< HEAD
+=======
+## [1.5.1] - 2026-06-22
+
+### Added
+
+- **`--latitude`, `--longitude`, `--radius` on `google`** — geolocate the search at a specific point and limit it to a surrounding radius. `--latitude` (float, -90 to 90) and `--longitude` (float, -180 to 180) set the search origin; `--radius` (int) limits results to the area around it. Forwarded to the API as `latitude`/`longitude`/`radius` when set, omitted otherwise.
+
+>>>>>>> b274f26 (add new params)
 ## [1.4.3] - 2026-05-28
 
 ### Added

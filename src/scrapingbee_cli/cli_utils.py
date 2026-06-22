@@ -1244,6 +1244,25 @@ def _validate_price_range(min_price: float | None, max_price: float | None) -> N
         raise SystemExit(1)
 
 
+def _validate_geolocation(
+    latitude: float | None, longitude: float | None, radius: int | None
+) -> None:
+    """Validate latitude (-90..90), longitude (-180..180), and radius (>= 0)."""
+    if latitude is not None and not (-90 <= latitude <= 90):
+        click.echo("latitude must be between -90 and 90", err=True)
+        raise SystemExit(1)
+    if longitude is not None and not (-180 <= longitude <= 180):
+        click.echo("longitude must be between -180 and 180", err=True)
+        raise SystemExit(1)
+    if radius is not None and radius < 0:
+        click.echo("radius must be >= 0", err=True)
+        raise SystemExit(1)
+    if (latitude is None) != (longitude is None):
+            raise SystemExit("latitude and longitude must be provided together")
+    if radius is not None and latitude is None:
+        raise SystemExit("radius requires latitude and longitude")
+
+
 def _validate_json_option(option_name: str, value: str | None) -> None:
     """If value is not None/empty, parse as JSON; on JSONDecodeError echo and raise SystemExit(1)."""
     if not value or not value.strip():

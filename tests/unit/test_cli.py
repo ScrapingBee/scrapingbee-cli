@@ -10,6 +10,7 @@ from scrapingbee_cli.cli_utils import (
     _filter_fields,
     _validate_json_option,
     _validate_page,
+    _validate_geolocation,
     _validate_price_range,
     _validate_range,
 )
@@ -95,6 +96,34 @@ class TestValidatePriceRange:
     def test_min_gt_max_exits(self):
         with pytest.raises(SystemExit):
             _validate_price_range(100, 50)
+
+
+class TestValidateGeo:
+    """Tests for _validate_geolocation()."""
+
+    def test_none_all_passes(self):
+        _validate_geolocation(None, None, None)
+
+    def test_valid_values_pass(self):
+        _validate_geolocation(40.7128, -74.006, 5000)
+        _validate_geolocation(-90, -180, 0)
+        _validate_geolocation(90, 180, 0)
+
+    def test_latitude_out_of_range_exits(self):
+        with pytest.raises(SystemExit):
+            _validate_geolocation(90.1, 0, None)
+        with pytest.raises(SystemExit):
+            _validate_geolocation(-91, 0, None)
+
+    def test_longitude_out_of_range_exits(self):
+        with pytest.raises(SystemExit):
+            _validate_geolocation(0, 180.5, None)
+        with pytest.raises(SystemExit):
+            _validate_geolocation(0, -181, None)
+
+    def test_radius_negative_exits(self):
+        with pytest.raises(SystemExit):
+            _validate_geolocation(0, 0, -1)
 
 
 class TestValidateJsonOption:
@@ -641,6 +670,9 @@ class TestCommandHelpOutput:
             "--min-price",
             "--max-price",
             "--date-range",
+            "--latitude",
+            "--longitude",
+            "--radius",
         ):
             assert param in out, f"{param} should appear in google --help"
         for search_type in ("classic", "news", "maps", "shopping", "images", "ai-mode"):
