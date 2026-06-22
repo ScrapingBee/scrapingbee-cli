@@ -20,6 +20,7 @@ from ..cli_utils import (
     DEVICE_DESKTOP_MOBILE,
     NormalizedChoice,
     _batch_options,
+    _validate_geolocation,
     _validate_page,
     _validate_price_range,
     check_api_response,
@@ -115,6 +116,25 @@ def _warn_empty_organic(data: bytes, search_type: str | None) -> None:
     default=None,
     help="Maximum price filter, in the marketplace's native currency.",
 )
+@optgroup.group("Location", help="Geographic origin for the search")
+@optgroup.option(
+    "--latitude",
+    type=float,
+    default=None,
+    help="Latitude of the geographic location to search from, in decimal degrees.",
+)
+@optgroup.option(
+    "--longitude",
+    type=float,
+    default=None,
+    help="Longitude of the geographic location to search from, in decimal degrees.",
+)
+@optgroup.option(
+    "--radius",
+    type=int,
+    default=None,
+    help="Search radius around the latitude/longitude.",
+)
 @optgroup.group("Filters", help="Autocorrection, extra params, and response format")
 @optgroup.option("--nfpr", type=BOOL_STR, default=None, help="Disable autocorrection (true/false).")
 @optgroup.option(
@@ -154,6 +174,9 @@ def google_cmd(
     sort_by: str | None,
     min_price: float | None,
     max_price: float | None,
+    latitude: float | None,
+    longitude: float | None,
+    radius: int | None,
     **kwargs,
 ) -> None:
     """Search Google using the Google Search API."""
@@ -169,6 +192,7 @@ def google_cmd(
         raise SystemExit(1)
     _validate_page(page)
     _validate_price_range(min_price, max_price)
+    _validate_geolocation(latitude, longitude, radius)
 
     if input_file:
         if query:
@@ -209,6 +233,9 @@ def google_cmd(
                 sort_by=norm_val(sort_by),
                 min_price=min_price,
                 max_price=max_price,
+                latitude=latitude,
+                longitude=longitude,
+                radius=radius,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
@@ -256,6 +283,9 @@ def google_cmd(
                 sort_by=norm_val(sort_by),
                 min_price=min_price,
                 max_price=max_price,
+                latitude=latitude,
+                longitude=longitude,
+                radius=radius,
                 retries=int(obj.get("retries") or 3),
                 backoff=float(obj.get("backoff") or 2.0),
             )
