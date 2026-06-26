@@ -1636,7 +1636,7 @@ def _print_help(commands: dict[str, str]) -> None:
         "Search": ["google", "fast-search"],
         "Marketplaces": ["amazon-product", "amazon-search", "walmart-product", "walmart-search"],
         "Media": ["youtube-search", "youtube-metadata"],
-        "AI": ["chatgpt"],
+        "AI": ["chatgpt", "gemini"],
         "Learn": ["tutorial"],
         "Account": ["auth", "logout"],
         "Tools": ["usage", "schedule", "export", "docs", "unsafe"],

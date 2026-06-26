@@ -636,6 +636,29 @@ class Client:
             backoff=backoff,
         )
 
+    async def gemini(
+        self,
+        prompt: str,
+        add_html: bool | None = None,
+        country_code: str | None = None,
+        tag: str | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
+    ) -> tuple[bytes, dict, int]:
+        params: dict[str, object] = {"prompt": prompt}
+        if add_html is not None:
+            params["add_html"] = str(add_html).lower()
+        if country_code is not None:
+            params["country_code"] = country_code
+        if tag is not None:
+            params["tag"] = tag
+        return await self._get_with_retry(
+            "/gemini",
+            params,
+            retries=retries,
+            backoff=backoff,
+        )
+
 
 def parse_usage(body: bytes) -> dict:
     """Extract max_concurrency and credits from usage API response.

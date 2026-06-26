@@ -516,6 +516,7 @@ class TestEstimatedCredits:
             "youtube-search",
             "youtube-metadata",
             "chatgpt",
+            "gemini",
         }
         assert set(ESTIMATED_CREDITS.keys()) == expected
 
