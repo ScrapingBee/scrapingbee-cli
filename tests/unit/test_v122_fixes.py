@@ -23,6 +23,7 @@ from scrapingbee_cli.credits import (
     amazon_credits,
     chatgpt_credits,
     fast_search_credits,
+    gemini_credits,
     google_credits,
     walmart_credits,
     youtube_credits,
@@ -134,6 +135,92 @@ class TestChatGPTClientParams:
                 await client.chatgpt("hello")
             params = m.call_args[0][1]
             assert params == {"prompt": "hello"}
+
+        asyncio.run(run())
+
+
+class TestGeminiClientParams:
+    """Tests for Client.gemini() param handling (mirrors ChatGPT, no search param)."""
+
+    def test_gemini_never_sends_search(self):
+        """Gemini has no web-search option; the param must never be sent."""
+
+        async def run():
+            from scrapingbee_cli.client import Client
+
+            client = Client("fake-key")
+            with patch.object(client, "_get_with_retry", new_callable=AsyncMock) as m:
+                m.return_value = (b'{"result": "ok"}', {}, 200)
+                await client.gemini("hello")
+            params = m.call_args[0][1]
+            assert "search" not in params
+            assert params["prompt"] == "hello"
+
+        asyncio.run(run())
+
+    def test_gemini_add_html_true(self):
+        async def run():
+            from scrapingbee_cli.client import Client
+
+            client = Client("fake-key")
+            with patch.object(client, "_get_with_retry", new_callable=AsyncMock) as m:
+                m.return_value = (b'{"result": "ok"}', {}, 200)
+                await client.gemini("hello", add_html=True)
+            params = m.call_args[0][1]
+            assert params["add_html"] == "true"
+
+        asyncio.run(run())
+
+    def test_gemini_add_html_false(self):
+        async def run():
+            from scrapingbee_cli.client import Client
+
+            client = Client("fake-key")
+            with patch.object(client, "_get_with_retry", new_callable=AsyncMock) as m:
+                m.return_value = (b'{"result": "ok"}', {}, 200)
+                await client.gemini("hello", add_html=False)
+            params = m.call_args[0][1]
+            assert params["add_html"] == "false"
+
+        asyncio.run(run())
+
+    def test_gemini_country_code(self):
+        async def run():
+            from scrapingbee_cli.client import Client
+
+            client = Client("fake-key")
+            with patch.object(client, "_get_with_retry", new_callable=AsyncMock) as m:
+                m.return_value = (b'{"result": "ok"}', {}, 200)
+                await client.gemini("hello", country_code="gb")
+            params = m.call_args[0][1]
+            assert params["country_code"] == "gb"
+
+        asyncio.run(run())
+
+    def test_gemini_no_optional_params(self):
+        """Only prompt sent when no optional params given."""
+
+        async def run():
+            from scrapingbee_cli.client import Client
+
+            client = Client("fake-key")
+            with patch.object(client, "_get_with_retry", new_callable=AsyncMock) as m:
+                m.return_value = (b'{"result": "ok"}', {}, 200)
+                await client.gemini("hello")
+            params = m.call_args[0][1]
+            assert params == {"prompt": "hello"}
+
+        asyncio.run(run())
+
+    def test_gemini_hits_gemini_endpoint(self):
+        async def run():
+            from scrapingbee_cli.client import Client
+
+            client = Client("fake-key")
+            with patch.object(client, "_get_with_retry", new_callable=AsyncMock) as m:
+                m.return_value = (b'{"result": "ok"}', {}, 200)
+                await client.gemini("hello")
+            assert m.call_args[0][0] == "/gemini"
 
         asyncio.run(run())
 
@@ -291,11 +378,15 @@ class TestCreditCosts:
     def test_chatgpt(self):
         assert chatgpt_credits() == 15
 
+    def test_gemini(self):
+        assert gemini_credits() == 15
+
     def test_estimated_fallback_dict_exists(self):
         """ESTIMATED_CREDITS dict should exist as fallback."""
         assert "google" in ESTIMATED_CREDITS
         assert "fast-search" in ESTIMATED_CREDITS
         assert "chatgpt" in ESTIMATED_CREDITS
+        assert "gemini" in ESTIMATED_CREDITS
 
 
 class TestWriteOutputCreditCost:
@@ -394,3 +485,35 @@ class TestChatGPTCLIOptions:
 
         result = runner.invoke(chatgpt_cmd, ["--help"], obj={})
         assert "--country-code" in result.output
+
+
+class TestGeminiCLIOptions:
+    """Tests that Gemini CLI options are registered (and --search is absent)."""
+
+    def test_gemini_help_shows_add_html(self):
+        runner = CliRunner()
+        from scrapingbee_cli.commands.gemini import gemini_cmd
+
+        result = runner.invoke(gemini_cmd, ["--help"], obj={})
+        assert "--add-html" in result.output
+
+    def test_gemini_help_shows_country_code(self):
+        runner = CliRunner()
+        from scrapingbee_cli.commands.gemini import gemini_cmd
+
+        result = runner.invoke(gemini_cmd, ["--help"], obj={})
+        assert "--country-code" in result.output
+
+    def test_gemini_help_shows_tag(self):
+        runner = CliRunner()
+        from scrapingbee_cli.commands.gemini import gemini_cmd
+
+        result = runner.invoke(gemini_cmd, ["--help"], obj={})
+        assert "--tag" in result.output
+
+    def test_gemini_help_omits_search(self):
+        runner = CliRunner()
+        from scrapingbee_cli.commands.gemini import gemini_cmd
+
+        result = runner.invoke(gemini_cmd, ["--help"], obj={})
+        assert "--search" not in result.output

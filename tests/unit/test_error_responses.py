@@ -100,6 +100,11 @@ def _mock_client_cls(method_name: str, status_code: int, body: bytes = b'{"error
             "chatgpt",
         ),
         (
+            ["gemini", "hello"],
+            "scrapingbee_cli.commands.gemini.Client",
+            "gemini",
+        ),
+        (
             ["scrape", "https://example.com"],
             "scrapingbee_cli.commands.scrape.Client",
             "scrape",

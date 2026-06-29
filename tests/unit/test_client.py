@@ -211,6 +211,7 @@ _FIRST_ARG = {
     "youtube_search": "coffee",
     "youtube_metadata": "dQw4w9WgXcQ",
     "chatgpt": "hello",
+    "gemini": "hello",
 }
 
 

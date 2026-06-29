@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`gemini` command** — send a prompt to the Gemini API (`scrapingbee gemini "your prompt"`). Returns `results_text`, `results_markdown`, `citations`, and `prompt`; pass `--add-html true` to also include `full_html`. Supports `--country-code` (ISO 3166-1) and `--tag`, plus batch mode via `--input-file`/`--output-dir`. Mirrors `chatgpt` but has no `--search` flag. **Credit:** 15 per request.
 - **`--latitude`, `--longitude`, `--radius` on `google`** — geolocate the search at a specific point and limit it to a surrounding radius. `--latitude` (float, -90 to 90) and `--longitude` (float, -180 to 180) set the search origin; `--radius` (int) limits results to the area around it. Forwarded to the API as `latitude`/`longitude`/`radius` when set, omitted otherwise.
 
 >>>>>>> b274f26 (add new params)

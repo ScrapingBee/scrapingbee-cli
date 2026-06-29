@@ -1,6 +1,6 @@
 # ScrapingBee CLI
 
-Command-line client for the [ScrapingBee](https://www.scrapingbee.com/) API: scrape URLs (single or batch), crawl sites, check usage and credits, and use Google, Fast Search, Amazon, Walmart, YouTube, and ChatGPT from the terminal.
+Command-line client for the [ScrapingBee](https://www.scrapingbee.com/) API: scrape URLs (single or batch), crawl sites, check usage and credits, and use Google, Fast Search, Amazon, Walmart, YouTube, ChatGPT, and Gemini from the terminal.
 
 ## Requirements
 
@@ -62,6 +62,7 @@ scrapingbee [command] [arguments] [options]
 | `walmart-search` / `walmart-product` | Walmart search and product |
 | `youtube-search` / `youtube-metadata` | YouTube search and video metadata |
 | `chatgpt` | ChatGPT API (`--search true` for web-enhanced responses) |
+| `gemini` | Gemini API (returns text, markdown, and citations) |
 | `export` | Merge batch/crawl output to ndjson, txt, or csv (with --flatten, --columns) |
 | `schedule` | Schedule commands via cron (--name, --list, --stop) |
 | `tutorial` | Interactive step-by-step guide to CLI features (`--chapter N`, `--reset`, `--list`, `--output-dir`) |

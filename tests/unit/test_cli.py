@@ -580,6 +580,16 @@ class TestCommandHelpOutput:
         assert code == 0
         assert "PROMPT" in out or "prompt" in out.lower()
 
+    def test_gemini_help(self):
+        from tests.conftest import cli_run
+
+        code, out, _ = cli_run(["gemini", "--help"])
+        assert code == 0
+        assert "PROMPT" in out or "prompt" in out.lower()
+        for param in ("--add-html", "--country-code", "--tag"):
+            assert param in out, f"{param} should appear in gemini --help"
+        assert "--search" not in out, "gemini must not expose --search"
+
     def test_crawl_help(self):
         from tests.conftest import cli_run
 
@@ -697,6 +707,7 @@ class TestCommandHelpOutput:
             "youtube-search",
             "youtube-metadata",
             "chatgpt",
+            "gemini",
             "export",
             "schedule",
             "usage",
