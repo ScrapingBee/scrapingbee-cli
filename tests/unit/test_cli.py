@@ -8,9 +8,9 @@ from scrapingbee_cli.cli_utils import (
     WAIT_BROWSER_HELP,
     _extract_field_values,
     _filter_fields,
+    _validate_geolocation,
     _validate_json_option,
     _validate_page,
-    _validate_geolocation,
     _validate_price_range,
     _validate_range,
 )

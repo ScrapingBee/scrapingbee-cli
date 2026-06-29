@@ -15,7 +15,6 @@ from ..batch import (
     validate_batch_run,
 )
 from ..cli_utils import (
-    BOOL_STR,
     _batch_options,
     check_api_response,
     parse_bool,
@@ -31,7 +30,7 @@ from ..config import BASE_URL, get_api_key
 @click.argument("prompt", nargs=-1, required=False)
 @click.option(
     "--add-html",
-    type=BOOL_STR,
+    type=str,
     default=None,
     help="Include full HTML of the page in results (true/false).",
 )
