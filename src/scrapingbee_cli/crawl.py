@@ -6,7 +6,7 @@ import json
 import os
 import re
 import threading
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -713,7 +713,16 @@ class GenericScrapingBeeSpider(Spider):
         allowed = self._allowed_netlocs_set()
         return not allowed or netloc in allowed
 
-    def start_requests(self) -> Iterator[Request]:
+    async def start(self) -> AsyncIterator[Request]:
+        # Scrapy >= 2.13 entry point. Scrapy 2.16 removed start_requests()
+        # from the base Spider and no longer calls it, so a start_requests()
+        # override is silently ignored: the spider falls back to the default
+        # start() (a plain Request per start_url with the default `parse`
+        # callback), which bypasses ScrapingBee + the discovery flow and saves
+        # the seed's raw direct-fetch HTML as the artifact (the corrupt 1.png /
+        # credits_used:null seed). Defining start() is the supported API on
+        # Scrapy 2.13+ (we pin scrapy ~=2.16, so the older start_requests()
+        # fallback is unnecessary).
         # Two flows:
         #   1. "Same-mode": one request per page; the response is both saved
         #      and parsed for outgoing links. Works only when scrape_params
@@ -926,7 +935,7 @@ class GenericScrapingBeeSpider(Spider):
         """Same-mode callback: the response is both saved and parsed for
         outgoing links. Only used when scrape_params return HTML or
         json_response with a parseable body — binary/extract modes are
-        routed through ``_parse_crawl_and_save`` from ``start_requests``.
+        routed through ``_parse_crawl_and_save`` from ``start``.
         """
         from scrapy.exceptions import CloseSpider
 
