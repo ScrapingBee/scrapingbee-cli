@@ -327,6 +327,61 @@ class TestSpiderSaveResponse:
         assert not (tmp_path / "1.html").exists()
 
 
+class TestSpiderStart:
+    """start() is the Scrapy 2.13+ entry point. Scrapy 2.16 removed
+    start_requests() and no longer calls it; relying on it made the spider
+    fall back to the default start() (a plain Request via the ``parse``
+    callback), which bypassed ScrapingBee and saved the seed's raw HTML as a
+    corrupt artifact. These guard that regression."""
+
+    def _collect_start(self, spider):
+        import asyncio
+
+        async def _run():
+            return [r async for r in spider.start()]
+
+        return asyncio.run(_run())
+
+    def test_start_is_async_generator_and_no_start_requests(self):
+        import inspect
+
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        assert "start" in GenericScrapingBeeSpider.__dict__, "must define start() (Scrapy 2.13+)"
+        assert inspect.isasyncgenfunction(GenericScrapingBeeSpider.start)
+        # start_requests() is removed in Scrapy 2.16; defining/relying on it broke the seed.
+        assert "start_requests" not in GenericScrapingBeeSpider.__dict__
+
+    def test_screenshot_seed_goes_through_scrapingbee_discovery(self):
+        from scrapy_scrapingbee import ScrapingBeeRequest
+
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        spider = GenericScrapingBeeSpider(
+            start_urls=["https://books.toscrape.com/"],
+            scrape_params={"screenshot_full_page": "true"},
+        )
+        reqs = self._collect_start(spider)
+        assert reqs, "start() must yield at least one request"
+        seed = reqs[0]
+        assert isinstance(seed, ScrapingBeeRequest), (
+            f"seed must be a ScrapingBeeRequest (not a plain Request), got {type(seed).__name__}"
+        )
+        assert seed.callback == spider._parse_crawl_and_save, (
+            "screenshot seed must route to the discovery callback, not the default parse"
+        )
+
+    def test_html_seed_is_also_a_scrapingbee_request(self):
+        from scrapy_scrapingbee import ScrapingBeeRequest
+
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        spider = GenericScrapingBeeSpider(start_urls=["https://example.com/"], scrape_params={})
+        reqs = self._collect_start(spider)
+        assert reqs and isinstance(reqs[0], ScrapingBeeRequest)
+        assert reqs[0].callback == spider.parse
+
+
 class TestRequiresDiscoveryPhase:
     """Tests for _requires_discovery_phase()."""
 

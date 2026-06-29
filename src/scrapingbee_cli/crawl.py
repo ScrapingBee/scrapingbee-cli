@@ -638,7 +638,11 @@ class GenericScrapingBeeSpider(Spider):
             self._save_queue_next += 1
             try:
                 engine.crawl(self._make_save_request(url), spider)
-            except Exception:
+            except Exception as e:
+                # Log, don't swallow: if engine.crawl()'s signature shifts under a
+                # Scrapy bump, every queued save would silently fail and the user
+                # would get zero files with no error.
+                self.logger.warning("Failed to dispatch queued save for %s: %s", url, e)
                 if self._save_pending > 0:
                     self._save_pending -= 1
         from scrapy.exceptions import DontCloseSpider
@@ -1107,11 +1111,12 @@ class GenericScrapingBeeSpider(Spider):
                     self._save_pending += 1
                     try:
                         engine.crawl(self._make_save_request(url), self)
-                    except Exception:
+                    except Exception as e:
+                        self.logger.warning("Failed to dispatch backfill save for %s: %s", url, e)
                         if self._save_pending > 0:
                             self._save_pending -= 1
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug("save-error backfill skipped: %s", e)
         return self._on_request_error(failure)
 
 
