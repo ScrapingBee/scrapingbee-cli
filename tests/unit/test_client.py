@@ -211,6 +211,7 @@ _FIRST_ARG = {
     "youtube_search": "coffee",
     "youtube_metadata": "dQw4w9WgXcQ",
     "chatgpt": "hello",
+    "gemini": "hello",
 }
 
 
@@ -322,5 +323,49 @@ class TestGoogleShoppingParams:
             assert "sort_by" not in captured["params"]
             assert "min_price" not in captured["params"]
             assert "max_price" not in captured["params"]
+
+        asyncio.run(run())
+
+
+class TestGoogleGeo:
+    """Tests that google_search forwards latitude/longitude/radius only when set."""
+
+    def test_geo_sent_when_set(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search(
+                    "coffee shops",
+                    latitude=40.7128,
+                    longitude=-74.006,
+                    radius=5000,
+                    retries=0,
+                )
+            assert captured["params"].get("latitude") == 40.7128
+            assert captured["params"].get("longitude") == -74.006
+            assert captured["params"].get("radius") == 5000
+
+        asyncio.run(run())
+
+    def test_geo_omitted_when_unset(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search("coffee shops", retries=0)
+            assert "latitude" not in captured["params"]
+            assert "longitude" not in captured["params"]
+            assert "radius" not in captured["params"]
 
         asyncio.run(run())

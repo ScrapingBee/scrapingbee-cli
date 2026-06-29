@@ -14,6 +14,7 @@ def register_commands(cli: click.Group) -> None:
         crawl,
         export,
         fast_search,
+        gemini,
         google,
         schedule,
         tutorial,
@@ -34,6 +35,7 @@ def register_commands(cli: click.Group) -> None:
     walmart.register(cli)
     youtube.register(cli)
     chatgpt.register(cli)
+    gemini.register(cli)
     export.register(cli)
     tutorial.register(cli)
     schedule.register(cli)
