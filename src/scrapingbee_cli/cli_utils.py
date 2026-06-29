@@ -1258,7 +1258,7 @@ def _validate_geolocation(
         click.echo("radius must be >= 0", err=True)
         raise SystemExit(1)
     if (latitude is None) != (longitude is None):
-            raise SystemExit("latitude and longitude must be provided together")
+        raise SystemExit("latitude and longitude must be provided together")
     if radius is not None and latitude is None:
         raise SystemExit("radius requires latitude and longitude")
 
