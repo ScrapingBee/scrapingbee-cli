@@ -228,9 +228,21 @@ DEFAULT_MAX_PAGES = 0
 
 
 def _normalize_url(url: str) -> str:
-    """Strip fragment and trailing slash for deduplication."""
+    """Canonicalise a URL for dedup: drop the fragment, collapse a trailing
+    directory-index filename (``/foo/index.html`` ≡ ``/foo/`` ≡ ``/foo``), and
+    strip the trailing slash.
+
+    By HTTP convention a server returns the same resource for ``GET /foo/`` and
+    ``GET /foo/index.html``; without collapsing them the crawler treats the seed
+    (served at ``/``) and a discovered ``index.html`` link as two pages and saves
+    the same content twice — double credits and inflated manifest counts.
+    """
     parsed = urlparse(url)
-    path = parsed.path.rstrip("/") or "/"
+    # Collapse a trailing directory-index file to its directory. Conservative:
+    # only the standard HTML index names, and the leading ``/`` in the pattern
+    # means ``/myindex.html`` is left untouched (only ``…/index.html`` matches).
+    path = re.sub(r"/index\.html?$", "/", parsed.path, flags=re.I)
+    path = path.rstrip("/") or "/"
     return f"{parsed.scheme}://{parsed.netloc}{path}" + (f"?{parsed.query}" if parsed.query else "")
 
 
@@ -402,6 +414,7 @@ class GenericScrapingBeeSpider(Spider):
         name: str | None = None,
         pre_seen_urls: set[str] | None = None,
         initial_write_counter: int = 0,
+        initial_url_file_map: dict[str, Any] | None = None,
         include_pattern: str | None = None,
         exclude_pattern: str | None = None,
         save_pattern: str | None = None,
@@ -431,7 +444,11 @@ class GenericScrapingBeeSpider(Spider):
         self._write_lock = threading.Lock()
         self._write_counter = initial_write_counter
         # Maps response URL → {file, fetched_at, http_status}; written to manifest.json on close.
-        self._url_file_map: dict[str, Any] = {}
+        # Pre-seeded with the prior run's manifest on --resume so closed() merges
+        # (rather than clobbers) those entries; new saves are appended to it.
+        self._url_file_map: dict[str, Any] = (
+            dict(initial_url_file_map) if initial_url_file_map else {}
+        )
         self._include_re = re.compile(include_pattern) if include_pattern else None
         self._exclude_re = re.compile(exclude_pattern) if exclude_pattern else None
         self._save_re = re.compile(save_pattern) if save_pattern else None
@@ -834,16 +851,28 @@ class GenericScrapingBeeSpider(Spider):
         return True
 
     def closed(self, reason: str) -> None:
-        """Write manifest.json (URL → relative filename) when the crawl ends."""
-        if not self.output_dir or not self._url_file_map:
+        """Write manifest.json (URL → relative filename) when the crawl ends.
+
+        Always materialises the output directory and a manifest — even on a
+        zero-save crawl (e.g. ``--save-pattern`` matched nothing) — so callers
+        can tell "ran, saved 0" apart from "never ran", ``--resume`` always has
+        a manifest to read, and scripts that check for the output dir don't
+        break with a misleading success. Previously this early-returned on an
+        empty map, so a zero-save crawl left no dir/manifest while the CLI still
+        printed "Saved to …". ``_url_file_map`` is pre-seeded with the prior
+        run's entries on resume, so writing it here merges rather than clobbers.
+        """
+        if not self.output_dir:
             return
-        abs_dir = str(Path(self.output_dir).resolve())
-        manifest_path = Path(abs_dir) / "manifest.json"
+        abs_dir = Path(self.output_dir).resolve()
+        abs_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = abs_dir / "manifest.json"
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(self._url_file_map, f, indent=2, ensure_ascii=False)
         from .batch import _save_batch_meta
 
-        _save_batch_meta(abs_dir, len(self._url_file_map), len(self._url_file_map), 0)
+        n = len(self._url_file_map)
+        _save_batch_meta(str(abs_dir), n, n, 0)
 
     def _iter_follow_urls(self, response: Response) -> Any:
         """Yield ``(url, next_depth)`` for each link in ``response`` that
@@ -1327,6 +1356,7 @@ def run_urls_spider(
         raise ValueError("At least one URL is required")
     pre_seen_urls: set[str] | None = None
     initial_write_counter = 0
+    initial_url_file_map: dict[str, Any] | None = None
     if resume and output_dir:
         manifest_path = Path(output_dir).resolve() / "manifest.json"
         if manifest_path.is_file():
@@ -1335,6 +1365,9 @@ def run_urls_spider(
                     existing_map: dict[str, Any] = json.load(f)
                 pre_seen_urls = set(existing_map.keys())
                 initial_write_counter = len(existing_map)
+                # Seed the spider's map so closed() re-writes prior entries
+                # alongside this run's new saves instead of clobbering them.
+                initial_url_file_map = existing_map
                 click.echo(
                     f"Resume: skipping {len(pre_seen_urls)} already-crawled URLs.",
                     err=True,
@@ -1410,6 +1443,7 @@ def run_urls_spider(
         allow_external_domains=allow_external_domains,
         pre_seen_urls=pre_seen_urls,
         initial_write_counter=initial_write_counter,
+        initial_url_file_map=initial_url_file_map,
         include_pattern=include_pattern,
         exclude_pattern=exclude_pattern,
         save_pattern=save_pattern,

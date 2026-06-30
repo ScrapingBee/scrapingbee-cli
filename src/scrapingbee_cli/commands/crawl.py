@@ -274,7 +274,11 @@ def _crawl_build_params(
     "--max-pages",
     type=int,
     default=0,
-    help="Max pages to fetch from API (0 = unlimited). Each page costs credits.",
+    help=(
+        "Max pages to save (0 = unlimited). Each fetch costs credits; with "
+        "--save-pattern or extraction/screenshot modes, extra pages are fetched "
+        "for link discovery, so total credits can exceed --max-pages."
+    ),
 )
 @optgroup.option(
     "--allowed-domains",
@@ -307,7 +311,7 @@ def _crawl_build_params(
     "--save-pattern",
     type=str,
     default=None,
-    help="Regex: only save pages matching this pattern. Other pages are visited for link discovery but not saved.",
+    help="Regex: only save pages matching this pattern. Non-matching pages are still fetched for link discovery (which costs credits) but not saved.",
 )
 @optgroup.option(
     "--download-delay",
@@ -601,7 +605,39 @@ def crawl_cmd(
         except ValueError as e:
             click.echo(str(e), err=True)
             raise SystemExit(1)
-        click.echo(f"Saved to {out_dir}", err=True)
+        # Report what actually landed on disk. closed() always writes a
+        # manifest now (even with 0 entries), so an empty/short manifest tells
+        # us the crawl ran but saved little — surface that instead of a
+        # misleading "Saved to …" on a zero-save run (e.g. --save-pattern
+        # matched nothing, which still spends discovery credits).
+        import json as _json
+        from pathlib import Path as _Path
+
+        saved_count = 0
+        manifest_path = _Path(out_dir).resolve() / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                with open(manifest_path, encoding="utf-8") as mf:
+                    saved_count = len(_json.load(mf))
+            except Exception:
+                saved_count = 0
+        if saved_count == 0:
+            if save_pattern:
+                click.echo(
+                    f"No pages saved to {out_dir} — no crawled URL matched "
+                    f"--save-pattern {save_pattern!r}. Discovery still used credits.",
+                    err=True,
+                )
+            else:
+                click.echo(f"No pages saved to {out_dir} (0 pages crawled).", err=True)
+        elif save_pattern and max_pages and saved_count < max_pages:
+            click.echo(
+                f"Saved to {out_dir} ({saved_count} of up to {max_pages} pages "
+                f"matched --save-pattern {save_pattern!r}).",
+                err=True,
+            )
+        else:
+            click.echo(f"Saved to {out_dir}", err=True)
         on_complete = obj.get("on_complete")
         if on_complete:
             from ..cli_utils import run_on_complete

@@ -28,6 +28,31 @@ class TestNormalizeUrl:
         # Path is normalized to / when empty, so query attaches after /
         assert _normalize_url("https://example.com?a=1") == "https://example.com/?a=1"
 
+    def test_collapses_root_index_html(self):
+        # Directory-index alias: / and /index.html are the same resource, so
+        # they must dedup to one entry (otherwise the seed + a discovered
+        # index.html link save the same page twice — double credits).
+        assert _normalize_url("https://example.com/index.html") == _normalize_url(
+            "https://example.com/"
+        )
+
+    def test_collapses_subdir_index_html(self):
+        assert _normalize_url("https://example.com/foo/index.html") == _normalize_url(
+            "https://example.com/foo/"
+        )
+        # .htm variant too
+        assert _normalize_url("https://example.com/foo/index.htm") == _normalize_url(
+            "https://example.com/foo/"
+        )
+
+    def test_does_not_collapse_non_index(self):
+        # Only "…/index.html" collapses; a file that merely ends in index.html
+        # (e.g. myindex.html) or a different page name is left distinct.
+        assert _normalize_url("https://example.com/myindex.html") != _normalize_url(
+            "https://example.com/"
+        )
+        assert _normalize_url("https://example.com/about.html") == "https://example.com/about.html"
+
 
 class TestParamTruthy:
     """Tests for _param_truthy()."""
@@ -505,3 +530,54 @@ class TestMaxPagesHardCap:
         for i in range(4):
             assert sp._save_response(self._resp(f"http://example.com/{i}")) is True
         assert sp._save_count == 4
+
+
+class TestClosedWritesOnZeroSaves:
+    """closed() must materialise the output dir + manifest even when nothing
+    was saved (e.g. --save-pattern matched nothing). Previously it early-
+    returned on an empty map, so the crawl left no dir/manifest while the CLI
+    still printed "Saved to …" and exited 0 — a false success."""
+
+    def _spider(self, tmp_path, **kw):
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        return GenericScrapingBeeSpider(
+            start_urls=["http://example.com"],
+            output_dir=str(tmp_path / "crawl_out"),
+            name="t",
+            **kw,
+        )
+
+    def test_zero_saves_creates_dir_and_empty_manifest(self, tmp_path):
+        import json
+
+        sp = self._spider(tmp_path, save_pattern="NOMATCH", max_pages=8)
+        out = tmp_path / "crawl_out"
+        assert not out.exists()  # not created until close
+        sp.closed("finished")
+        assert out.is_dir()
+        manifest = out / "manifest.json"
+        assert manifest.is_file()
+        assert json.loads(manifest.read_text()) == {}
+        meta = out / ".batch_meta.json"
+        assert meta.is_file()
+        assert json.loads(meta.read_text())["total"] == 0
+
+    def test_no_output_dir_writes_nothing(self, tmp_path):
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        sp = GenericScrapingBeeSpider(start_urls=["http://example.com"], output_dir=None, name="t")
+        sp.closed("finished")  # must not raise, nothing to write
+        assert list(tmp_path.iterdir()) == []
+
+    def test_resume_manifest_is_merged_not_clobbered(self, tmp_path):
+        import json
+
+        out = tmp_path / "crawl_out"
+        out.mkdir()
+        prior = {"http://example.com/a": {"file": "1.html", "http_status": 200}}
+        # Resume run that saves nothing new must preserve the prior entry.
+        sp = self._spider(tmp_path, initial_url_file_map=prior, initial_write_counter=len(prior))
+        sp.closed("finished")
+        merged = json.loads((out / "manifest.json").read_text())
+        assert "http://example.com/a" in merged
