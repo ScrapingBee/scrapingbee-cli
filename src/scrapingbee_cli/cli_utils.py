@@ -1324,6 +1324,8 @@ def build_scrape_kwargs(
     custom_google: str | None = None,
     transparent_status_code: str | None = None,
     tag: str | None = None,
+    mode: str | None = None,
+    max_cost: int | None = None,
     body: str | None = None,
     scraping_config: str | None = None,
 ) -> dict[str, Any]:
@@ -1365,6 +1367,8 @@ def build_scrape_kwargs(
         "custom_google": parse_bool(custom_google),
         "transparent_status_code": parse_bool(transparent_status_code),
         "tag": tag,
+        "mode": mode,
+        "max_cost": max_cost,
         "body": body,
         "scraping_config": scraping_config,
     }
@@ -1583,6 +1587,7 @@ def write_output(
         spb_cost_present = False
         for key, label in [
             ("spb-cost", "Credit Cost"),
+            ("spb-auto-cost", "Auto Credit Cost"),
             ("spb-resolved-url", "Resolved URL"),
             ("spb-initial-status-code", "Initial Status Code"),
             ("tag", "Tag"),

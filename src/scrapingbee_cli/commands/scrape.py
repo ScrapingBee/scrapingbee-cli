@@ -300,6 +300,18 @@ SCRAPE_PRESETS = (
     help="Optional label included in API response headers.",
 )
 @optgroup.option(
+    "--mode",
+    type=click.Choice(["auto"]),
+    default=None,
+    help="Auto-Mode: cheapest-first config escalation, charged only for the winning config. GET only.",
+)
+@optgroup.option(
+    "--max-cost",
+    type=int,
+    default=None,
+    help="Max credits a request may cost (requires --mode auto; omit = uncapped).",
+)
+@optgroup.option(
     "-X",
     "--method",
     type=click.Choice(["GET", "POST", "PUT"], case_sensitive=False),
@@ -358,6 +370,8 @@ def scrape_cmd(
     custom_google: str | None,
     transparent_status_code: str | None,
     tag: str | None,
+    mode: str | None,
+    max_cost: int | None,
     method: str,
     body: str | None,
     escalate_proxy: bool,
@@ -448,6 +462,24 @@ def scrape_cmd(
             )
             raise SystemExit(1)
 
+        if mode == "auto" and any(
+            opt is not None
+            for opt in (render_js, premium_proxy, stealth_proxy, transparent_status_code)
+        ):
+            click.echo(
+                "Error: --mode auto cannot be combined with "
+                "--render-js/--premium-proxy/--stealth-proxy/--transparent-status-code "
+                "(Auto-Mode picks these itself).",
+                err=True,
+            )
+            raise SystemExit(1)
+
+        if max_cost is not None and mode != "auto":
+            click.echo("Error: --max-cost requires --mode auto", err=True)
+            raise SystemExit(1)
+
+        _validate_range("max_cost", max_cost, 1, 1_000_000)
+
         scrape_kwargs = build_scrape_kwargs(
             method=method,
             render_js=render_js,
@@ -484,6 +516,8 @@ def scrape_cmd(
             custom_google=custom_google,
             transparent_status_code=transparent_status_code,
             tag=tag,
+            mode=mode,
+            max_cost=max_cost,
             body=body,
             scraping_config=scraping_config,
         )

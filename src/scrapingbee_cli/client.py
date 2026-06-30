@@ -177,6 +177,8 @@ class Client:
         custom_google: bool | None = None,
         transparent_status_code: bool | None = None,
         tag: str | None = None,
+        mode: str | None = None,
+        max_cost: int | None = None,
         body: str | None = None,
         scraping_config: str | None = None,
         retries: int = 3,
@@ -220,6 +222,8 @@ class Client:
             ("custom_google", self._bool(custom_google)),
             ("transparent_status_code", self._bool(transparent_status_code)),
             ("tag", tag),
+            ("mode", mode),
+            ("max_cost", max_cost if max_cost is not None else None),
             ("scraping_config", scraping_config),
         ]:
             if v is not None:

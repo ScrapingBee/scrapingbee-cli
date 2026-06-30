@@ -86,6 +86,7 @@ scrapingbee [command] [arguments] [options]
 - **Deduplication & sampling:** `--deduplicate` removes duplicate URLs; `--sample 100` processes only 100 random items.
 - **RAG chunking:** `scrape --chunk-size 500 --chunk-overlap 50 --return-page-markdown true` outputs NDJSON chunks ready for vector DB ingestion.
 - **Scraping configurations:** `--scraping-config "My-Config"` applies a pre-saved configuration from your ScrapingBee dashboard. Inline options override config settings. Create configurations in the [request builder](https://app.scrapingbee.com/). Running `scrapingbee --scraping-config NAME` (without a subcommand) auto-routes to `scrape`.
+- **Auto-Mode:** `scrape URL --mode auto` lets the API pick the cheapest config that succeeds (tries cheap → expensive, stops at the first success) and charges only for the winning config. Add `--max-cost N` to cap the credits a request may spend. GET only; cannot be combined with `--render-js`/`--premium-proxy`/`--stealth-proxy`/`--transparent-status-code` (Auto-Mode picks those itself).
 
 ### Examples
 

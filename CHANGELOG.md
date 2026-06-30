@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.5] - 2026-06-30
+
+### Added
+
+- **Auto-Mode on `scrape` (`--mode auto`)** — the API picks the cheapest scraping config that succeeds (tries cheap → expensive, stops at the first success) and charges only for the winning config (0 credits if all fail). GET only. Forwarded to the API as `mode=auto` when set, omitted otherwise. Cannot be combined with `--render-js`, `--premium-proxy`, `--stealth-proxy`, or `--transparent-status-code` (Auto-Mode selects these itself) — the CLI rejects such combinations before making a request.
+- **`--max-cost` on `scrape`** — cap the credits a request may cost (integer ≥ 1). Requires `--mode auto`; omit for an uncapped budget. Forwarded to the API as `max_cost` when set, omitted otherwise.
+- The verbose output (`-v`) now surfaces the `Spb-auto-cost` response header as `Auto Credit Cost` (the credits actually charged for the winning Auto-Mode config), alongside the existing `Credit Cost`.
+
 ## [1.4.4] - 2026-06-22
 
 ### Added
