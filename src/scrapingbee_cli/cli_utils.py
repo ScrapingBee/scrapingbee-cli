@@ -10,6 +10,142 @@ from typing import Any
 
 import click
 
+from .theme import (
+    echo_bee_error,
+    echo_error,
+    echo_key_value,
+    echo_separator,
+    echo_warning,
+    is_repl_mode,
+    styled_echo,
+)
+
+_REPL_PREVIEW_MAX_LINES = 30
+_REPL_PREVIEW_MAX_BYTES = 4000
+
+
+def _format_bytes(n: int) -> str:
+    if n >= 1_048_576:
+        return f"{n / 1_048_576:.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n} B"
+
+
+def _maybe_repl_preview(data: bytes) -> tuple[bytes, str | None, str | None]:
+    """If we're in REPL mode and `data` is a large text payload, shrink it
+    down to a preview and save the full payload to a fixed cache path.
+
+    Triggers truncation on EITHER too many lines OR too many bytes — single-
+    line minified HTML often hits the byte cap without ever wrapping, so a
+    line-only check would let it through unchanged.
+
+    Returns ``(bytes_to_print, summary_or_none, saved_path_or_none)``. Outside
+    REPL mode (or for binary data, or short outputs), returns ``(data, None,
+    None)`` unchanged so piped/redirected use is unaffected.
+    """
+    if not data:
+        return data, None, None
+    if not is_repl_mode():
+        return data, None, None
+
+    # Skip binary data (screenshots, PDFs, etc.) — keep the original behaviour.
+    is_text = data[:1] in (b"{", b"[", b"<", b"#") or b"\x00" not in data[:512]
+    if not is_text:
+        return data, None, None
+
+    # Always overwrite the ``last-output`` cache for every response, even
+    # short ones. Otherwise ``:view`` would happily display a stale large
+    # response from a previous command — the cache file would only get
+    # refreshed by responses big enough to trigger the truncation branch.
+    full_path: str | None = None
+    try:
+        from pathlib import Path
+
+        cache_dir = Path.home() / ".cache" / "scrapingbee-cli"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / "last-output"
+        cache_path.write_bytes(data)
+        full_path = str(cache_path)
+    except Exception:
+        full_path = None
+
+    line_count = data.count(b"\n") + 1
+    if len(data) <= _REPL_PREVIEW_MAX_BYTES and line_count <= _REPL_PREVIEW_MAX_LINES:
+        # Small enough to print inline — but the cache is still fresh.
+        return data, None, None
+
+    text = data.decode("utf-8", errors="replace")
+    lines = text.split("\n")
+    line_preview = "\n".join(lines[:_REPL_PREVIEW_MAX_LINES])
+
+    # Decide whether to truncate by lines or by chars. Single-line minified
+    # HTML/JSON would have line_preview == text but len > byte cap; truncate by
+    # chars there so the preview really does stay small on screen.
+    if len(line_preview.encode("utf-8")) > _REPL_PREVIEW_MAX_BYTES:
+        preview = text[:_REPL_PREVIEW_MAX_BYTES]
+        more_chars = len(text) - len(preview)
+        truncation_note = (
+            f"showing first {_REPL_PREVIEW_MAX_BYTES:,} chars  ·  +{more_chars:,} more chars"
+        )
+    else:
+        preview = line_preview
+        more_lines = max(0, len(lines) - _REPL_PREVIEW_MAX_LINES)
+        shown = min(_REPL_PREVIEW_MAX_LINES, len(lines))
+        truncation_note = f"showing {shown}/{len(lines):,} lines  ·  +{more_lines:,} more lines"
+
+    summary = f"… preview truncated  ·  {_format_bytes(len(data))}  ·  {truncation_note}"
+    return preview.encode("utf-8"), summary, full_path
+
+
+def collect_bool_flag_names(cli_group: click.Group) -> set[str]:
+    """Walk a click group + every subcommand and return the set of all
+    option strings declared as ``is_flag=True``. Used by
+    ``normalize_bool_flag_args`` to extend bool flags so they ALSO
+    accept ``true``/``false`` values for consistency with the
+    scraping-side flags that already take string bools
+    (``--render-js true`` etc.).
+    """
+    flags: set[str] = set()
+    try:
+        for cmd in cli_group.commands.values():
+            for p in cmd.params:
+                if getattr(p, "is_flag", False):
+                    for opt in p.opts:
+                        flags.add(opt)
+    except Exception:
+        pass
+    return flags
+
+
+def normalize_bool_flag_args(args: list[str], flag_names: set[str]) -> list[str]:
+    """Pre-parse boolean flags so they accept an explicit true/false
+    value in addition to the bare flag form:
+      ``--verbose true``  → ``--verbose`` (value dropped, flag kept)
+      ``--verbose false`` → flag dropped entirely (default = False)
+      ``--verbose``       → unchanged
+      ``--no-verbose``    → unchanged (Click's own ``--no-x`` form)
+    """
+    _true = {"true", "1", "yes", "on"}
+    _false = {"false", "0", "no", "off"}
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if tok in flag_names and i + 1 < len(args):
+            next_lv = args[i + 1].strip().lower()
+            if next_lv in _true:
+                out.append(tok)
+                i += 2
+                continue
+            if next_lv in _false:
+                # Skip the flag entirely; default value applies.
+                i += 2
+                continue
+        out.append(tok)
+        i += 1
+    return out
+
 
 class NormalizedChoice(click.Choice):
     """Choice type that accepts both hyphens and underscores.
@@ -184,6 +320,13 @@ def confirm_overwrite(path: str | None, overwrite: bool = False) -> None:
     from pathlib import Path
 
     if Path(path).exists() and not overwrite:
+        # In REPL mode, prompt_toolkit owns the TTY (full-screen / alt-buffer),
+        # so click.confirm reads from sys.stdin and blocks forever. Surface
+        # the conflict as an error and tell the user to pass --overwrite.
+        if is_repl_mode():
+            raise click.UsageError(
+                f"'{path}' already exists. Re-run with --overwrite to replace it."
+            )
         if not click.confirm(f"'{path}' already exists. Overwrite?"):
             click.echo("Cancelled.", err=True)
             raise SystemExit(0)
@@ -1220,7 +1363,10 @@ def _validate_range(
         return
     if value < min_val or value > max_val:
         u = f" {unit}" if unit else ""
-        click.echo(f"{name} must be between {min_val} and {max_val}{u}", err=True)
+        if is_repl_mode():
+            echo_error(f"{name} must be between {min_val} and {max_val}{u}")
+        else:
+            click.echo(f"{name} must be between {min_val} and {max_val}{u}", err=True)
         raise SystemExit(1)
 
 
@@ -1285,6 +1431,31 @@ def parse_bool(val: str | None) -> bool | None:
     if v in ("false", "0", "no"):
         return False
     raise ValueError(f"Invalid boolean '{val}'. Use true/false, 1/0, or yes/no.")
+
+
+class BoolStringParamType(click.ParamType):
+    """A true/false (also 1/0, yes/no) option value, validated at parse time.
+
+    Without this a bool option is plain ``type=str``, so a missing or option-like value
+    (e.g. ``--render-js --output-file x``) gets silently swallowed and surfaces as the
+    misleading "unexpected extra argument". Here ``parse_bool`` runs during parsing, so the
+    user gets a clear "use true/false" error instead. The original string is returned
+    unchanged — ``build_scrape_kwargs``/``parse_bool`` stay the single place that converts
+    to a real bool.
+    """
+
+    name = "true|false"
+
+    def convert(self, value, param, ctx):
+        try:
+            parse_bool(value)
+        except ValueError as exc:
+            self.fail(str(exc), param, ctx)
+        return value
+
+
+# Shared singleton for every true/false CLI option (accepted values: see parse_bool).
+BOOL_STR = BoolStringParamType()
 
 
 def build_scrape_kwargs(
@@ -1393,7 +1564,10 @@ def check_api_response(data: bytes, status_code: int, err_prefix: str = "Error")
     from .client import pretty_json
 
     if status_code >= 400:
-        click.echo(f"{err_prefix}: HTTP {status_code}", err=True)
+        if is_repl_mode():
+            echo_bee_error(status_code, f"{err_prefix}: HTTP {status_code}")
+        else:
+            click.echo(f"{err_prefix}: HTTP {status_code}", err=True)
         try:
             click.echo(pretty_json(data), err=True)
         except Exception:
@@ -1480,7 +1654,12 @@ async def scrape_with_escalation(
         already = any(scrape_kwargs.get(k) for k in tier_overrides)
         if already:
             continue
-        click.echo(f"[escalate-proxy] {url}: blocked, retrying with {tier_name} proxy", err=True)
+        if is_repl_mode():
+            echo_warning(f"[escalate-proxy] {url}: blocked, retrying with {tier_name} proxy")
+        else:
+            click.echo(
+                f"[escalate-proxy] {url}: blocked, retrying with {tier_name} proxy", err=True
+            )
         escalated = {**scrape_kwargs, **tier_overrides}
         data, headers, status_code = await client.scrape(url, **escalated)
         if verbose:
@@ -1578,30 +1757,59 @@ def write_output(
     Precedence: *smart_extract* > *extract_field* > *fields*.
     """
     if verbose:
-        click.echo(f"HTTP Status: {status_code}", err=True)
-        headers_lower = {k.lower(): (k, v) for k, v in headers.items()}
-        spb_cost_present = False
-        for key, label in [
-            ("spb-cost", "Credit Cost"),
-            ("spb-resolved-url", "Resolved URL"),
-            ("spb-initial-status-code", "Initial Status Code"),
-            ("tag", "Tag"),
-        ]:
-            if key in headers_lower:
-                _, val = headers_lower[key]
-                if val:
-                    click.echo(f"{label}: {val}", err=True)
-                    if key == "spb-cost":
-                        spb_cost_present = True
-        if not spb_cost_present:
-            if credit_cost is not None:
-                click.echo(f"Credit Cost: {credit_cost}", err=True)
-            elif command:
-                from scrapingbee_cli.credits import ESTIMATED_CREDITS
+        if is_repl_mode():
+            status_style = "success" if status_code < 400 else "error"
+            styled_echo(f"HTTP Status: {status_code}", style=status_style)
+            headers_lower = {k.lower(): (k, v) for k, v in headers.items()}
+            spb_cost_present = False
+            for key, label in [
+                ("spb-cost", "Credit Cost"),
+                ("spb-resolved-url", "Resolved URL"),
+                ("spb-initial-status-code", "Initial Status Code"),
+                ("tag", "Tag"),
+            ]:
+                if key in headers_lower:
+                    _, val = headers_lower[key]
+                    if val:
+                        echo_key_value(label, str(val))
+                        if key == "spb-cost":
+                            spb_cost_present = True
+            if not spb_cost_present:
+                if credit_cost is not None:
+                    echo_key_value("Credit Cost", str(credit_cost))
+                elif command:
+                    from scrapingbee_cli.credits import ESTIMATED_CREDITS
 
-                if command in ESTIMATED_CREDITS:
-                    click.echo(f"Credit Cost (estimated): {ESTIMATED_CREDITS[command]}", err=True)
-        click.echo("---", err=True)
+                    if command in ESTIMATED_CREDITS:
+                        echo_key_value("Credit Cost (estimated)", str(ESTIMATED_CREDITS[command]))
+            echo_separator()
+        else:
+            click.echo(f"HTTP Status: {status_code}", err=True)
+            headers_lower = {k.lower(): (k, v) for k, v in headers.items()}
+            spb_cost_present = False
+            for key, label in [
+                ("spb-cost", "Credit Cost"),
+                ("spb-resolved-url", "Resolved URL"),
+                ("spb-initial-status-code", "Initial Status Code"),
+                ("tag", "Tag"),
+            ]:
+                if key in headers_lower:
+                    _, val = headers_lower[key]
+                    if val:
+                        click.echo(f"{label}: {val}", err=True)
+                        if key == "spb-cost":
+                            spb_cost_present = True
+            if not spb_cost_present:
+                if credit_cost is not None:
+                    click.echo(f"Credit Cost: {credit_cost}", err=True)
+                elif command:
+                    from scrapingbee_cli.credits import ESTIMATED_CREDITS
+
+                    if command in ESTIMATED_CREDITS:
+                        click.echo(
+                            f"Credit Cost (estimated): {ESTIMATED_CREDITS[command]}", err=True
+                        )
+            click.echo("---", err=True)
     if smart_extract:
         from .extract import smart_extract as _smart_extract_fn
 
@@ -1618,11 +1826,34 @@ def write_output(
             raise SystemExit(1)
         with fh:
             fh.write(data)
+        # Confirm the save with the path — both as feedback (M1: success was
+        # otherwise silent) and so the REPL auto-linkifies it (click-to-open
+        # only works on paths printed to the scrollback). stderr keeps
+        # stdout/pipes clean for non-REPL use.
+        from .theme import BEE_DIM, BEE_YELLOW, err_console
+
+        err_console.print(f"  [{BEE_DIM}]Saved to[/] [bold {BEE_YELLOW}]{output_path}[/]")
     else:
-        sys.stdout.buffer.write(data)
+        # In REPL mode, truncate large text dumps to a tidy preview and surface
+        # a path to the full output. Non-REPL invocations (`scrapingbee scrape ...`)
+        # keep the original behaviour so pipes and redirects work unchanged.
+        preview_data, repl_summary, repl_full_path = _maybe_repl_preview(data)
+        sys.stdout.buffer.write(preview_data)
         # Only add a trailing newline for text-like content; binary data (PNG, PDF, etc.)
         # must not have extra bytes appended.
-        if data and not data.endswith(b"\n"):
-            is_text = data[:1] in (b"{", b"[", b"<", b"#") or b"\x00" not in data[:512]
+        if preview_data and not preview_data.endswith(b"\n"):
+            is_text = (
+                preview_data[:1] in (b"{", b"[", b"<", b"#") or b"\x00" not in preview_data[:512]
+            )
             if is_text:
                 click.echo()
+        if repl_summary:
+            from .theme import BEE_DIM, BEE_YELLOW, err_console
+
+            err_console.print(f"  [{BEE_DIM}]{repl_summary}[/]")
+            if repl_full_path:
+                err_console.print(
+                    f"  [bold {BEE_YELLOW}]:view[/] "
+                    f"[{BEE_DIM}]to scroll the full output  ·  or pass[/] "
+                    f"[bold {BEE_YELLOW}]--output-file FILE[/]"
+                )

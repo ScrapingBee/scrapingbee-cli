@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-07-08
+
+### Added
+
+- **Interactive REPL** — running `scrapingbee` with no command opens an interactive shell: a live status toolbar (available credits, concurrency, elapsed time), `:`-commands (`:help`; `:set`/`:show`/`:unset`/`:reset` for session option defaults; `:list`; `:view` to page the last output; `:clear`; `:q`), and any CLI command run inline with completion and history. `--keep-bg` keeps your terminal's own background/theme colours.
+- **Scrollback drag-to-copy (REPL)** — click and drag across scrollback output to select it; releasing copies the selection to the clipboard (`pbcopy` / `clip` / `wl-copy` / `xclip` / `xsel`). Plain clicks still open file paths. Pass **`--no-drag-copy`** to disable that and use the Scroll/Select mouse-mode toggle (Shift+Tab) instead — a fallback for terminals where drag-copy misbehaves.
+- **Cross-platform CI** — the test suite now runs on Linux, macOS, and Windows across Python 3.10–3.13.
+
+### Changed
+
+- **Boolean options validate at parse time** — `--render-js`, `--screenshot`, `--premium-proxy`, `--json-response`, and every other true/false option now reject a missing or non-boolean value (e.g. `--render-js --output-file x`, or a typo like `treu`) with a clear *"Invalid boolean … Use true/false, 1/0, or yes/no"* instead of the misleading *"unexpected extra argument"*. `--help` shows these as `TRUE|FALSE`. Accepted values are unchanged.
+
+### Fixed
+
+- **Onboarding `:q` trap (REPL)** — at the first-run "API key:" prompt, `:q`/`quit`/`exit` now quit as advertised instead of being validated as an API key.
+- **Validation order** — `google`, `fast-search`, `chatgpt`, `amazon-*`, `youtube-*`, and `walmart-*` now report a missing required argument before "API key not set", matching `scrape`.
+- **`schedule`/`unsafe` subcommand-style typos** — `schedule list` / `unsafe status` (and similar) now show a "did you mean `--list` / `--audit` / …" hint instead of a confusing error.
+- **`schedule` on Windows** — `schedule --every …` / `--stop …` now fail with a clean "scheduling requires cron (macOS/Linux)" message instead of a raw `FileNotFoundError` when `crontab` is absent.
+- **Crawl reported false success when `--save-pattern` matched nothing** — a crawl whose `--save-pattern` matched no page printed `Saved to <dir>` and exited 0 while creating no output directory, `manifest.json`, or `.batch_meta.json`, so credits were spent on discovery with nothing to show and scripts checking for the output dir broke. The spider now always creates the directory and writes a manifest (empty when nothing matched) plus batch metadata, and the CLI reports honestly — `No pages saved to <dir> — no crawled URL matched --save-pattern '…'. Discovery still used credits.`, or `Saved to <dir> (N of up to M pages matched …)` when fewer than `--max-pages` matched.
+- **Crawl saved `/index.html` and `/` as duplicates** — a site serving the same page at both `/` and `/index.html` (or `…/foo/` and `…/foo/index.html`) was crawled and saved twice — double credits and inflated manifest counts. `_normalize_url` now collapses a trailing directory-index file (`index.html` / `index.htm`) to its directory so the two forms deduplicate to a single save.
+- **`crawl --resume` overwrote the previous manifest** — resuming a crawl rewrote `manifest.json` with only the new run's saves, dropping the earlier run's entries. The spider now seeds its URL→file map from the existing manifest so resume merges instead of clobbering.
+- **REPL crashed at startup on Python 3.10 / 3.11** — the `asyncio.run` shim always passed `loop_factory=` (a Python 3.12+ argument), so launching `scrapingbee` raised `TypeError` immediately on 3.10/3.11. The shim now branches on the interpreter version.
+- **Screenshot crawls broke on Scrapy 2.16** — Scrapy 2.16 stopped calling `start_requests()`, so screenshot / extract / AI crawls silently fell back to a raw direct fetch of the seed URL (a corrupt artifact). The spider now defines the supported `async start()` entry point, so the ScrapingBee discovery flow runs for every crawled page.
+
 ## [1.4.4] - 2026-06-22
 
 ### Added

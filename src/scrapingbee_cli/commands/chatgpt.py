@@ -15,6 +15,7 @@ from ..batch import (
     validate_batch_run,
 )
 from ..cli_utils import (
+    BOOL_STR,
     _batch_options,
     check_api_response,
     parse_bool,
@@ -30,13 +31,13 @@ from ..config import BASE_URL, get_api_key
 @click.argument("prompt", nargs=-1, required=False)
 @click.option(
     "--search",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Enable web search to enhance the response (true/false).",
 )
 @click.option(
     "--add-html",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Include full HTML of the page in results (true/false).",
 )
@@ -66,6 +67,9 @@ def chatgpt_cmd(
     """Send a prompt to the ChatGPT API."""
     store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
+    if not input_file and not prompt:
+        click.echo("expected at least one prompt argument, or use --input-file for batch", err=True)
+        raise SystemExit(1)
     try:
         key = get_api_key(None)
     except ValueError as e:

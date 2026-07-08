@@ -16,6 +16,7 @@ from ..batch import (
     validate_batch_run,
 )
 from ..cli_utils import (
+    BOOL_STR,
     DEVICE_DESKTOP_MOBILE_TABLET,
     NormalizedChoice,
     _batch_options,
@@ -69,9 +70,9 @@ WALMART_SORT_BY = ["best-match", "price-low", "price-high", "best-seller"]
 @optgroup.option("--delivery-zip", type=str, default=None, help="Delivery ZIP code.")
 @optgroup.option("--store-id", type=str, default=None, help="Walmart store ID.")
 @optgroup.group("Output", help="Response format")
-@optgroup.option("--add-html", type=str, default=None, help="Include full HTML (true/false).")
-@optgroup.option("--light-request", type=str, default=None, help="Light request (true/false).")
-@optgroup.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@optgroup.option("--add-html", type=BOOL_STR, default=None, help="Include full HTML (true/false).")
+@optgroup.option("--light-request", type=BOOL_STR, default=None, help="Light request (true/false).")
+@optgroup.option("--screenshot", type=BOOL_STR, default=None, help="Take screenshot (true/false).")
 @optgroup.option(
     "--tag",
     type=str,
@@ -102,6 +103,9 @@ def walmart_search_cmd(
     """Search Walmart products."""
     store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
+    if not input_file and not query:
+        click.echo("expected one search query, or use --input-file for batch", err=True)
+        raise SystemExit(1)
     try:
         key = get_api_key(None)
     except ValueError as e:
@@ -231,9 +235,9 @@ def walmart_search_cmd(
 @optgroup.option("--delivery-zip", type=str, default=None, help="Delivery ZIP code.")
 @optgroup.option("--store-id", type=str, default=None, help="Walmart store ID.")
 @optgroup.group("Output", help="Response format options")
-@optgroup.option("--add-html", type=str, default=None, help="Include full HTML (true/false).")
-@optgroup.option("--light-request", type=str, default=None, help="Light request (true/false).")
-@optgroup.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@optgroup.option("--add-html", type=BOOL_STR, default=None, help="Include full HTML (true/false).")
+@optgroup.option("--light-request", type=BOOL_STR, default=None, help="Light request (true/false).")
+@optgroup.option("--screenshot", type=BOOL_STR, default=None, help="Take screenshot (true/false).")
 @optgroup.option(
     "--tag",
     type=str,
@@ -258,6 +262,9 @@ def walmart_product_cmd(
     """Fetch Walmart product details by product ID."""
     store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
+    if not input_file and not product_id:
+        click.echo("expected one product ID, or use --input-file for batch", err=True)
+        raise SystemExit(1)
     try:
         key = get_api_key(None)
     except ValueError as e:

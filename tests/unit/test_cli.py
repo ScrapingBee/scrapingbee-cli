@@ -781,3 +781,62 @@ class TestDocsCommand:
             result = runner.invoke(docs_cmd, [])
         assert result.exit_code == 0
         mock_open.assert_not_called()
+
+
+class TestCrawlSaveReporting:
+    """The CLI must report what actually landed on disk, not a blanket
+    "Saved to …". A --save-pattern that matches nothing leaves an empty
+    manifest and must read as "No pages saved" rather than a false success
+    (bugs #1/#3). The success path keeps the "Saved to" wording the
+    integration test relies on."""
+
+    def _invoke(self, monkeypatch, tmp_path, *, write_manifest, extra_args):
+        import json
+
+        from click.testing import CliRunner
+
+        import scrapingbee_cli.commands.crawl as crawl_cmd
+        from scrapingbee_cli.cli import cli
+
+        out_dir = tmp_path / "out"
+
+        def fake_spider(*args, **kwargs):
+            # Stand in for the real spider's closed(): always create the dir +
+            # manifest; write_manifest controls whether any page "saved".
+            out_dir.mkdir(parents=True, exist_ok=True)
+            mapping = {"https://example.com/a": {"file": "1.html"}} if write_manifest else {}
+            (out_dir / "manifest.json").write_text(json.dumps(mapping))
+
+        monkeypatch.setattr(crawl_cmd, "get_api_key", lambda *a, **k: "KEY")
+        monkeypatch.setattr(crawl_cmd, "get_batch_usage", lambda *a, **k: {"max_concurrency": 5})
+        monkeypatch.setattr(crawl_cmd, "run_urls_spider", fake_spider)
+
+        runner = CliRunner()
+        return runner.invoke(
+            cli,
+            [
+                "crawl",
+                "https://example.com/",
+                "--output-dir",
+                str(out_dir),
+                "--concurrency",
+                "1",
+                *extra_args,
+            ],
+        )
+
+    def test_zero_save_with_pattern_reports_no_pages(self, monkeypatch, tmp_path):
+        result = self._invoke(
+            monkeypatch,
+            tmp_path,
+            write_manifest=False,
+            extra_args=["--save-pattern", "NOMATCH"],
+        )
+        assert result.exit_code == 0, result.output + result.stderr
+        assert "No pages saved" in result.stderr
+        assert "--save-pattern" in result.stderr
+
+    def test_successful_save_reports_saved_to(self, monkeypatch, tmp_path):
+        result = self._invoke(monkeypatch, tmp_path, write_manifest=True, extra_args=[])
+        assert result.exit_code == 0, result.output + result.stderr
+        assert "Saved to" in result.stderr

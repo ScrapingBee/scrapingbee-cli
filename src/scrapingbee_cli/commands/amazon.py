@@ -16,6 +16,7 @@ from ..batch import (
     validate_batch_run,
 )
 from ..cli_utils import (
+    BOOL_STR,
     DEVICE_DESKTOP_MOBILE_TABLET,
     NormalizedChoice,
     _batch_options,
@@ -62,10 +63,12 @@ AMAZON_SORT_BY = [
 @optgroup.option("--currency", type=str, default=None, help="Currency code (e.g. USD, EUR, GBP).")
 @optgroup.group("Output", help="Response format options")
 @optgroup.option(
-    "--add-html", type=str, default=None, help="Include full HTML in response (true/false)."
+    "--add-html", type=BOOL_STR, default=None, help="Include full HTML in response (true/false)."
 )
-@optgroup.option("--light-request", type=str, default=None, help="Light request mode (true/false).")
-@optgroup.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@optgroup.option(
+    "--light-request", type=BOOL_STR, default=None, help="Light request mode (true/false)."
+)
+@optgroup.option("--screenshot", type=BOOL_STR, default=None, help="Take screenshot (true/false).")
 @optgroup.option(
     "--tag",
     type=str,
@@ -92,6 +95,9 @@ def amazon_product_cmd(
     """Fetch Amazon product details by ASIN."""
     store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
+    if not input_file and not asin:
+        click.echo("expected one ASIN, or use --input-file for batch", err=True)
+        raise SystemExit(1)
     try:
         key = get_api_key(None)
     except ValueError as e:
@@ -220,9 +226,11 @@ def amazon_product_cmd(
 @optgroup.option("--currency", type=str, default=None, help="Currency code (e.g. USD, EUR, GBP).")
 @optgroup.group("Output", help="Response format options")
 @optgroup.option(
-    "--add-html", type=str, default=None, help="Include full HTML in response (true/false)."
+    "--add-html", type=BOOL_STR, default=None, help="Include full HTML in response (true/false)."
 )
-@optgroup.option("--light-request", type=str, default=None, help="Light request mode (true/false).")
+@optgroup.option(
+    "--light-request", type=BOOL_STR, default=None, help="Light request mode (true/false)."
+)
 @optgroup.option(
     "--tag",
     type=str,
@@ -248,6 +256,9 @@ def amazon_pricing_cmd(
     """Fetch Amazon pricing details by ASIN."""
     store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
+    if not input_file and not asin:
+        click.echo("expected one ASIN, or use --input-file for batch", err=True)
+        raise SystemExit(1)
     try:
         key = get_api_key(None)
     except ValueError as e:
@@ -380,13 +391,13 @@ def amazon_pricing_cmd(
 @optgroup.option("--merchant-id", type=str, default=None, help="Merchant/seller ID.")
 @optgroup.option(
     "--autoselect-variant",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Auto-select product variants (true/false).",
 )
-@optgroup.option("--add-html", type=str, default=None, help="Include full HTML (true/false).")
-@optgroup.option("--light-request", type=str, default=None, help="Light request (true/false).")
-@optgroup.option("--screenshot", type=str, default=None, help="Take screenshot (true/false).")
+@optgroup.option("--add-html", type=BOOL_STR, default=None, help="Include full HTML (true/false).")
+@optgroup.option("--light-request", type=BOOL_STR, default=None, help="Light request (true/false).")
+@optgroup.option("--screenshot", type=BOOL_STR, default=None, help="Take screenshot (true/false).")
 @optgroup.option(
     "--tag",
     type=str,
@@ -419,6 +430,9 @@ def amazon_search_cmd(
     """Search Amazon products."""
     store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
+    if not input_file and not query:
+        click.echo("expected one search query, or use --input-file for batch", err=True)
+        raise SystemExit(1)
     try:
         key = get_api_key(None)
     except ValueError as e:

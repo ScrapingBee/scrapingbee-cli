@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scrapingbee-cli"
-version = "1.4.4"
-description = "Command-line client for the ScrapingBee API: scrape pages (single or batch), crawl sites, check usage/credits, and use Google Search, Fast Search, Amazon, Walmart, YouTube, and ChatGPT from the terminal."
+version = "1.5.0"
+description = "Command-line client for the ScrapingBee API: scrape pages (single or batch), crawl sites, check usage/credits, and use Google Search, Fast Search, Amazon, Walmart, YouTube, ChatGPT, and Gemini from the terminal."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -21,6 +21,7 @@ keywords = [
     "walmart",
     "youtube",
     "chatgpt",
+    "gemini",
     "cli",
     "api",
 ]
@@ -35,13 +36,22 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: WWW/HTTP",
 ]
+# Pinned with ~= (compatible release): accepts PATCH updates within the locked
+# MINOR, but never a minor/major bump — so a fresh install always resolves the
+# same minor we tested. Bumping a minor is a deliberate, reviewed change.
+# (Scrapy is pinned to 2.16 specifically: 2.16 removed Spider.start_requests(),
+# which our crawl relies on via start() — see crawl.py.)
+# certifi is the exception: left as >= so the CA root-cert bundle stays current
+# (pinning its minor would freeze trusted/revoked roots — a security risk).
 dependencies = [
-    "aiohttp>=3.9",
-    "certifi",
-    "click>=8.0",
-    "click-option-group>=0.5.6",
-    "scrapy>=2.11",
-    "scrapy-scrapingbee>=0.0.5",
+    "aiohttp~=3.13.3",
+    "certifi>=2026.1.4",
+    "click~=8.4.1",
+    "click-option-group~=0.5.9",
+    "prompt_toolkit~=3.0.52",
+    "rich~=15.0.0",
+    "scrapy~=2.16.0",
+    "scrapy-scrapingbee~=0.0.5",
 ]
 
 [project.urls]
@@ -53,12 +63,14 @@ Issues = "https://github.com/ScrapingBee/scrapingbee-cli/issues"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7",
-    "pytest-cov>=4",
-    "ruff>=0.8",
-    "ty>=0.0.17",
-    "build",
-    "twine",
+    "pytest~=9.0.2",
+    "pytest-cov~=7.0.0",
+    "pexpect~=4.9.0",
+    "pyte~=0.8.2",
+    "ruff~=0.15.2",
+    "ty~=0.0.17",
+    "build~=1.4.0",
+    "twine~=6.2.0",
 ]
 
 [project.scripts]
@@ -90,6 +102,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "integration: marks tests that call the live API (deselect with '-m \"not integration\"')",
+    "pty: marks tests that drive the REPL under a pseudo-terminal (pexpect+pyte; Unix-only, slower; deselect with '-m \"not pty\"')",
 ]
 addopts = "-v --tb=short"
 filterwarnings = [

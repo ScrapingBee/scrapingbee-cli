@@ -83,8 +83,25 @@ def _validate_api_key(key: str) -> tuple[bool, str]:
             data, _, status_code = await client.usage(retries=1, backoff=1.0)
             return status_code, data
 
+    def _run_check() -> tuple[int, bytes]:
+        return asyncio.run(_check())
+
     try:
-        status, data = asyncio.run(_check())
+        # ``asyncio.run`` refuses to start when a loop is already running
+        # in the current thread. The REPL's ``auth`` flow runs us on the
+        # main thread (via ``run_in_terminal``) while prompt_toolkit's
+        # Application loop is still active — offload the coroutine to a
+        # short-lived worker thread in that case. From a plain CLI
+        # invocation no loop is running, so we just use ``asyncio.run``
+        # directly.
+        try:
+            asyncio.get_running_loop()
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                status, data = pool.submit(_run_check).result()
+        except RuntimeError:
+            status, data = _run_check()
         if status == 200:
             return True, ""
         # API returned an error — try to extract the message

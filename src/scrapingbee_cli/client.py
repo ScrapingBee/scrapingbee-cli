@@ -679,6 +679,7 @@ def parse_usage(body: bytes) -> dict:
         avail = int(max_credit) - int(used_credit)
         if avail >= 0:
             out["credits"] = avail
+        out["max_api_credit"] = int(max_credit)
 
     max_concurrency_val = data.get("max_concurrency")
     if max_concurrency_val is not None and isinstance(max_concurrency_val, (int, float)):
