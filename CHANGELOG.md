@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **REPL crashed at startup on Python 3.10 / 3.11** — the `asyncio.run` shim always passed `loop_factory=` (a Python 3.12+ argument), so launching `scrapingbee` raised `TypeError` immediately on 3.10/3.11. The shim now branches on the interpreter version.
 - **Screenshot crawls broke on Scrapy 2.16** — Scrapy 2.16 stopped calling `start_requests()`, so screenshot / extract / AI crawls silently fell back to a raw direct fetch of the seed URL (a corrupt artifact). The spider now defines the supported `async start()` entry point, so the ScrapingBee discovery flow runs for every crawled page.
 
+## [1.4.4] - 2026-06-22
+
+### Added
+
+- **`gemini` command** — send a prompt to the Gemini API (`scrapingbee gemini "your prompt"`). Returns `results_text`, `results_markdown`, `citations`, and `prompt`; pass `--add-html true` to also include `full_html`. Supports `--country-code` (ISO 3166-1) and `--tag`, plus batch mode via `--input-file`/`--output-dir`. Mirrors `chatgpt` but has no `--search` flag. **Credit:** 15 per request.
+- **`--latitude`, `--longitude`, `--radius` on `google`** — geolocate the search at a specific point and limit it to a surrounding radius. `--latitude` (float, -90 to 90) and `--longitude` (float, -180 to 180) set the search origin; `--radius` (int) limits results to the area around it. Forwarded to the API as `latitude`/`longitude`/`radius` when set, omitted otherwise.
+
 ## [1.4.3] - 2026-05-28
 
 ### Added

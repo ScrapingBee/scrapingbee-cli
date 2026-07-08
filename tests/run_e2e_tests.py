@@ -327,6 +327,12 @@ def create_fixtures() -> dict[str, str]:
     cg_file.close()
     f["cg_file"] = cg_file.name
 
+    # Gemini prompts
+    gm_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
+    gm_file.write("What is Python?\nWhat is JavaScript?\n")
+    gm_file.close()
+    f["gm_file"] = gm_file.name
+
     # Output directories (will be created by the CLI)
     for name, path in [
         ("batch_dir", "/tmp/sb_scrape_batch"),
@@ -336,6 +342,7 @@ def create_fixtures() -> dict[str, str]:
         ("az_batch_dir", "/tmp/sb_az_batch"),
         ("yt_batch_dir", "/tmp/sb_yt_batch"),
         ("cg_batch_dir", "/tmp/sb_cg_batch"),
+        ("gm_batch_dir", "/tmp/sb_gm_batch"),
         ("crawl_dir", "/tmp/sb_crawl"),
         ("crawl_md_dir", "/tmp/sb_crawl_md"),
         ("crawl_txt_dir", "/tmp/sb_crawl_txt"),
@@ -1625,6 +1632,31 @@ def build_tests(fx: dict[str, str]) -> list[Test]:
         ),
     ]
 
+    # ── GM: gemini ────────────────────────────────────────────────────────────
+    tests += [
+        Test(
+            "GM-01",
+            "gemini 'What is 2+2?'",
+            ["gemini", "What is 2+2?"],
+            combined_checks(exit_ok(), stdout_contains("4")),
+            timeout=60,
+        ),
+        Test(
+            "GM-02",
+            "gemini 'List three programming languages'",
+            ["gemini", "List three programming languages"],
+            combined_checks(exit_ok()),
+            timeout=60,
+        ),
+        Test(
+            "GM-03",
+            "gemini batch",
+            ["gemini", "--output-dir", fx["gm_batch_dir"], "--input-file", fx["gm_file"]],
+            manifest_in(fx["gm_batch_dir"], 2),
+            timeout=140,
+        ),
+    ]
+
     # ── CR: crawl ─────────────────────────────────────────────────────────────
     tests += [
         Test(
@@ -1864,6 +1896,22 @@ def build_tests(fx: dict[str, str]) -> list[Test]:
             "FX-04",
             "chatgpt --country-code gb",
             ["chatgpt", "Hello", "--country-code", "gb"],
+            combined_checks(exit_ok()),
+            timeout=60,
+        ),
+        # Gemini --add-html true
+        Test(
+            "FX-04b",
+            "gemini --add-html true",
+            ["gemini", "Hello", "--add-html", "true"],
+            combined_checks(exit_ok(), stdout_contains("full_html")),
+            timeout=60,
+        ),
+        # Gemini --country-code
+        Test(
+            "FX-04c",
+            "gemini --country-code gb",
+            ["gemini", "Hello", "--country-code", "gb"],
             combined_checks(exit_ok()),
             timeout=60,
         ),

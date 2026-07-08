@@ -297,6 +297,9 @@ class Client:
         sort_by: str | None = None,
         min_price: float | None = None,
         max_price: float | None = None,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        radius: int | None = None,
         retries: int = 3,
         backoff: float = 2.0,
     ) -> tuple[bytes, dict, int]:
@@ -316,6 +319,9 @@ class Client:
             "sort_by": sort_by,
             "min_price": min_price,
             "max_price": max_price,
+            "latitude": latitude,
+            "longitude": longitude,
+            "radius": radius,
         }
         return await self._get_with_retry(
             "/google",
@@ -625,6 +631,29 @@ class Client:
             params["tag"] = tag
         return await self._get_with_retry(
             "/chatgpt",
+            params,
+            retries=retries,
+            backoff=backoff,
+        )
+
+    async def gemini(
+        self,
+        prompt: str,
+        add_html: bool | None = None,
+        country_code: str | None = None,
+        tag: str | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
+    ) -> tuple[bytes, dict, int]:
+        params: dict[str, object] = {"prompt": prompt}
+        if add_html is not None:
+            params["add_html"] = str(add_html).lower()
+        if country_code is not None:
+            params["country_code"] = country_code
+        if tag is not None:
+            params["tag"] = tag
+        return await self._get_with_retry(
+            "/gemini",
             params,
             retries=retries,
             backoff=backoff,

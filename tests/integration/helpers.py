@@ -196,6 +196,9 @@ def build_api_matrix_tests(
 
     tests.append(("chatgpt", base + ["chatgpt", "Say hello"], chatgpt_timeout))
 
+    # Gemini is also an LLM source; reuse the longer chatgpt_timeout.
+    tests.append(("gemini", base + ["gemini", "Say hello"], chatgpt_timeout))
+
     return tests
 
 
@@ -217,6 +220,7 @@ CLI_COMMANDS = [
     ("youtube-search", ["query"]),
     ("youtube-metadata", ["dQw4w9WgXcQ"]),
     ("chatgpt", ["hi"]),
+    ("gemini", ["hi"]),
 ]
 
 # Commands that require an API key (for no-api-key test; auth, logout, docs are excluded)

@@ -19,6 +19,7 @@ ESTIMATED_CREDITS: dict[str, str] = {
     "youtube-search": "5",
     "youtube-metadata": "5",
     "chatgpt": "15",
+    "gemini": "15",
 }
 
 
@@ -55,4 +56,9 @@ def youtube_credits() -> int:
 
 def chatgpt_credits() -> int:
     """ChatGPT API: always 15 credits."""
+    return 15
+
+
+def gemini_credits() -> int:
+    """Gemini API: always 15 credits."""
     return 15

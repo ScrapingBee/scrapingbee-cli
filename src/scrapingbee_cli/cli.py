@@ -92,7 +92,7 @@ def cli(ctx: click.Context, keep_bg: bool, classic_mouse: bool) -> None:
     """ScrapingBee CLI - Web scraping API client.
 
     Commands: scrape (single or batch), crawl (Scrapy/quick-crawl), usage,
-    Google Search, Fast Search, Amazon, Walmart, YouTube, and ChatGPT.
+    Google Search, Fast Search, Amazon, Walmart, YouTube, ChatGPT, and Gemini.
 
     Authenticate with `scrapingbee auth` or set SCRAPINGBEE_API_KEY (env / .env).
     """
@@ -175,6 +175,7 @@ def _handle_scraping_config() -> None:
         "youtube-search",
         "youtube-metadata",
         "chatgpt",
+        "gemini",
         "usage",
         "auth",
         "logout",
