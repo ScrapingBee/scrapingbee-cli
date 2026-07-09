@@ -589,16 +589,19 @@ def store_common_options(obj: dict, **kwargs: Any) -> None:
             raise SystemExit(1)
 
     # Resolve paths before any API work (expand ~, mkdir outputs, validate inputs).
-    if obj.get("input_file"):
-        obj["input_file"] = ensure_input_file_ready(obj["input_file"])
-    if has_output_file:
+    input_file_path = obj.get("input_file")
+    if isinstance(input_file_path, str):
+        obj["input_file"] = ensure_input_file_ready(input_file_path)
+    output_file_path = obj.get("output_file")
+    if isinstance(output_file_path, str):
         obj["output_file"] = ensure_output_file_ready(
-            obj["output_file"],
+            output_file_path,
             overwrite=bool(obj.get("overwrite", False)),
             skip_overwrite_check=bool(obj.get("update_csv")),
         )
-    if has_output_dir:
-        obj["output_dir"] = ensure_output_dir_ready(obj["output_dir"])
+    output_dir_path = obj.get("output_dir")
+    if isinstance(output_dir_path, str) and output_dir_path:
+        obj["output_dir"] = ensure_output_dir_ready(output_dir_path)
 
 
 def _parse_path(path: str) -> list[tuple[str, Any]]:

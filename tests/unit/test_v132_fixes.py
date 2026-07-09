@@ -631,7 +631,9 @@ class TestOutputPathResolution:
         monkeypatch.setenv("HOME", str(home))
         out = "~/Desktop/sb-test/screenshot.png"
         obj: dict = {}
-        store_common_options(obj, **TestStoreCommonOptionsBatchValidation()._make_obj(output_file=out))
+        store_common_options(
+            obj, **TestStoreCommonOptionsBatchValidation()._make_obj(output_file=out)
+        )
         expected = str(home / "Desktop/sb-test/screenshot.png")
         assert obj["output_file"] == expected
         assert Path(expected).parent.is_dir()
