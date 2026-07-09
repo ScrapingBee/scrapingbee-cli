@@ -863,7 +863,7 @@ class SessionState:
 
     def apply_settings_to_args(
         self, args: list[str], accepted: set[str] | None = None
-    ) -> list[str]:
+    ) -> tuple[list[str], list[str]]:
         """Append session defaults to ``args`` for any flag that:
           - is not already present on the command line, AND
           - is accepted by the target command (when ``accepted`` is given).
@@ -871,19 +871,24 @@ class SessionState:
         Without the ``accepted`` filter, session defaults would leak into
         commands that don't take them (e.g. ``--json-response`` into
         ``usage``), causing "No such option" errors.
+
+        Returns ``(args, skipped)`` where ``skipped`` lists setting keys that
+        were not applied because the target command does not accept them.
         """
         if not self.settings:
-            return args
+            return args, []
         present = {a for a in args if a.startswith("--")}
         out = list(args)
+        skipped: list[str] = []
         for key, value in self.settings.items():
             flag = f"--{key}"
             if flag in present:
                 continue
             if accepted is not None and flag not in accepted:
+                skipped.append(key)
                 continue
             out.extend([flag, value])
-        return out
+        return out, skipped
 
     def refresh_credits_from_cache(self) -> None:
         """Populate live fields from the on-disk usage cache.
@@ -4304,7 +4309,15 @@ def run_repl(
         # Only inject session defaults that the target command actually
         # accepts; otherwise ``:set --json-response true`` would also
         # apply to ``usage``, which rejects it as an unknown option.
-        args = state.apply_settings_to_args(args, accepted=set(command_flags.get(cmd_name, [])))
+        args, skipped_settings = state.apply_settings_to_args(
+            args, accepted=set(command_flags.get(cmd_name, []))
+        )
+        if skipped_settings:
+            flags = ", ".join(f"--{k}" for k in skipped_settings)
+            err_console.print(
+                f"  [{BEE_DIM}]note:[/] session default(s) {flags} not applied to "
+                f"[bold {BEE_YELLOW}]{cmd_name}[/] (unsupported by this command)"
+            )
         # Let users type ``--verbose true|false`` (etc.) in the REPL
         # too — same normalisation as the CLI ``main()`` entry.
         try:
