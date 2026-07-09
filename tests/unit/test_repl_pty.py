@@ -251,3 +251,66 @@ def test_classic_mouse_shift_tab_toggles_mode(tmp_path):
         )
     finally:
         child.close(force=True)
+
+
+def _has_session_default_skip_warning(screen, command: str, setting: str) -> bool:
+    t = _text(screen)
+    return (
+        "not applied to" in t
+        and command in t
+        and setting in t
+        and "unsupported by this command" in t
+    )
+
+
+@needs_cli
+def test_session_default_skip_warning_on_screen(tmp_path):
+    """Scrape-only session defaults warn on screen when a command ignores them."""
+    child, screen, stream = _spawn(tmp_path)
+    try:
+        assert _pump_until(child, screen, stream, lambda s: "❯" in _text(s)), "no prompt"
+        child.send(":set premium-proxy=true\r")
+        assert _pump_until(
+            child,
+            screen,
+            stream,
+            lambda s: "premium-proxy" in _text(s) and "true" in _text(s),
+        ), ":set did not apply premium-proxy=true"
+        child.send("google --help\r")
+        assert _pump_until(
+            child,
+            screen,
+            stream,
+            lambda s: _has_session_default_skip_warning(s, "google", "premium-proxy"),
+            timeout=20.0,
+        ), "skip warning for premium-proxy on google not shown"
+    finally:
+        child.close(force=True)
+
+
+@needs_cli
+def test_session_default_no_skip_warning_for_supported_command(tmp_path):
+    """Session defaults supported by the target command must not emit a skip warning."""
+    child, screen, stream = _spawn(tmp_path)
+    try:
+        assert _pump_until(child, screen, stream, lambda s: "❯" in _text(s)), "no prompt"
+        child.send(":set premium-proxy=true\r")
+        assert _pump_until(
+            child,
+            screen,
+            stream,
+            lambda s: "premium-proxy" in _text(s) and "true" in _text(s),
+        ), ":set did not apply premium-proxy=true"
+        child.send("scrape --help\r")
+        assert _pump_until(
+            child,
+            screen,
+            stream,
+            lambda s: "✓" in _text(s) and "--output-file" in _text(s),
+            timeout=20.0,
+        ), "scrape --help did not complete"
+        assert not _has_session_default_skip_warning(screen, "scrape", "premium-proxy"), (
+            "skip warning shown for premium-proxy on scrape"
+        )
+    finally:
+        child.close(force=True)

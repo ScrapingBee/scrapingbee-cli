@@ -159,3 +159,40 @@ class TestCopyToClipboard:
 
         monkeypatch.setattr(shutil, "which", lambda name: None)
         assert _copy_to_clipboard("hello") is False
+
+
+class TestSessionDefaults:
+    def test_apply_settings_filters_unsupported_flags(self):
+        from scrapingbee_cli.interactive import SessionState
+
+        state = SessionState()
+        state.settings["premium-proxy"] = "true"
+        state.settings["verbose"] = "true"
+
+        args, skipped = state.apply_settings_to_args(
+            ["test query"],
+            accepted={"--verbose", "--country-code"},
+        )
+        assert args == ["test query", "--verbose", "true"]
+        assert skipped == ["premium-proxy"]
+
+    def test_apply_settings_no_skip_when_flag_on_command_line(self):
+        from scrapingbee_cli.interactive import SessionState
+
+        state = SessionState()
+        state.settings["premium-proxy"] = "true"
+
+        args, skipped = state.apply_settings_to_args(
+            ["https://example.com", "--premium-proxy", "false"],
+            accepted={"--premium-proxy"},
+        )
+        assert args == ["https://example.com", "--premium-proxy", "false"]
+        assert skipped == []
+
+    def test_apply_settings_empty_when_no_settings(self):
+        from scrapingbee_cli.interactive import SessionState
+
+        state = SessionState()
+        args, skipped = state.apply_settings_to_args(["query"], accepted={"--verbose"})
+        assert args == ["query"]
+        assert skipped == []
