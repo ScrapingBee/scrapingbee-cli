@@ -475,7 +475,31 @@ class ScrollbackBuffer:
         # How many lines we're scrolled up from the bottom. 0 = at bottom
         # (auto-follow); positive = locked at some scrolled-up position.
         self.scroll_offset = 0
+        # Wrap width of the most recent visual render (0 = no visual render
+        # yet). ``scroll_offset`` is measured in *visual* (post-wrap) rows,
+        # so the scroll cap must be computed in visual rows too — this
+        # remembers the width the renderer wrapped at so scroll_up /
+        # scroll_to_top can count wrapped rows the same way.
+        self._last_wrap_width = 0
         self._lock = threading.Lock()
+
+    def _total_visual_rows_locked(self) -> int:
+        """Total number of visual rows the buffer occupies at the last
+        render's wrap width. Falls back to the logical line count when no
+        visual render has happened yet (or width <= 1, where the renderer
+        uses logical lines). Caller must hold ``self._lock``.
+
+        Mirrors ``_split_fragments_to_width``: a line of ``n`` chars wraps
+        to ``ceil(n / width)`` rows and an empty line still occupies 1 row.
+        """
+        width = self._last_wrap_width
+        if width <= 1:
+            return len(self.lines)
+        total = 0
+        for line in self.lines:
+            n = sum(len(t) for _, t in line)
+            total += 1 + max(0, n - 1) // width
+        return total
 
     def append_fragments(self, fragments: list) -> None:
         """Append one rendered line (already styled) as the final entry.
@@ -618,6 +642,9 @@ class ScrollbackBuffer:
             rows = self.get_visible_window(height)
             return rows, [(-1, 0)] * len(rows)
         with self._lock:
+            # Remember the wrap width so scroll_up / scroll_to_top can cap
+            # the offset in the same visual-row units this method consumes.
+            self._last_wrap_width = width
             # Walk from the bottom up, accumulating (visual_row, provenance)
             # until we have enough to fill the window at the requested offset.
             need = max(0, self.scroll_offset) + max(1, height)
@@ -657,10 +684,15 @@ class ScrollbackBuffer:
 
     def scroll_up(self, n: int = 1) -> None:
         with self._lock:
-            # Soft cap — get_visible_window will further clamp based on
-            # the actual rendered height, but capping here at total-1
-            # avoids letting offset grow unboundedly between renders.
-            self.scroll_offset = min(max(0, len(self.lines) - 1), self.scroll_offset + n)
+            # Soft cap in *visual* rows — the renderer's clamp in
+            # get_visible_visual_with_meta further tightens this to
+            # total - height, but capping here avoids letting the offset
+            # grow unboundedly between renders. Counting logical lines
+            # here (the old behaviour) under-capped badly when long lines
+            # wrap: one 4000-char line is 1 logical line but ~44 visual
+            # rows at 92 cols, making the top of the buffer unreachable.
+            cap = max(0, self._total_visual_rows_locked() - 1)
+            self.scroll_offset = min(cap, self.scroll_offset + n)
 
     def scroll_down(self, n: int = 1) -> None:
         with self._lock:
@@ -668,7 +700,9 @@ class ScrollbackBuffer:
 
     def scroll_to_top(self) -> None:
         with self._lock:
-            self.scroll_offset = max(0, len(self.lines) - 1)
+            # Visual-row cap for the same reason as scroll_up; the next
+            # render clamps this down to exactly (total_rows - height).
+            self.scroll_offset = max(0, self._total_visual_rows_locked() - 1)
 
     def scroll_to_bottom(self) -> None:
         with self._lock:
@@ -1676,6 +1710,7 @@ def _print_help(commands: dict[str, str]) -> None:
         ("↑ / ↓", "Walk history (single-line) / move cursor (multi-line)"),
         ("PgUp / PgDn", "Scroll the scrollback buffer up / down"),
         ("Ctrl+Home/End", "Jump to top / bottom of scrollback"),
+        ("Ctrl+L", "Repaint the screen (fixes terminal rendering glitches)"),
         ("Ctrl+J", "Insert a newline (multi-line compose; also Alt/Option+Enter)"),
         ("Ctrl+W", "Delete the word before the cursor (also Alt/Option+⌫)"),
         ("Click a path", "Open it in Finder / default app"),
@@ -4503,8 +4538,29 @@ def run_repl(
             # Suspend the persistent prompt-toolkit app, run the command in
             # the bare terminal, then resume. Synchronous — we wait for it.
             is_input_locked[0] = True
+
+            def _run_raw() -> None:
+                # Pause focus reporting (mode 1004) while the app is
+                # suspended — click.prompt() reads stdin directly, so an
+                # ESC[I focus report would land in the user's typed input
+                # as literal garbage. Runs inside in_terminal, i.e. exactly
+                # while the terminal is in cooked mode.
+                try:
+                    app.output.write_raw("\x1b[?1004l")
+                    app.output.flush()
+                except Exception:
+                    pass
+                try:
+                    _run()
+                finally:
+                    try:
+                        app.output.write_raw("\x1b[?1004h")
+                        app.output.flush()
+                    except Exception:
+                        pass
+
             try:
-                run_in_terminal(_run, in_executor=False)
+                run_in_terminal(_run_raw, in_executor=False)
             finally:
                 _finish()
             return True
@@ -5111,6 +5167,41 @@ def run_repl(
         except Exception:
             pass
 
+    # ── Full-repaint escape hatch ───────────────────────────────────────────
+    # Some terminals (macOS Terminal.app in particular) blank or corrupt
+    # alt-screen cells behind our back — after window occlusion, resize
+    # while backgrounded, etc. prompt_toolkit renders differentially
+    # against its own model of the screen, so it never notices: the cells
+    # stay blank until their content happens to change. The heal is to
+    # forget the model (``_last_screen = None``) so the next render
+    # repaints every cell IN PLACE. We deliberately don't use
+    # ``renderer.reset()`` (leaves the alternate screen and disables mouse
+    # support mid-session) or ``renderer.clear()`` (erases first → visible
+    # flash); diff-against-None erases and rewrites within one buffered
+    # flush, so it's imperceptible.
+    def _force_full_repaint() -> None:
+        try:
+            app.renderer._last_screen = None
+            app.invalidate()
+        except Exception:
+            pass
+
+    # Ctrl+L repaints every cell (it does NOT clear the scrollback — that's
+    # ``:clear``). Overrides prompt_toolkit's default c-l clear-screen
+    # binding with the flicker-free variant.
+    @kb.add("c-l", eager=True)
+    def _repaint(_e):
+        _force_full_repaint()
+
+    # Focus-in (xterm mode 1004, see the ANSI_SEQUENCES registration below):
+    # the terminal reports "window regained focus" and we immediately heal
+    # any cells it blanked while we were in the background. F24 is the
+    # pseudo-key the ESC[I report is mapped to — real F24 keypresses are
+    # vanishingly rare and a spurious repaint is harmless.
+    @kb.add("f24", eager=True)
+    def _focus_in_repaint(_e):
+        _force_full_repaint()
+
     # ── Mouse mode toggle (Alt+S = Esc S in terminal protocol) ─────────────
     # ONLY active under --no-drag-copy (the backup). Flips between "scroll
     # mode" (mouse_support on — wheel scrolls our virtual buffer) and "select
@@ -5139,6 +5230,19 @@ def run_repl(
             app.invalidate()
         except Exception:
             pass
+
+    # ── Focus-event reporting (xterm mode 1004) ─────────────────────────────
+    # Terminals that honour mode 1004 send ESC[I on focus-gained and ESC[O on
+    # focus-lost. Map both to pseudo-keys BEFORE the app starts so the vt100
+    # parser never leaks them into the input buffer as literal "[I" text:
+    # focus-in → F24 (bound to the full repaint above), focus-out → ignored.
+    # ``setdefault`` so a future prompt_toolkit with native focus support
+    # keeps its own mapping. Mode 1004 itself is enabled in ``_pre_run``.
+    from prompt_toolkit.input import ansi_escape_sequences as _ansi_seq
+    from prompt_toolkit.keys import Keys as _PtkKeys
+
+    _ansi_seq.ANSI_SEQUENCES.setdefault("\x1b[I", _PtkKeys.F24)
+    _ansi_seq.ANSI_SEQUENCES.setdefault("\x1b[O", _PtkKeys.Ignore)
 
     # ── Application (full_screen=True: own the alt buffer cleanly) ─────────
     # Owning the alternate screen buffer eliminates the wrap-fragment /
@@ -5177,6 +5281,7 @@ def run_repl(
         from .theme import has_progress_state
 
         idle_counter = 0
+        repaint_counter = 0
         # Track terminal width and trigger a fresh invalidate on resize.
         # No manual resize-detection needed any more — in full_screen
         # mode prompt_toolkit owns the entire screen, so SIGWINCH is
@@ -5211,16 +5316,35 @@ def run_repl(
                     app.invalidate()
                 except Exception:
                     pass
+            # Self-heal against terminal-side blanking. macOS Terminal.app
+            # (and friends) can drop alt-screen cell contents while the
+            # window is occluded/backgrounded; our differential renderer
+            # never notices because ITS model says those cells are painted,
+            # so they'd stay blank forever. Once per second, forget the
+            # diff model so the next render repaints every cell in place —
+            # a single buffered flush, imperceptible, and cheap enough at
+            # 1Hz. The focus-in (mode 1004) binding heals instantly on
+            # terminals that support it; this is the universal fallback.
+            repaint_counter += 1
+            force_repaint = repaint_counter >= 10
+            if force_repaint:
+                repaint_counter = 0
             if state.is_running:
                 state.tick += 1
                 try:
-                    app.invalidate()
+                    if force_repaint:
+                        _force_full_repaint()
+                    else:
+                        app.invalidate()
                 except Exception:
                     pass
                 idle_counter = 0
             else:
                 idle_counter += 1
-                if idle_counter >= 10:  # 1Hz idle redraw
+                if force_repaint:
+                    idle_counter = 0
+                    _force_full_repaint()
+                elif idle_counter >= 10:  # 1Hz idle redraw
                     idle_counter = 0
                     try:
                         app.invalidate()
@@ -5350,6 +5474,14 @@ def run_repl(
     _bg_tasks: list[Any] = []
 
     def _pre_run() -> None:
+        # Ask the terminal to report window focus changes (xterm mode 1004)
+        # so the F24 focus-in binding can repaint immediately when the user
+        # switches back. Terminals without support silently ignore this.
+        try:
+            app.output.write_raw("\x1b[?1004h")
+            app.output.flush()
+        except Exception:
+            pass
         _bg_tasks.append(app.create_background_task(_ticker()))
         _bg_tasks.append(app.create_background_task(_usage_refresher()))
 
@@ -5406,6 +5538,13 @@ def run_repl(
         sys.stderr = original_stderr
         try:
             err_console.file = _orig_err_console_file
+        except Exception:
+            pass
+        # Stop focus-event reporting — the shell doesn't want ESC[I/ESC[O
+        # showing up on its stdin. Harmless if 1004 was never honoured.
+        try:
+            sys.stdout.write("\x1b[?1004l")
+            sys.stdout.flush()
         except Exception:
             pass
         _restore_bg()
