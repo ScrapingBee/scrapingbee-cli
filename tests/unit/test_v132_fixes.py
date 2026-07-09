@@ -593,6 +593,273 @@ class TestConfirmOverwrite:
 
 
 # =============================================================================
+# 8b. Output path resolution
+# =============================================================================
+
+
+class TestOutputPathResolution:
+    """Tests for resolve_output_path / ensure_output_file_ready."""
+
+    def test_resolve_output_path_expands_tilde(self, monkeypatch):
+        from scrapingbee_cli.cli_utils import resolve_output_path
+
+        monkeypatch.setenv("HOME", "/tmp/fakehome")
+        assert resolve_output_path("~/out.png") == "/tmp/fakehome/out.png"
+
+    def test_ensure_output_file_ready_creates_parent_dirs(self, tmp_path):
+        from scrapingbee_cli.cli_utils import ensure_output_file_ready
+
+        out = tmp_path / "nested" / "dir" / "shot.png"
+        resolved = ensure_output_file_ready(str(out))
+        assert resolved == str(out)
+        assert out.parent.is_dir()
+
+    def test_ensure_output_file_ready_checks_overwrite_before_return(self, tmp_path, monkeypatch):
+        from scrapingbee_cli.cli_utils import ensure_output_file_ready
+
+        existing = tmp_path / "exists.png"
+        existing.write_bytes(b"old")
+        monkeypatch.setattr("click.confirm", lambda *a, **kw: False)
+        with pytest.raises(SystemExit):
+            ensure_output_file_ready(str(existing), overwrite=False)
+
+    def test_store_common_options_prepares_tilde_output_file(self, tmp_path, monkeypatch):
+        from scrapingbee_cli.cli_utils import store_common_options
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        out = "~/Desktop/sb-test/screenshot.png"
+        obj: dict = {}
+        store_common_options(obj, **TestStoreCommonOptionsBatchValidation()._make_obj(output_file=out))
+        expected = str(home / "Desktop/sb-test/screenshot.png")
+        assert obj["output_file"] == expected
+        assert Path(expected).parent.is_dir()
+
+    def test_store_common_options_prepares_output_dir(self, tmp_path, monkeypatch):
+        from scrapingbee_cli.cli_utils import store_common_options
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        input_file = tmp_path / "urls.txt"
+        input_file.write_text("https://example.com\n", encoding="utf-8")
+        obj: dict = {}
+        store_common_options(
+            obj,
+            **TestStoreCommonOptionsBatchValidation()._make_obj(
+                input_file=str(input_file),
+                output_dir="~/batch-results",
+            ),
+        )
+        expected = str(home / "batch-results")
+        assert obj["output_dir"] == expected
+        assert Path(expected).is_dir()
+
+
+class TestInputPathResolution:
+    """Tests for ensure_input_file_ready / early --input-file validation."""
+
+    def test_ensure_input_file_ready_expands_tilde(self, tmp_path, monkeypatch):
+        from scrapingbee_cli.cli_utils import ensure_input_file_ready
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        input_file = home / "urls.txt"
+        input_file.write_text("https://example.com\n", encoding="utf-8")
+        assert ensure_input_file_ready("~/urls.txt") == str(input_file)
+
+    def test_ensure_input_file_ready_passes_stdin(self):
+        from scrapingbee_cli.cli_utils import ensure_input_file_ready
+
+        assert ensure_input_file_ready("-") == "-"
+
+    def test_ensure_input_file_ready_missing_file_exits(self, tmp_path, monkeypatch):
+        from scrapingbee_cli.cli_utils import ensure_input_file_ready
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        with pytest.raises(SystemExit):
+            ensure_input_file_ready("~/missing.txt")
+
+    def test_store_common_options_prepares_tilde_input_file(self, tmp_path, monkeypatch):
+        from scrapingbee_cli.cli_utils import store_common_options
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        input_file = home / "urls.txt"
+        input_file.write_text("https://example.com\n", encoding="utf-8")
+        obj: dict = {}
+        store_common_options(
+            obj,
+            **TestStoreCommonOptionsBatchValidation()._make_obj(input_file="~/urls.txt"),
+        )
+        assert obj["input_file"] == str(input_file)
+
+    def test_read_input_file_expands_tilde(self, tmp_path, monkeypatch):
+        from scrapingbee_cli.batch import read_input_file
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        input_file = home / "urls.txt"
+        input_file.write_text("https://example.com\n", encoding="utf-8")
+        assert read_input_file("~/urls.txt") == ["https://example.com"]
+
+
+class TestReplOutputPathResolution:
+    """REPL-mode regressions for ~/ output paths (expand, mkdir, pre-scrape checks)."""
+
+    def test_confirm_overwrite_repl_mode_uses_expanded_tilde_path(self, tmp_path, monkeypatch):
+        import click
+
+        from scrapingbee_cli.cli_utils import confirm_overwrite
+        from scrapingbee_cli.theme import set_repl_mode
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        existing = home / "Desktop" / "shot.png"
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(b"old")
+
+        set_repl_mode(True)
+        try:
+            with pytest.raises(click.UsageError, match="already exists"):
+                confirm_overwrite("~/Desktop/shot.png", overwrite=False)
+        finally:
+            set_repl_mode(False)
+
+    def test_scrape_repl_rejects_existing_tilde_output_before_api(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from scrapingbee_cli.commands.scrape import scrape_cmd
+        from scrapingbee_cli.theme import set_repl_mode
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        out_dir = home / "Desktop" / "sb-cli-test" / "ss"
+        out_dir.mkdir(parents=True)
+        (out_dir / "screenshot.png").write_bytes(b"old")
+
+        api_called = {"value": False}
+
+        def _fail_if_api_runs(*_a, **_kw):
+            api_called["value"] = True
+            raise AssertionError("scrape API must not run when output path is invalid")
+
+        monkeypatch.setattr("scrapingbee_cli.commands.scrape.get_api_key", _fail_if_api_runs)
+
+        set_repl_mode(True)
+        try:
+            result = CliRunner().invoke(
+                scrape_cmd,
+                [
+                    "https://example.com",
+                    "--render-js",
+                    "false",
+                    "--output-file",
+                    "~/Desktop/sb-cli-test/ss/screenshot.png",
+                ],
+                obj={},
+            )
+        finally:
+            set_repl_mode(False)
+
+        combined = (result.output or "") + (result.stderr or "")
+        assert api_called["value"] is False
+        assert result.exit_code != 0
+        assert "already exists" in combined
+        assert "--overwrite" in combined
+        assert "Cannot write to '~/" not in combined
+
+    def test_scrape_repl_rejects_missing_tilde_input_before_api(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from scrapingbee_cli.commands.scrape import scrape_cmd
+        from scrapingbee_cli.theme import set_repl_mode
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+
+        api_called = {"value": False}
+
+        def _fail_if_api_runs(*_a, **_kw):
+            api_called["value"] = True
+            raise AssertionError("scrape API must not run when input file is missing")
+
+        monkeypatch.setattr("scrapingbee_cli.commands.scrape.get_api_key", _fail_if_api_runs)
+
+        set_repl_mode(True)
+        try:
+            result = CliRunner().invoke(
+                scrape_cmd,
+                [
+                    "--input-file",
+                    "~/urls.txt",
+                    "--output-dir",
+                    str(tmp_path / "out"),
+                ],
+                obj={},
+            )
+        finally:
+            set_repl_mode(False)
+
+        combined = (result.output or "") + (result.stderr or "")
+        assert api_called["value"] is False
+        assert result.exit_code != 0
+        assert "Input file not found" in combined
+        assert "~/urls.txt" not in combined or "home/urls.txt" in combined
+
+    def test_scrape_repl_expands_tilde_output_path_on_success(self, tmp_path, monkeypatch):
+        from unittest.mock import AsyncMock, patch
+
+        from click.testing import CliRunner
+
+        from scrapingbee_cli.commands.scrape import scrape_cmd
+        from scrapingbee_cli.theme import set_repl_mode
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        out_file = home / "Desktop" / "sb-cli-test" / "ss" / "screenshot.png"
+
+        mock_client = AsyncMock()
+        mock_client.scrape.return_value = (b"png-bytes", {}, 200)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        set_repl_mode(True)
+        try:
+            with patch("scrapingbee_cli.commands.scrape.get_api_key", return_value="fake"):
+                with patch("scrapingbee_cli.commands.scrape.Client", return_value=mock_client):
+                    result = CliRunner().invoke(
+                        scrape_cmd,
+                        [
+                            "https://example.com",
+                            "--render-js",
+                            "false",
+                            "--output-file",
+                            "~/Desktop/sb-cli-test/ss/screenshot.png",
+                        ],
+                        obj={},
+                    )
+        finally:
+            set_repl_mode(False)
+
+        combined = (result.output or "") + (result.stderr or "")
+        assert result.exit_code == 0, combined
+        assert out_file.parent.is_dir()
+        assert out_file.read_bytes() == b"png-bytes"
+        assert "screenshot.png" in combined.replace("\n", "")
+
+
+# =============================================================================
 # 9. store_common_options() — batch-only flags without --input-file
 # =============================================================================
 
@@ -688,16 +955,23 @@ class TestStoreCommonOptionsBatchValidation:
         # Should show bare scrapingbee --resume hint for discovery
         assert "scrapingbee --resume" in err
 
-    def test_negative_concurrency_exits(self):
+    def test_negative_concurrency_exits(self, tmp_path):
         from scrapingbee_cli.cli_utils import store_common_options
 
+        input_file = tmp_path / "urls.txt"
+        input_file.write_text("https://example.com\n", encoding="utf-8")
         obj = {}
         with pytest.raises(SystemExit):
-            store_common_options(obj, **self._make_obj(concurrency=-1, input_file="urls.txt"))
+            store_common_options(
+                obj,
+                **self._make_obj(concurrency=-1, input_file=str(input_file)),
+            )
 
-    def test_output_file_and_output_dir_mutual_exclusion(self):
+    def test_output_file_and_output_dir_mutual_exclusion(self, tmp_path):
         from scrapingbee_cli.cli_utils import store_common_options
 
+        input_file = tmp_path / "urls.txt"
+        input_file.write_text("https://example.com\n", encoding="utf-8")
         obj = {}
         with pytest.raises(SystemExit):
             store_common_options(
@@ -705,7 +979,7 @@ class TestStoreCommonOptionsBatchValidation:
                 **self._make_obj(
                     output_file="/tmp/out.json",
                     output_dir="/tmp/out/",
-                    input_file="urls.txt",
+                    input_file=str(input_file),
                 ),
             )
 
@@ -715,14 +989,16 @@ class TestStoreCommonOptionsBatchValidation:
         obj = {}
         store_common_options(obj, **self._make_obj())  # should not raise
 
-    def test_valid_batch_options_pass(self):
+    def test_valid_batch_options_pass(self, tmp_path):
         from scrapingbee_cli.cli_utils import store_common_options
 
+        input_file = tmp_path / "urls.txt"
+        input_file.write_text("https://example.com\n", encoding="utf-8")
         obj = {}
         store_common_options(
             obj,
             **self._make_obj(
-                input_file="urls.txt",
+                input_file=str(input_file),
                 output_dir="/tmp/out",
                 concurrency=5,
                 deduplicate=True,

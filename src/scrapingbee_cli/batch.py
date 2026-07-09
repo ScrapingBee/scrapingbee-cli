@@ -217,6 +217,9 @@ def read_input_file(path: str, *, input_column: str | None = None) -> list[str]:
     If path ends with .csv, read as CSV using input_column (name or 0-based index)."""
     import sys as _sys
 
+    if path != "-":
+        path = str(Path(path).expanduser())
+
     if path == "-":
         lines = [line.strip() for line in _sys.stdin if line.strip()]
     elif path.lower().endswith(".csv"):

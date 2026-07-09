@@ -6,6 +6,7 @@ import fnmatch
 import json
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 import click
@@ -243,7 +244,13 @@ def _batch_options(f: Any) -> Any:
         default=None,
         help="CSV input: column name or 0-based index.",
     )(f)
-    f = click.option("--output-dir", "output_dir", default=None, help="Batch output folder.")(f)
+    f = click.option(
+        "--output-dir",
+        "output_dir",
+        type=click.Path(),
+        default=None,
+        help="Batch output folder.",
+    )(f)
     f = click.option(
         "--output-format",
         "output_format",
@@ -313,21 +320,86 @@ def _batch_options(f: Any) -> Any:
     return f
 
 
+def resolve_output_path(path: str) -> str:
+    """Expand ``~`` in an output path."""
+    return str(Path(path).expanduser())
+
+
+def ensure_output_file_ready(
+    path: str,
+    *,
+    overwrite: bool = False,
+    skip_overwrite_check: bool = False,
+) -> str:
+    """Validate an output file path before any API work starts.
+
+    Expands ``~``, creates parent directories, and checks overwrite policy.
+    Returns the resolved path.
+    """
+    resolved = resolve_output_path(path)
+    parent = Path(resolved).parent
+    if str(parent) and not parent.exists():
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            click.echo(f"Cannot create directory '{parent}': {e.strerror}", err=True)
+            raise SystemExit(1)
+    if not skip_overwrite_check:
+        confirm_overwrite(resolved, overwrite)
+    return resolved
+
+
+def ensure_output_dir_ready(path: str) -> str:
+    """Expand ``~`` and create an output directory before API work."""
+    resolved = resolve_output_path(path)
+    try:
+        Path(resolved).mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        click.echo(f"Cannot create directory '{resolved}': {e.strerror}", err=True)
+        raise SystemExit(1)
+    return resolved
+
+
+def ensure_input_file_ready(path: str) -> str:
+    """Validate an input file path before any API work starts.
+
+    Expands ``~`` and ensures the file exists and is readable. Stdin (``-``) is
+    passed through unchanged.
+    """
+    if path == "-":
+        return path
+    resolved = resolve_output_path(path)
+    p = Path(resolved)
+    if not p.is_file():
+        if p.exists():
+            click.echo(f"Not a file: '{resolved}'", err=True)
+        else:
+            click.echo(f"Input file not found: '{resolved}'", err=True)
+        raise SystemExit(1)
+    try:
+        with open(resolved, "rb"):
+            pass
+    except OSError as e:
+        click.echo(f"Cannot read from '{resolved}': {e.strerror}", err=True)
+        raise SystemExit(1)
+    return resolved
+
+
 def confirm_overwrite(path: str | None, overwrite: bool = False) -> None:
     """If path exists, prompt for confirmation unless --overwrite is set."""
     if not path:
         return
-    from pathlib import Path
+    resolved = resolve_output_path(path)
 
-    if Path(path).exists() and not overwrite:
+    if Path(resolved).exists() and not overwrite:
         # In REPL mode, prompt_toolkit owns the TTY (full-screen / alt-buffer),
         # so click.confirm reads from sys.stdin and blocks forever. Surface
         # the conflict as an error and tell the user to pass --overwrite.
         if is_repl_mode():
             raise click.UsageError(
-                f"'{path}' already exists. Re-run with --overwrite to replace it."
+                f"'{resolved}' already exists. Re-run with --overwrite to replace it."
             )
-        if not click.confirm(f"'{path}' already exists. Overwrite?"):
+        if not click.confirm(f"'{resolved}' already exists. Overwrite?"):
             click.echo("Cancelled.", err=True)
             raise SystemExit(0)
 
@@ -379,10 +451,6 @@ def store_common_options(obj: dict, **kwargs: Any) -> None:
     has_input = bool(obj.get("input_file"))
     has_output_file = bool(obj.get("output_file"))
     has_output_dir = bool(obj.get("output_dir"))
-
-    # Check if output file already exists (skip for --update-csv which intentionally overwrites)
-    if has_output_file and not obj.get("update_csv"):
-        confirm_overwrite(obj["output_file"], obj.get("overwrite", False))
 
     # Mutual exclusion: --output-file and --output-dir
     if has_output_file and has_output_dir:
@@ -519,6 +587,18 @@ def store_common_options(obj: dict, **kwargs: Any) -> None:
                     err=True,
                 )
             raise SystemExit(1)
+
+    # Resolve paths before any API work (expand ~, mkdir outputs, validate inputs).
+    if obj.get("input_file"):
+        obj["input_file"] = ensure_input_file_ready(obj["input_file"])
+    if has_output_file:
+        obj["output_file"] = ensure_output_file_ready(
+            obj["output_file"],
+            overwrite=bool(obj.get("overwrite", False)),
+            skip_overwrite_check=bool(obj.get("update_csv")),
+        )
+    if has_output_dir:
+        obj["output_dir"] = ensure_output_dir_ready(obj["output_dir"])
 
 
 def _parse_path(path: str) -> list[tuple[str, Any]]:
@@ -1819,10 +1899,18 @@ def write_output(
     elif fields:
         data = _filter_fields(data, fields)
     if output_path:
+        resolved = resolve_output_path(output_path)
+        parent = Path(resolved).parent
+        if str(parent) and not parent.exists():
+            try:
+                parent.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                click.echo(f"Cannot create directory '{parent}': {e.strerror}", err=True)
+                raise SystemExit(1)
         try:
-            fh = open(output_path, "wb")
+            fh = open(resolved, "wb")
         except OSError as e:
-            click.echo(f"Cannot write to '{output_path}': {e.strerror}", err=True)
+            click.echo(f"Cannot write to '{resolved}': {e.strerror}", err=True)
             raise SystemExit(1)
         with fh:
             fh.write(data)
@@ -1832,7 +1920,7 @@ def write_output(
         # stdout/pipes clean for non-REPL use.
         from .theme import BEE_DIM, BEE_YELLOW, err_console
 
-        err_console.print(f"  [{BEE_DIM}]Saved to[/] [bold {BEE_YELLOW}]{output_path}[/]")
+        err_console.print(f"  [{BEE_DIM}]Saved to[/] [bold {BEE_YELLOW}]{resolved}[/]")
     else:
         # In REPL mode, truncate large text dumps to a tidy preview and surface
         # a path to the full output. Non-REPL invocations (`scrapingbee scrape ...`)
