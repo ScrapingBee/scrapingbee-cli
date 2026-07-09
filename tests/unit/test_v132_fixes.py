@@ -24,6 +24,18 @@ from unittest.mock import patch
 import click
 import pytest
 
+
+def _set_home(monkeypatch, path) -> None:
+    """Point the home directory at *path* on all platforms.
+
+    ``Path.expanduser()`` reads ``HOME`` on POSIX but ``USERPROFILE`` on
+    Windows (``HOME`` is ignored there since Python 3.8), so tests must set
+    both for ``~`` expansion to land in the sandbox.
+    """
+    monkeypatch.setenv("HOME", str(path))
+    monkeypatch.setenv("USERPROFILE", str(path))
+
+
 # =============================================================================
 # 1. user_agent_headers()
 # =============================================================================
@@ -600,11 +612,11 @@ class TestConfirmOverwrite:
 class TestOutputPathResolution:
     """Tests for resolve_output_path / ensure_output_file_ready."""
 
-    def test_resolve_output_path_expands_tilde(self, monkeypatch):
+    def test_resolve_output_path_expands_tilde(self, tmp_path, monkeypatch):
         from scrapingbee_cli.cli_utils import resolve_output_path
 
-        monkeypatch.setenv("HOME", "/tmp/fakehome")
-        assert resolve_output_path("~/out.png") == "/tmp/fakehome/out.png"
+        _set_home(monkeypatch, tmp_path)
+        assert resolve_output_path("~/out.png") == str(tmp_path / "out.png")
 
     def test_ensure_output_file_ready_creates_parent_dirs(self, tmp_path):
         from scrapingbee_cli.cli_utils import ensure_output_file_ready
@@ -628,7 +640,7 @@ class TestOutputPathResolution:
 
         home = tmp_path / "home"
         home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
+        _set_home(monkeypatch, home)
         out = "~/Desktop/sb-test/screenshot.png"
         obj: dict = {}
         store_common_options(
@@ -643,7 +655,7 @@ class TestOutputPathResolution:
 
         home = tmp_path / "home"
         home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
+        _set_home(monkeypatch, home)
         input_file = tmp_path / "urls.txt"
         input_file.write_text("https://example.com\n", encoding="utf-8")
         obj: dict = {}
@@ -667,7 +679,7 @@ class TestInputPathResolution:
 
         home = tmp_path / "home"
         home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
+        _set_home(monkeypatch, home)
         input_file = home / "urls.txt"
         input_file.write_text("https://example.com\n", encoding="utf-8")
         assert ensure_input_file_ready("~/urls.txt") == str(input_file)
@@ -682,7 +694,7 @@ class TestInputPathResolution:
 
         home = tmp_path / "home"
         home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
+        _set_home(monkeypatch, home)
         with pytest.raises(SystemExit):
             ensure_input_file_ready("~/missing.txt")
 
@@ -691,7 +703,7 @@ class TestInputPathResolution:
 
         home = tmp_path / "home"
         home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
+        _set_home(monkeypatch, home)
         input_file = home / "urls.txt"
         input_file.write_text("https://example.com\n", encoding="utf-8")
         obj: dict = {}
@@ -706,7 +718,7 @@ class TestInputPathResolution:
 
         home = tmp_path / "home"
         home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
+        _set_home(monkeypatch, home)
         input_file = home / "urls.txt"
         input_file.write_text("https://example.com\n", encoding="utf-8")
         assert read_input_file("~/urls.txt") == ["https://example.com"]
@@ -723,7 +735,7 @@ class TestReplOutputPathResolution:
 
         home = tmp_path / "home"
         home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
+        _set_home(monkeypatch, home)
         existing = home / "Desktop" / "shot.png"
         existing.parent.mkdir(parents=True)
         existing.write_bytes(b"old")
@@ -743,7 +755,7 @@ class TestReplOutputPathResolution:
 
         home = tmp_path / "home"
         home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
+        _set_home(monkeypatch, home)
         out_dir = home / "Desktop" / "sb-cli-test" / "ss"
         out_dir.mkdir(parents=True)
         (out_dir / "screenshot.png").write_bytes(b"old")
@@ -787,7 +799,7 @@ class TestReplOutputPathResolution:
 
         home = tmp_path / "home"
         home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
+        _set_home(monkeypatch, home)
 
         api_called = {"value": False}
 
@@ -828,7 +840,7 @@ class TestReplOutputPathResolution:
 
         home = tmp_path / "home"
         home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
+        _set_home(monkeypatch, home)
         out_file = home / "Desktop" / "sb-cli-test" / "ss" / "screenshot.png"
 
         mock_client = AsyncMock()
