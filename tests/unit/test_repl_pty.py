@@ -431,14 +431,17 @@ def test_session_default_skip_warning_on_screen(tmp_path):
             stream,
             lambda s: "premium-proxy" in _text(s) and "true" in _text(s),
         ), ":set did not apply premium-proxy=true"
-        child.send("google --help\r")
+        # Keep command output short enough that the warning remains in the
+        # 32-row screen grid. ``google --help`` can push it off-screen before
+        # pyte evaluates the predicate, making this test timing-dependent.
+        child.send("usage --help\r")
         assert _pump_until(
             child,
             screen,
             stream,
-            lambda s: _has_session_default_skip_warning(s, "google", "premium-proxy"),
+            lambda s: _has_session_default_skip_warning(s, "usage", "premium-proxy"),
             timeout=20.0,
-        ), "skip warning for premium-proxy on google not shown"
+        ), "skip warning for premium-proxy on usage not shown"
     finally:
         child.close(force=True)
 

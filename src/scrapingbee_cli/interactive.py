@@ -474,9 +474,10 @@ def _selection_bounds(
 def _resolve_path_str(raw: str) -> str:
     """Expand ``~`` and resolve relative paths against the cwd."""
     expanded = os.path.expanduser(raw)
-    if not os.path.isabs(expanded):
-        return os.path.abspath(expanded)
-    return expanded
+    # ``expanduser("~/file")`` can retain the forward slash after a Windows
+    # home directory (``C:\Users\me/file``). ``abspath`` also normalises
+    # already-absolute paths, so apply it unconditionally.
+    return os.path.abspath(expanded)
 
 
 # Relative/bare filenames for link detection (``abc/out.png``, ``shot.png``).
