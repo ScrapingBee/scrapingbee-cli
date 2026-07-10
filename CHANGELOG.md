@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-07-10
+
+### Fixed
+
+- **REPL drag-copy dropped the last character** — selecting a path like `screenshot.png` copied `screenshot.pn` because mouse endpoints are inclusive while selection slicing is exclusive. Drag endpoints are now converted to half-open bounds so the character under the cursor is included.
+- **Relative paths not fully linkified in REPL** — `Saved to abc/screenshot.png` and bare filenames were not underlined/clickable. Relative-path detection and path resolution now cover those forms, and user-facing `Saved to` / Output lines print absolute paths via `display_path()`.
+- **Binary/screenshot output dumped into REPL scrollback** — PNG and other binary payloads without an early NUL were treated as text and printed as mojibake. Binary responses are now detected via magic bytes, cached to `last-output`, and summarised instead of shown inline.
+
 ## [1.5.0] - 2026-07-08
 
 ### Added
