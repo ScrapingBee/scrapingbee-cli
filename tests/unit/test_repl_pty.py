@@ -90,7 +90,7 @@ def _setup_fake_clipboard(tmp_path):
     return clip_file, bin_dir
 
 
-def _spawn(home, args=(), key="dummy-pty-key", *, extra_env=None):
+def _spawn(home, args=(), key="dummy-pty-key", *, extra_env=None, rows=ROWS, cols=COLS):
     env = dict(os.environ)
     env.update(HOME=str(home), SCRAPINGBEE_API_KEY=key, TERM="xterm-256color", PWD=str(home))
     if extra_env:
@@ -98,14 +98,14 @@ def _spawn(home, args=(), key="dummy-pty-key", *, extra_env=None):
     child = pexpect.spawn(
         SB,
         list(args),
-        dimensions=(ROWS, COLS),
+        dimensions=(rows, cols),
         env=env,
         encoding="utf-8",
         codec_errors="replace",
         timeout=20,
         cwd=str(home),
     )
-    screen = pyte.Screen(COLS, ROWS)
+    screen = pyte.Screen(cols, rows)
     return child, screen, pyte.Stream(screen)
 
 
@@ -446,7 +446,10 @@ def _pump_until_transient(child, screen, stream, predicate, timeout=15.0, step=2
 @needs_cli
 def test_session_default_skip_warning_on_screen(tmp_path):
     """Scrape-only session defaults warn on screen when a command ignores them."""
-    child, screen, stream = _spawn(tmp_path)
+    # Tall grid: the warning is appended to scrollback before the command
+    # output, so on a short screen later lines (help text, footer, background
+    # usage-refresh output on CI) can push it out of the visible window.
+    child, screen, stream = _spawn(tmp_path, rows=64)
     try:
         assert _pump_until(child, screen, stream, lambda s: "❯" in _text(s)), "no prompt"
         child.send(":set premium-proxy=true\r")
@@ -456,10 +459,8 @@ def test_session_default_skip_warning_on_screen(tmp_path):
             stream,
             lambda s: "premium-proxy" in _text(s) and "true" in _text(s),
         ), ":set did not apply premium-proxy=true"
-        # The warning renders before the help output streams in, so on a fast
-        # runner it can scroll off / be repainted within a single PTY read.
-        # Keep the command output short (``usage --help``) and check every
-        # intermediate screen state rather than only the post-read one.
+        # ``usage --help`` keeps the output short; the transient pump checks
+        # every intermediate screen state, not just the post-read one.
         child.send("usage --help\r")
         assert _pump_until_transient(
             child,
@@ -467,7 +468,7 @@ def test_session_default_skip_warning_on_screen(tmp_path):
             stream,
             lambda s: _has_session_default_skip_warning(s, "usage", "premium-proxy"),
             timeout=20.0,
-        ), "skip warning for premium-proxy on usage not shown"
+        ), f"skip warning for premium-proxy on usage not shown; screen:\n{_text(screen)}"
     finally:
         child.close(force=True)
 
