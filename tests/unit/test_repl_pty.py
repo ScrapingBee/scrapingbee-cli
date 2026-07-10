@@ -418,6 +418,31 @@ def _has_session_default_skip_warning(screen, command: str, setting: str) -> boo
     )
 
 
+def _pump_until_transient(child, screen, stream, predicate, timeout=15.0, step=256):
+    """Like ``_pump_until`` but also catches short-lived screen states.
+
+    ``_pump_until`` feeds each PTY read (up to 64 KiB) to pyte in one go and
+    only then checks the predicate, so text that appears and scrolls off (or
+    is repainted over) within a single read is never observed. Feeding the
+    data in small slices and checking after each slice makes transient
+    states — like a warning printed just before command output streams in —
+    reliably detectable.
+    """
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            data = child.read_nonblocking(1 << 16, 0.2)
+        except pexpect.TIMEOUT:
+            continue
+        except pexpect.EOF:
+            break
+        for i in range(0, len(data), step):
+            stream.feed(data[i : i + step])
+            if predicate(screen):
+                return True
+    return predicate(screen)
+
+
 @needs_cli
 def test_session_default_skip_warning_on_screen(tmp_path):
     """Scrape-only session defaults warn on screen when a command ignores them."""
@@ -431,11 +456,12 @@ def test_session_default_skip_warning_on_screen(tmp_path):
             stream,
             lambda s: "premium-proxy" in _text(s) and "true" in _text(s),
         ), ":set did not apply premium-proxy=true"
-        # Keep command output short enough that the warning remains in the
-        # 32-row screen grid. ``google --help`` can push it off-screen before
-        # pyte evaluates the predicate, making this test timing-dependent.
+        # The warning renders before the help output streams in, so on a fast
+        # runner it can scroll off / be repainted within a single PTY read.
+        # Keep the command output short (``usage --help``) and check every
+        # intermediate screen state rather than only the post-read one.
         child.send("usage --help\r")
-        assert _pump_until(
+        assert _pump_until_transient(
             child,
             screen,
             stream,
