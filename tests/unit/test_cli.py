@@ -840,3 +840,39 @@ class TestCrawlSaveReporting:
         result = self._invoke(monkeypatch, tmp_path, write_manifest=True, extra_args=[])
         assert result.exit_code == 0, result.output + result.stderr
         assert "Saved to" in result.stderr
+
+    def test_saved_to_prints_absolute_path(self, monkeypatch, tmp_path):
+        import json
+
+        from click.testing import CliRunner
+
+        import scrapingbee_cli.commands.crawl as crawl_cmd
+        from scrapingbee_cli.cli import cli
+
+        monkeypatch.chdir(tmp_path)
+        out_dir = tmp_path / "crawl-out"
+
+        def fake_spider(*args, **kwargs):
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "manifest.json").write_text(
+                json.dumps({"https://example.com/a": {"file": "1.html"}})
+            )
+
+        monkeypatch.setattr(crawl_cmd, "get_api_key", lambda *a, **k: "KEY")
+        monkeypatch.setattr(crawl_cmd, "get_batch_usage", lambda *a, **k: {"max_concurrency": 5})
+        monkeypatch.setattr(crawl_cmd, "run_urls_spider", fake_spider)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "crawl",
+                "https://example.com/",
+                "--output-dir",
+                "crawl-out",
+                "--concurrency",
+                "1",
+            ],
+        )
+        assert result.exit_code == 0, result.output + result.stderr
+        assert str(out_dir.resolve()) in result.stderr

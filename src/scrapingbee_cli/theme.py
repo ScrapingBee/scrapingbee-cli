@@ -812,7 +812,9 @@ def print_completion_summary(
         if total > 0 and duration_s > 0:
             table.add_row("Avg speed", f"{total / duration_s:.1f} req/s")
     if output_path:
-        table.add_row("Output", output_path)
+        from .cli_utils import display_path
+
+        table.add_row("Output", display_path(output_path))
     if failed > 0:
         tip = (
             "Tip: Retry failures with --resume"

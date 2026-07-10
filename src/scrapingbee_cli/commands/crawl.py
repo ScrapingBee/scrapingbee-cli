@@ -14,6 +14,7 @@ from ..cli_utils import (
     _validate_json_option,
     _validate_range,
     build_scrape_kwargs,
+    display_path,
     scrape_kwargs_to_api_params,
     store_common_options,
 )
@@ -621,23 +622,24 @@ def crawl_cmd(
                     saved_count = len(_json.load(mf))
             except Exception:
                 saved_count = 0
+        shown_dir = display_path(out_dir)
         if saved_count == 0:
             if save_pattern:
                 click.echo(
-                    f"No pages saved to {out_dir} — no crawled URL matched "
+                    f"No pages saved to {shown_dir} — no crawled URL matched "
                     f"--save-pattern {save_pattern!r}. Discovery still used credits.",
                     err=True,
                 )
             else:
-                click.echo(f"No pages saved to {out_dir} (0 pages crawled).", err=True)
+                click.echo(f"No pages saved to {shown_dir} (0 pages crawled).", err=True)
         elif save_pattern and max_pages and saved_count < max_pages:
             click.echo(
-                f"Saved to {out_dir} ({saved_count} of up to {max_pages} pages "
+                f"Saved to {shown_dir} ({saved_count} of up to {max_pages} pages "
                 f"matched --save-pattern {save_pattern!r}).",
                 err=True,
             )
         else:
-            click.echo(f"Saved to {out_dir}", err=True)
+            click.echo(f"Saved to {shown_dir}", err=True)
         on_complete = obj.get("on_complete")
         if on_complete:
             from ..cli_utils import run_on_complete
