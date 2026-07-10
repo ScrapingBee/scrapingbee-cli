@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import sys
 from io import BytesIO
+from pathlib import Path
 
 import click
 import pytest
@@ -430,7 +431,7 @@ class TestWriteOutput:
         assert captured
         assert abs_path in captured[0]
         assert captured[0].startswith("  [")
-        assert abs_path.startswith("/")
+        assert Path(abs_path).is_absolute()
 
     def test_extracts_field_to_file(self, tmp_path) -> None:
         data = b'{"results": [{"url": "https://a.com"}, {"url": "https://b.com"}]}'

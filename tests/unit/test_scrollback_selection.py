@@ -122,9 +122,12 @@ class TestResolvePathStr:
         monkeypatch.chdir(tmp_path)
         assert _resolve_path_str("abc/out.png") == str(tmp_path / "abc" / "out.png")
 
-    def test_tilde_expands(self, monkeypatch):
-        monkeypatch.setenv("HOME", "/home/tester")
-        assert _resolve_path_str("~/file.txt") == "/home/tester/file.txt"
+    def test_tilde_expands(self, monkeypatch, tmp_path):
+        # Set both HOME (Unix) and USERPROFILE (Windows); expanduser picks the
+        # platform-appropriate variable.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        assert _resolve_path_str("~/file.txt") == str(tmp_path / "file.txt")
 
 
 class TestRelPathRe:
