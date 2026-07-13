@@ -458,3 +458,38 @@ class TestFormatRunningSince:
 
         assert _format_running_since("not-a-date") == "?"
         assert _format_running_since("") == "?"
+
+
+# ---------------------------------------------------------------------------
+# _require_cron (cross-OS guard)
+# ---------------------------------------------------------------------------
+class TestRequireCron:
+    """schedule._require_cron() fails cleanly on systems without cron (e.g. Windows)."""
+
+    def test_raises_usage_error_when_crontab_missing(self, monkeypatch):
+        import click
+
+        from scrapingbee_cli.commands import schedule as sched
+
+        monkeypatch.setattr(sched.shutil, "which", lambda name: None)
+        with pytest.raises(click.UsageError, match="cron"):
+            sched._require_cron()
+
+    def test_passes_when_crontab_present(self, monkeypatch):
+        from scrapingbee_cli.commands import schedule as sched
+
+        monkeypatch.setattr(sched.shutil, "which", lambda name: "/usr/bin/crontab")
+        sched._require_cron()  # must not raise
+
+    def test_add_and_stop_guarded_on_non_cron(self, monkeypatch):
+        import click
+
+        from scrapingbee_cli.commands import schedule as sched
+
+        # Both crontab-touching entry points must surface a clean UsageError,
+        # never a raw FileNotFoundError from the missing `crontab` binary.
+        monkeypatch.setattr(sched.shutil, "which", lambda name: None)
+        with pytest.raises(click.UsageError):
+            sched._stop_schedule(None)
+        with pytest.raises(click.UsageError):
+            sched._add_schedule("probe", "1h", ("scrape", "https://example.com"))

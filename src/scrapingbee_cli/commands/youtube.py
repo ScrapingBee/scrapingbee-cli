@@ -17,6 +17,7 @@ from ..batch import (
     validate_batch_run,
 )
 from ..cli_utils import (
+    BOOL_STR,
     NormalizedChoice,
     _batch_options,
     check_api_response,
@@ -142,19 +143,21 @@ YOUTUBE_SORT_BY = ["relevance", "rating", "view-count", "upload-date"]
     help="Sort order.",
 )
 @optgroup.group("Quality & features", help="HD, 4K, subtitles, live, etc.")
-@optgroup.option("--hd", type=str, default=None, help="HD only (true/false).")
-@optgroup.option("--4k", "is_4k", type=str, default=None, help="4K only (true/false).")
-@optgroup.option("--subtitles", type=str, default=None, help="With subtitles (true/false).")
+@optgroup.option("--hd", type=BOOL_STR, default=None, help="HD only (true/false).")
+@optgroup.option("--4k", "is_4k", type=BOOL_STR, default=None, help="4K only (true/false).")
+@optgroup.option("--subtitles", type=BOOL_STR, default=None, help="With subtitles (true/false).")
 @optgroup.option(
-    "--creative-commons", type=str, default=None, help="Creative Commons only (true/false)."
+    "--creative-commons", type=BOOL_STR, default=None, help="Creative Commons only (true/false)."
 )
-@optgroup.option("--live", type=str, default=None, help="Live streams only (true/false).")
-@optgroup.option("--360", "is_360", type=str, default=None, help="360° videos only (true/false).")
-@optgroup.option("--3d", "is_3d", type=str, default=None, help="3D videos only (true/false).")
-@optgroup.option("--hdr", type=str, default=None, help="HDR videos only (true/false).")
-@optgroup.option("--location", type=str, default=None, help="With location (true/false).")
-@optgroup.option("--vr180", type=str, default=None, help="VR180 only (true/false).")
-@optgroup.option("--purchased", type=str, default=None, help="Purchased only (true/false).")
+@optgroup.option("--live", type=BOOL_STR, default=None, help="Live streams only (true/false).")
+@optgroup.option(
+    "--360", "is_360", type=BOOL_STR, default=None, help="360° videos only (true/false)."
+)
+@optgroup.option("--3d", "is_3d", type=BOOL_STR, default=None, help="3D videos only (true/false).")
+@optgroup.option("--hdr", type=BOOL_STR, default=None, help="HDR videos only (true/false).")
+@optgroup.option("--location", type=BOOL_STR, default=None, help="With location (true/false).")
+@optgroup.option("--vr180", type=BOOL_STR, default=None, help="VR180 only (true/false).")
+@optgroup.option("--purchased", type=BOOL_STR, default=None, help="Purchased only (true/false).")
 @optgroup.option(
     "--tag",
     type=str,
@@ -188,6 +191,9 @@ def youtube_search_cmd(
     store_common_options(obj, **kwargs)
     duration = _DURATION_ALIAS.get(duration.lower(), duration) if duration else duration
     input_file = obj.get("input_file")
+    if not input_file and not query:
+        click.echo("expected one search query, or use --input-file for batch", err=True)
+        raise SystemExit(1)
     try:
         key = get_api_key(None)
     except ValueError as e:
@@ -325,6 +331,9 @@ def youtube_metadata_cmd(
     """Fetch YouTube video metadata."""
     store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
+    if not input_file and not video_id:
+        click.echo("expected one video ID, or use --input-file for batch", err=True)
+        raise SystemExit(1)
     try:
         key = get_api_key(None)
     except ValueError as e:

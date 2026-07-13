@@ -20,6 +20,7 @@ from ..batch import (
     write_batch_output_to_dir,
 )
 from ..cli_utils import (
+    BOOL_STR,
     CLIENT_TIMEOUT_BUFFER_SECONDS,
     DEFAULT_CLIENT_TIMEOUT_SECONDS,
     DEVICE_DESKTOP_MOBILE,
@@ -38,6 +39,7 @@ from ..cli_utils import (
 from ..client import Client, pretty_json
 from ..config import BASE_URL, get_api_key
 from ..crawl import _preferred_extension_from_scrape_params
+from ..theme import echo_error, is_repl_mode
 
 
 def _apply_chunking(url: str, data: bytes, chunk_size: int, chunk_overlap: int) -> bytes:
@@ -99,7 +101,7 @@ SCRAPE_PRESETS = (
 @optgroup.group("Rendering", help="JavaScript rendering and viewport options")
 @optgroup.option(
     "--render-js",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Enable/disable JS rendering (true/false). When omitted, parameter is not sent (API default may apply). Set true for headless browser.",
 )
@@ -118,13 +120,13 @@ SCRAPE_PRESETS = (
 @optgroup.option("--wait-browser", type=str, default=None, help=WAIT_BROWSER_HELP)
 @optgroup.option(
     "--block-ads",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Block ads (true/false). Unnecessary if render_js=false.",
 )
 @optgroup.option(
     "--block-resources",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Block images and CSS (true/false). Default blocks for speed.",
 )
@@ -143,13 +145,13 @@ SCRAPE_PRESETS = (
 @optgroup.group("Proxy", help="Proxy and geo options")
 @optgroup.option(
     "--premium-proxy",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Use premium/residential proxies (true/false). Default: false. 25 credits per request with JS.",
 )
 @optgroup.option(
     "--stealth-proxy",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Use stealth proxies for hard-to-scrape sites (true/false). Default: false. 75 credits per request.",
 )
@@ -169,20 +171,20 @@ SCRAPE_PRESETS = (
 @optgroup.option("-H", "--header", "headers", multiple=True, help="Custom header Key:Value")
 @optgroup.option(
     "--forward-headers",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Forward custom headers to target (true/false). Use -H with Spb- prefix for GET.",
 )
 @optgroup.option(
     "--forward-headers-pure",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Forward only custom headers, no ScrapingBee headers (true/false).",
 )
 @optgroup.group("Output", help="Response format and chunking")
 @optgroup.option(
     "--json-response",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Wrap response in JSON (use with --screenshot to get both HTML and image in one response)",
 )
@@ -202,28 +204,28 @@ SCRAPE_PRESETS = (
 )
 @optgroup.option(
     "--return-page-source",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Return unaltered HTML from server. Value: true or false (e.g. --return-page-source true). Unnecessary if render_js=false.",
 )
 @optgroup.option(
     "--return-page-markdown",
     "return_page_markdown",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Return main content as markdown. Value: true or false (e.g. --return-page-markdown true).",
 )
 @optgroup.option(
     "--return-page-text",
     "return_page_text",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Return main content as plain text. Value: true or false (e.g. --return-page-text true).",
 )
 @optgroup.group("Screenshot", help="Screenshot capture options")
 @optgroup.option(
     "--screenshot",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Capture a screenshot (viewport or use selector/full-page)",
 )
@@ -235,7 +237,7 @@ SCRAPE_PRESETS = (
 )
 @optgroup.option(
     "--screenshot-full-page",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Capture full page screenshot (cannot be combined with --screenshot-selector)",
 )
@@ -283,13 +285,13 @@ SCRAPE_PRESETS = (
 )
 @optgroup.option(
     "--custom-google",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Scrape Google domains (true/false). 15 credits.",
 )
 @optgroup.option(
     "--transparent-status-code",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Return target status/body as-is (true/false). No retry on 500.",
 )
@@ -767,8 +769,14 @@ def scrape_cmd(
                 )
             else:
                 data, resp_headers, status_code = await client.scrape(scrape_url, **scrape_kwargs)
+        # Intentional: on non-2xx we still print the response body (stderr) and exit nonzero.
+        # The body is often useful and some sites fake 4xx/5xx on valid pages, so we surface
+        # it rather than discard it. (--transparent-status-code bypasses this error path.)
         if not scrape_kwargs.get("transparent_status_code") and status_code >= 400:
-            click.echo(f"Error: HTTP {status_code}", err=True)
+            if is_repl_mode():
+                echo_error(f"Error: HTTP {status_code}")
+            else:
+                click.echo(f"Error: HTTP {status_code}", err=True)
             try:
                 click.echo(pretty_json(data), err=True)
             except Exception:

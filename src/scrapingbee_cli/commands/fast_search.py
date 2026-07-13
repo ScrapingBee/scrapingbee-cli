@@ -58,6 +58,9 @@ def fast_search_cmd(
     """Search using the Fast Search API (sub-second results)."""
     store_common_options(obj, **kwargs)
     input_file = obj.get("input_file")
+    if not input_file and not query:
+        click.echo("expected one search query, or use --input-file for batch", err=True)
+        raise SystemExit(1)
     try:
         key = get_api_key(None)
     except ValueError as e:

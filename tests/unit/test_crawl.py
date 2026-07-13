@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from scrapingbee_cli.crawl import (
-    _NON_HTML_URL_EXTENSIONS,
     _body_from_json_response,
     _extract_hrefs_from_body,
     _extract_hrefs_from_response,
@@ -28,6 +27,31 @@ class TestNormalizeUrl:
     def test_preserves_query(self):
         # Path is normalized to / when empty, so query attaches after /
         assert _normalize_url("https://example.com?a=1") == "https://example.com/?a=1"
+
+    def test_collapses_root_index_html(self):
+        # Directory-index alias: / and /index.html are the same resource, so
+        # they must dedup to one entry (otherwise the seed + a discovered
+        # index.html link save the same page twice — double credits).
+        assert _normalize_url("https://example.com/index.html") == _normalize_url(
+            "https://example.com/"
+        )
+
+    def test_collapses_subdir_index_html(self):
+        assert _normalize_url("https://example.com/foo/index.html") == _normalize_url(
+            "https://example.com/foo/"
+        )
+        # .htm variant too
+        assert _normalize_url("https://example.com/foo/index.htm") == _normalize_url(
+            "https://example.com/foo/"
+        )
+
+    def test_does_not_collapse_non_index(self):
+        # Only "…/index.html" collapses; a file that merely ends in index.html
+        # (e.g. myindex.html) or a different page name is left distinct.
+        assert _normalize_url("https://example.com/myindex.html") != _normalize_url(
+            "https://example.com/"
+        )
+        assert _normalize_url("https://example.com/about.html") == "https://example.com/about.html"
 
 
 class TestParamTruthy:
@@ -94,6 +118,21 @@ class TestPreferredExtensionFromScrapeParams:
 
     def test_screenshot_only(self):
         assert _preferred_extension_from_scrape_params({"screenshot": True}) == "png"
+
+    def test_screenshot_full_page_only(self):
+        # Regression (C1): full-page screenshots must map to .png, not .html.
+        assert _preferred_extension_from_scrape_params({"screenshot_full_page": True}) == "png"
+
+    def test_screenshot_selector_only(self):
+        assert _preferred_extension_from_scrape_params({"screenshot_selector": "#main"}) == "png"
+
+    def test_screenshot_full_page_with_json_response(self):
+        assert (
+            _preferred_extension_from_scrape_params(
+                {"screenshot_full_page": "true", "json_response": True}
+            )
+            == "json"
+        )
 
     def test_return_markdown(self):
         assert _preferred_extension_from_scrape_params({"return_page_markdown": True}) == "md"
@@ -185,83 +224,6 @@ class TestExtractHrefsFromResponse:
         hrefs = _extract_hrefs_from_response(response)
         assert "/foo" in hrefs
         assert "https://other.com/b" in hrefs
-
-
-class TestSpiderDiscovery:
-    """Tests for the double-fetch discovery mechanism in GenericScrapingBeeSpider."""
-
-    def _make_response(self, url: str, body: bytes, depth: int = 0):
-        """Create a Scrapy HtmlResponse with request meta attached."""
-        from scrapy.http import HtmlResponse, Request
-
-        response = HtmlResponse(url, body=body, encoding="utf-8")
-        response.request = Request(url, meta={"depth": depth})
-        return response
-
-    def test_parse_yields_discovery_request_when_no_links(self):
-        """parse() must yield exactly one discovery request when the body has no links."""
-        from scrapy_scrapingbee import ScrapingBeeRequest
-
-        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
-
-        spider = GenericScrapingBeeSpider(
-            start_urls=["https://example.com"],
-            scrape_params={"return_page_text": True},
-            output_dir=None,
-        )
-        response = self._make_response("https://example.com/page", b"Plain text, no links")
-        requests = list(spider.parse(response))
-
-        assert len(requests) == 1
-        assert isinstance(requests[0], ScrapingBeeRequest)
-        assert requests[0].callback == spider._parse_discovery_links_only
-        assert requests[0].dont_filter is True
-
-    def test_parse_does_not_yield_discovery_when_links_found(self):
-        """parse() must not yield a discovery request when the body already has links."""
-        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
-
-        spider = GenericScrapingBeeSpider(
-            start_urls=["https://example.com"],
-            scrape_params={},
-            output_dir=None,
-        )
-        spider.seen_urls.add("https://example.com")
-
-        response = self._make_response(
-            "https://example.com",
-            b'<a href="/page1">link1</a><a href="/page2">link2</a>',
-        )
-        requests = list(spider.parse(response))
-
-        # No request should target the discovery callback
-        for req in requests:
-            assert req.callback != spider._parse_discovery_links_only
-
-    def test_parse_discovery_links_only_follows_links_but_does_not_save(self, tmp_path):
-        """_parse_discovery_links_only must yield follow requests but never write files."""
-        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
-
-        spider = GenericScrapingBeeSpider(
-            start_urls=["https://example.com"],
-            scrape_params={"return_page_text": True},
-            output_dir=str(tmp_path),
-        )
-        spider.seen_urls.add("https://example.com")
-
-        response = self._make_response(
-            "https://example.com",
-            b'<a href="/page1">p1</a><a href="/page2">p2</a>',
-        )
-        requests = list(spider._parse_discovery_links_only(response))
-
-        # Should yield follow requests (not empty)
-        assert len(requests) > 0
-        # Each follow request must use the main parse callback (not discovery again)
-        for req in requests:
-            assert req.callback == spider.parse
-        # Nothing written — discovery does not save
-        assert list(tmp_path.iterdir()) == []
 
 
 class TestSpiderSaveResponse:
@@ -390,6 +352,61 @@ class TestSpiderSaveResponse:
         assert not (tmp_path / "1.html").exists()
 
 
+class TestSpiderStart:
+    """start() is the Scrapy 2.13+ entry point. Scrapy 2.16 removed
+    start_requests() and no longer calls it; relying on it made the spider
+    fall back to the default start() (a plain Request via the ``parse``
+    callback), which bypassed ScrapingBee and saved the seed's raw HTML as a
+    corrupt artifact. These guard that regression."""
+
+    def _collect_start(self, spider):
+        import asyncio
+
+        async def _run():
+            return [r async for r in spider.start()]
+
+        return asyncio.run(_run())
+
+    def test_start_is_async_generator_and_no_start_requests(self):
+        import inspect
+
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        assert "start" in GenericScrapingBeeSpider.__dict__, "must define start() (Scrapy 2.13+)"
+        assert inspect.isasyncgenfunction(GenericScrapingBeeSpider.start)
+        # start_requests() is removed in Scrapy 2.16; defining/relying on it broke the seed.
+        assert "start_requests" not in GenericScrapingBeeSpider.__dict__
+
+    def test_screenshot_seed_goes_through_scrapingbee_discovery(self):
+        from scrapy_scrapingbee import ScrapingBeeRequest
+
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        spider = GenericScrapingBeeSpider(
+            start_urls=["https://books.toscrape.com/"],
+            scrape_params={"screenshot_full_page": "true"},
+        )
+        reqs = self._collect_start(spider)
+        assert reqs, "start() must yield at least one request"
+        seed = reqs[0]
+        assert isinstance(seed, ScrapingBeeRequest), (
+            f"seed must be a ScrapingBeeRequest (not a plain Request), got {type(seed).__name__}"
+        )
+        assert seed.callback == spider._parse_crawl_and_save, (
+            "screenshot seed must route to the discovery callback, not the default parse"
+        )
+
+    def test_html_seed_is_also_a_scrapingbee_request(self):
+        from scrapy_scrapingbee import ScrapingBeeRequest
+
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        spider = GenericScrapingBeeSpider(start_urls=["https://example.com/"], scrape_params={})
+        reqs = self._collect_start(spider)
+        assert reqs and isinstance(reqs[0], ScrapingBeeRequest)
+        assert reqs[0].callback == spider.parse
+
+
 class TestRequiresDiscoveryPhase:
     """Tests for _requires_discovery_phase()."""
 
@@ -425,91 +442,6 @@ class TestRequiresDiscoveryPhase:
     def test_return_page_markdown_does_not_require_discovery(self):
         # Markdown responses are handled by _MARKDOWN_LINK_RE — no discovery needed if links present
         assert _requires_discovery_phase({"return_page_markdown": "true"}) is False
-
-
-class TestNonHtmlUrlExtensions:
-    """Tests for the _NON_HTML_URL_EXTENSIONS set and its use in parse()."""
-
-    def test_image_extensions_are_binary(self):
-        for ext in ("jpg", "jpeg", "png", "gif", "webp", "svg", "ico"):
-            assert ext in _NON_HTML_URL_EXTENSIONS, f"{ext!r} should be in _NON_HTML_URL_EXTENSIONS"
-
-    def test_download_extensions_are_binary(self):
-        for ext in ("pdf", "zip"):
-            assert ext in _NON_HTML_URL_EXTENSIONS
-
-    def test_web_asset_extensions_are_binary(self):
-        for ext in ("css", "js"):
-            assert ext in _NON_HTML_URL_EXTENSIONS
-
-    def test_html_like_extensions_not_in_set(self):
-        # These can contain <a href> links and must NOT be skipped
-        for ext in ("html", "htm", "asp", "aspx", "php", "xml", "md", "txt", "json"):
-            assert ext not in _NON_HTML_URL_EXTENSIONS, (
-                f"{ext!r} must not be in _NON_HTML_URL_EXTENSIONS"
-            )
-
-    def _make_response(self, url: str, body: bytes, depth: int = 0):
-        from scrapy.http import HtmlResponse, Request
-
-        response = HtmlResponse(url, body=body, encoding="utf-8")
-        response.request = Request(url, meta={"depth": depth})
-        return response
-
-    def test_parse_skips_discovery_for_image_url(self):
-        """parse() must NOT yield a discovery request when the URL is a known binary type."""
-        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
-
-        spider = GenericScrapingBeeSpider(
-            start_urls=["https://example.com"],
-            scrape_params={"extract_rules": '{"price": ".price"}'},
-            output_dir=None,
-        )
-        # Simulate fetching a JPEG URL that returns no links (binary body)
-        response = self._make_response(
-            "https://example.com/hero.jpg",
-            b"\xff\xd8\xff\xe0",  # JPEG magic bytes
-        )
-        requests = list(spider.parse(response))
-        # Must yield nothing — no discovery re-request for binary URLs
-        assert requests == [], f"Expected no requests for binary URL, got {requests}"
-
-    def test_parse_still_fires_discovery_for_html_url_with_no_links(self):
-        """parse() must still yield a discovery request for HTML-like URLs with no links."""
-        from scrapy_scrapingbee import ScrapingBeeRequest
-
-        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
-
-        spider = GenericScrapingBeeSpider(
-            start_urls=["https://example.com"],
-            scrape_params={"extract_rules": '{"price": ".price"}'},
-            output_dir=None,
-        )
-        # JSON response body (from extract_rules) has no links
-        response = self._make_response(
-            "https://example.com/product",  # no binary extension → should fire discovery
-            b'{"price": "$9.99"}',
-        )
-        requests = list(spider.parse(response))
-        assert len(requests) == 1
-        assert isinstance(requests[0], ScrapingBeeRequest)
-        assert requests[0].callback == spider._parse_discovery_links_only
-
-    def test_parse_skips_discovery_for_css_url(self):
-        """CSS files never contain HTML links — discovery must be skipped."""
-        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
-
-        spider = GenericScrapingBeeSpider(
-            start_urls=["https://example.com"],
-            scrape_params={},
-            output_dir=None,
-        )
-        response = self._make_response(
-            "https://example.com/styles/main.css",
-            b"body { color: red; }",
-        )
-        requests = list(spider.parse(response))
-        assert requests == []
 
 
 class TestExtractHrefsExceptionHandling:
@@ -559,3 +491,93 @@ class TestDefaultCrawlOutputDir:
         rest = name.replace("crawl_", "")
         assert len(rest) == 15  # YYYYMMDD_HHMMSS
         assert rest[8] == "_"
+
+
+class TestMaxPagesHardCap:
+    """`--max-pages N` must be a hard cap on saved files regardless of crawl
+    concurrency (report C1/M3): responses already in flight when the cap trips
+    must be dropped, not written. Enforced centrally in _save_response."""
+
+    def _spider(self, tmp_path, max_pages):
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        return GenericScrapingBeeSpider(
+            start_urls=["http://example.com"],
+            scrape_params={},
+            output_dir=str(tmp_path),
+            max_pages=max_pages,
+            name="t",
+        )
+
+    def _resp(self, url):
+        from scrapy.http import Request, Response
+
+        return Response(url=url, body=b"data", status=200, headers={}, request=Request(url=url))
+
+    def test_overshoot_is_dropped(self, tmp_path):
+        sp = self._spider(tmp_path, 2)
+        assert sp._save_response(self._resp("http://example.com/a")) is True
+        assert sp._save_response(self._resp("http://example.com/b")) is True
+        # A response that was already in flight when the cap tripped
+        # (concurrency > 1) — must be dropped, not written.
+        assert sp._save_response(self._resp("http://example.com/c")) is False
+        assert sp._save_count == 2
+        written = [p for p in tmp_path.rglob("*") if p.is_file()]
+        assert len(written) == 2
+
+    def test_zero_means_unlimited(self, tmp_path):
+        sp = self._spider(tmp_path, 0)
+        for i in range(4):
+            assert sp._save_response(self._resp(f"http://example.com/{i}")) is True
+        assert sp._save_count == 4
+
+
+class TestClosedWritesOnZeroSaves:
+    """closed() must materialise the output dir + manifest even when nothing
+    was saved (e.g. --save-pattern matched nothing). Previously it early-
+    returned on an empty map, so the crawl left no dir/manifest while the CLI
+    still printed "Saved to …" and exited 0 — a false success."""
+
+    def _spider(self, tmp_path, **kw):
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        return GenericScrapingBeeSpider(
+            start_urls=["http://example.com"],
+            output_dir=str(tmp_path / "crawl_out"),
+            name="t",
+            **kw,
+        )
+
+    def test_zero_saves_creates_dir_and_empty_manifest(self, tmp_path):
+        import json
+
+        sp = self._spider(tmp_path, save_pattern="NOMATCH", max_pages=8)
+        out = tmp_path / "crawl_out"
+        assert not out.exists()  # not created until close
+        sp.closed("finished")
+        assert out.is_dir()
+        manifest = out / "manifest.json"
+        assert manifest.is_file()
+        assert json.loads(manifest.read_text()) == {}
+        meta = out / ".batch_meta.json"
+        assert meta.is_file()
+        assert json.loads(meta.read_text())["total"] == 0
+
+    def test_no_output_dir_writes_nothing(self, tmp_path):
+        from scrapingbee_cli.crawl import GenericScrapingBeeSpider
+
+        sp = GenericScrapingBeeSpider(start_urls=["http://example.com"], output_dir=None, name="t")
+        sp.closed("finished")  # must not raise, nothing to write
+        assert list(tmp_path.iterdir()) == []
+
+    def test_resume_manifest_is_merged_not_clobbered(self, tmp_path):
+        import json
+
+        out = tmp_path / "crawl_out"
+        out.mkdir()
+        prior = {"http://example.com/a": {"file": "1.html", "http_status": 200}}
+        # Resume run that saves nothing new must preserve the prior entry.
+        sp = self._spider(tmp_path, initial_url_file_map=prior, initial_write_counter=len(prior))
+        sp.closed("finished")
+        merged = json.loads((out / "manifest.json").read_text())
+        assert "http://example.com/a" in merged

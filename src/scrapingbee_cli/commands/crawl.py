@@ -7,6 +7,7 @@ from click_option_group import optgroup
 
 from ..batch import get_batch_usage, resolve_batch_concurrency
 from ..cli_utils import (
+    BOOL_STR,
     DEVICE_DESKTOP_MOBILE,
     WAIT_BROWSER_HELP,
     _output_options,
@@ -131,7 +132,7 @@ def _crawl_build_params(
 @optgroup.group("Rendering", help="JavaScript rendering and viewport options")
 @optgroup.option(
     "--render-js",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Enable/disable JS rendering (true/false). When omitted, parameter is not sent (API default may apply).",
 )
@@ -148,18 +149,24 @@ def _crawl_build_params(
     "--wait-for", type=str, default=None, help="CSS or XPath selector to wait for before returning."
 )
 @optgroup.option("--wait-browser", type=str, default=None, help=WAIT_BROWSER_HELP)
-@optgroup.option("--block-ads", type=str, default=None, help="Block ads (true/false).")
+@optgroup.option("--block-ads", type=BOOL_STR, default=None, help="Block ads (true/false).")
 @optgroup.option(
-    "--block-resources", type=str, default=None, help="Block images and CSS (true/false)."
+    "--block-resources", type=BOOL_STR, default=None, help="Block images and CSS (true/false)."
 )
 @optgroup.option("--window-width", type=int, default=None, help="Viewport width in pixels.")
 @optgroup.option("--window-height", type=int, default=None, help="Viewport height in pixels.")
 @optgroup.group("Proxy", help="Proxy and geo options")
 @optgroup.option(
-    "--premium-proxy", type=str, default=None, help="Use premium/residential proxies (true/false)."
+    "--premium-proxy",
+    type=BOOL_STR,
+    default=None,
+    help="Use premium/residential proxies (true/false).",
 )
 @optgroup.option(
-    "--stealth-proxy", type=str, default=None, help="Use stealth proxies (true/false). 75 credits."
+    "--stealth-proxy",
+    type=BOOL_STR,
+    default=None,
+    help="Use stealth proxies (true/false). 75 credits.",
 )
 @optgroup.option("--country-code", type=str, default=None, help="Proxy country code (ISO 3166-1).")
 @optgroup.option("--own-proxy", type=str, default=None, help="Your proxy: user:pass@host:port.")
@@ -169,44 +176,44 @@ def _crawl_build_params(
 )
 @optgroup.option(
     "--forward-headers",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Forward custom headers to target (true/false). Use -H with Spb- prefix for GET.",
 )
 @optgroup.option(
     "--forward-headers-pure",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Forward only custom headers (true/false).",
 )
 @optgroup.group("Output", help="Response format")
 @optgroup.option(
-    "--json-response", type=str, default=None, help="Wrap response in JSON (true/false)."
+    "--json-response", type=BOOL_STR, default=None, help="Wrap response in JSON (true/false)."
 )
 @optgroup.option(
     "--return-page-source",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Return unaltered HTML. Value: true or false (e.g. --return-page-source true).",
 )
 @optgroup.option(
     "--return-page-markdown",
     "return_page_markdown",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Return main content as markdown. Value: true or false (e.g. --return-page-markdown true).",
 )
 @optgroup.option(
     "--return-page-text",
     "return_page_text",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Return main content as plain text. Value: true or false (e.g. --return-page-text true).",
 )
 @optgroup.group("Screenshot", help="Screenshot capture options")
 @optgroup.option(
     "--screenshot",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Capture screenshot (true/false). Requires render_js=true.",
 )
@@ -214,7 +221,7 @@ def _crawl_build_params(
     "--screenshot-selector", type=str, default=None, help="CSS selector for screenshot area."
 )
 @optgroup.option(
-    "--screenshot-full-page", type=str, default=None, help="Full page screenshot (true/false)."
+    "--screenshot-full-page", type=BOOL_STR, default=None, help="Full page screenshot (true/false)."
 )
 @optgroup.group("Extraction", help="CSS/XPath and AI extraction (+5 credits for AI)")
 @optgroup.option(
@@ -242,11 +249,11 @@ def _crawl_build_params(
     help="Device: desktop or mobile.",
 )
 @optgroup.option(
-    "--custom-google", type=str, default=None, help="Scrape Google domains (true/false)."
+    "--custom-google", type=BOOL_STR, default=None, help="Scrape Google domains (true/false)."
 )
 @optgroup.option(
     "--transparent-status-code",
-    type=str,
+    type=BOOL_STR,
     default=None,
     help="Return target status as-is (true/false).",
 )
@@ -267,7 +274,11 @@ def _crawl_build_params(
     "--max-pages",
     type=int,
     default=0,
-    help="Max pages to fetch from API (0 = unlimited). Each page costs credits.",
+    help=(
+        "Max pages to save (0 = unlimited). Each fetch costs credits; with "
+        "--save-pattern or extraction/screenshot modes, extra pages are fetched "
+        "for link discovery, so total credits can exceed --max-pages."
+    ),
 )
 @optgroup.option(
     "--allowed-domains",
@@ -300,7 +311,7 @@ def _crawl_build_params(
     "--save-pattern",
     type=str,
     default=None,
-    help="Regex: only save pages matching this pattern. Other pages are visited for link discovery but not saved.",
+    help="Regex: only save pages matching this pattern. Non-matching pages are still fetched for link discovery (which costs credits) but not saved.",
 )
 @optgroup.option(
     "--download-delay",
@@ -440,17 +451,24 @@ def crawl_cmd(
     if not target:
         click.echo("Provide a spider name, one or more URLs, or --from-sitemap URL.", err=True)
         raise SystemExit(1)
+    usage_info: dict | None = None
     try:
         usage_info = get_batch_usage(None)
         concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, 1)
         from_concurrency = obj["concurrency"] > 0
         plan_concurrency = usage_info.get("max_concurrency") or 0
-    except Exception:
+    except Exception as e:
+        # The /usage endpoint is rate-limited; bursts of crawl runs can
+        # trip it. Surface the actual reason so the user can tell apart
+        # "rate limited, retry in a moment" from real network / auth
+        # problems.
+        reason = str(e).strip() or type(e).__name__
         click.echo(
-            "Warning: could not check plan concurrency. Defaulting to 1 concurrent request. "
-            "Use --concurrency to set explicitly.",
+            f"Warning: could not check plan concurrency ({reason}). "
+            "Defaulting to 1 concurrent request. Use --concurrency to set explicitly.",
             err=True,
         )
+        usage_info = None
         concurrency = 1
         from_concurrency = False
         plan_concurrency = 0
@@ -548,6 +566,23 @@ def crawl_cmd(
         if allowed_domains:
             allowed_list = [d.strip() for d in allowed_domains.split(",") if d.strip()]
         try:
+            # ``known_total`` enables a batch-style honeycomb
+            # progress bar in the REPL widget. Used when the total
+            # is bounded up front:
+            #   - sitemap mode (--from-sitemap) gives an exact list
+            #   - max_depth=1 stops at the seed URLs themselves
+            #   - --max-pages N caps the crawl, even when
+            #     link-following could otherwise discover more
+            # For genuinely open-ended crawls (max_pages=0) we fall
+            # back to a rolling "fetching: <url>" line driven by
+            # the spider signal handlers.
+            _kt: int | None = None
+            if from_sitemap:
+                _kt = len(urls)
+            elif max_depth == 1:
+                _kt = len(urls)
+            elif max_pages and max_pages > 0:
+                _kt = max_pages
             run_urls_spider(
                 urls,
                 key,
@@ -565,11 +600,44 @@ def crawl_cmd(
                 include_pattern=include_pattern,
                 exclude_pattern=exclude_pattern,
                 save_pattern=save_pattern,
+                known_total=_kt,
             )
         except ValueError as e:
             click.echo(str(e), err=True)
             raise SystemExit(1)
-        click.echo(f"Saved to {out_dir}", err=True)
+        # Report what actually landed on disk. closed() always writes a
+        # manifest now (even with 0 entries), so an empty/short manifest tells
+        # us the crawl ran but saved little — surface that instead of a
+        # misleading "Saved to …" on a zero-save run (e.g. --save-pattern
+        # matched nothing, which still spends discovery credits).
+        import json as _json
+        from pathlib import Path as _Path
+
+        saved_count = 0
+        manifest_path = _Path(out_dir).resolve() / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                with open(manifest_path, encoding="utf-8") as mf:
+                    saved_count = len(_json.load(mf))
+            except Exception:
+                saved_count = 0
+        if saved_count == 0:
+            if save_pattern:
+                click.echo(
+                    f"No pages saved to {out_dir} — no crawled URL matched "
+                    f"--save-pattern {save_pattern!r}. Discovery still used credits.",
+                    err=True,
+                )
+            else:
+                click.echo(f"No pages saved to {out_dir} (0 pages crawled).", err=True)
+        elif save_pattern and max_pages and saved_count < max_pages:
+            click.echo(
+                f"Saved to {out_dir} ({saved_count} of up to {max_pages} pages "
+                f"matched --save-pattern {save_pattern!r}).",
+                err=True,
+            )
+        else:
+            click.echo(f"Saved to {out_dir}", err=True)
         on_complete = obj.get("on_complete")
         if on_complete:
             from ..cli_utils import run_on_complete
