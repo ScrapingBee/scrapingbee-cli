@@ -14,6 +14,7 @@ The clipboard *write* itself is covered by a separate unit test (test_scrollback
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import time
@@ -105,6 +106,41 @@ def _pump_until(child, screen, stream, predicate, timeout=15.0):
         if predicate(screen):
             return True
     return predicate(screen)
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]")
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s)
+
+
+def _pump_until_raw(child, screen, stream, predicate, timeout=15.0):
+    """Pump like ``_pump_until`` but match on ALL ANSI-stripped output seen so far.
+
+    The pyte screen only holds the visible viewport, so text that a long
+    command output scrolls away (e.g. a one-line warning followed by a full
+    ``--help``) is missed by screen predicates unless the pump happens to
+    catch an intermediate frame — a race. Matching on the accumulated raw
+    stream is scroll-immune. Returns ``(matched, text)`` so callers can also
+    assert on what was *never* printed.
+    """
+    raw: list[str] = []
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            chunk = child.read_nonblocking(1 << 16, 0.2)
+            stream.feed(chunk)
+            raw.append(chunk)
+        except pexpect.TIMEOUT:
+            pass
+        except pexpect.EOF:
+            break
+        text = _strip_ansi("".join(raw))
+        if predicate(text):
+            return True, text
+    text = _strip_ansi("".join(raw))
+    return predicate(text), text
 
 
 def _content_row(screen, default=13):
@@ -407,13 +443,12 @@ def test_classic_mouse_shift_tab_toggles_mode(tmp_path):
         child.close(force=True)
 
 
-def _has_session_default_skip_warning(screen, command: str, setting: str) -> bool:
-    t = _text(screen)
+def _has_session_default_skip_warning(text: str, command: str, setting: str) -> bool:
     return (
-        "not applied to" in t
-        and command in t
-        and setting in t
-        and "unsupported by this command" in t
+        "not applied to" in text
+        and command in text
+        and setting in text
+        and "unsupported by this command" in text
     )
 
 
@@ -431,13 +466,18 @@ def test_session_default_skip_warning_on_screen(tmp_path):
             lambda s: "premium-proxy" in _text(s) and "true" in _text(s),
         ), ":set did not apply premium-proxy=true"
         child.send("google --help\r")
-        assert _pump_until(
+        # Match on the raw stream, not the screen: the warning is one line
+        # printed before the full --help output, which scrolls it out of the
+        # 32-row viewport — a screen predicate only wins the race when an
+        # intermediate frame happens to be captured.
+        matched, _ = _pump_until_raw(
             child,
             screen,
             stream,
-            lambda s: _has_session_default_skip_warning(s, "google", "premium-proxy"),
+            lambda t: _has_session_default_skip_warning(t, "google", "premium-proxy"),
             timeout=20.0,
-        ), "skip warning for premium-proxy on google not shown"
+        )
+        assert matched, "skip warning for premium-proxy on google not shown"
     finally:
         child.close(force=True)
 
@@ -456,14 +496,15 @@ def test_session_default_no_skip_warning_for_supported_command(tmp_path):
             lambda s: "premium-proxy" in _text(s) and "true" in _text(s),
         ), ":set did not apply premium-proxy=true"
         child.send("scrape --help\r")
-        assert _pump_until(
+        completed, seen = _pump_until_raw(
             child,
             screen,
             stream,
-            lambda s: "✓" in _text(s) and "--output-file" in _text(s),
+            lambda t: "✓" in t and "--output-file" in t,
             timeout=20.0,
-        ), "scrape --help did not complete"
-        assert not _has_session_default_skip_warning(screen, "scrape", "premium-proxy"), (
+        )
+        assert completed, "scrape --help did not complete"
+        assert not _has_session_default_skip_warning(seen, "scrape", "premium-proxy"), (
             "skip warning shown for premium-proxy on scrape"
         )
     finally:
