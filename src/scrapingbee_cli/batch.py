@@ -218,7 +218,9 @@ def read_input_file(path: str, *, input_column: str | None = None) -> list[str]:
     import sys as _sys
 
     if path != "-":
-        path = str(Path(path).expanduser())
+        from .cli_utils import resolve_output_path
+
+        path = resolve_output_path(path)
 
     if path == "-":
         lines = [line.strip() for line in _sys.stdin if line.strip()]

@@ -618,6 +618,43 @@ class TestOutputPathResolution:
         _set_home(monkeypatch, tmp_path)
         assert resolve_output_path("~/out.png") == str(tmp_path / "out.png")
 
+    def test_resolve_output_path_expands_bare_tilde(self, tmp_path, monkeypatch):
+        from scrapingbee_cli.cli_utils import resolve_output_path
+
+        _set_home(monkeypatch, tmp_path)
+        assert resolve_output_path("~") == str(tmp_path)
+
+    def test_resolve_output_path_leaves_tilde_filename_literal(self, tmp_path, monkeypatch):
+        """``~data.csv`` is a legal filename — must not expanduser/crash."""
+        from scrapingbee_cli.cli_utils import resolve_output_path
+
+        _set_home(monkeypatch, tmp_path)
+        assert resolve_output_path("~data.csv") == "~data.csv"
+
+    def test_resolve_output_path_leaves_foreign_home_literal(self, tmp_path, monkeypatch):
+        """``~root/...`` must not expand into another user's home."""
+        from scrapingbee_cli.cli_utils import resolve_output_path
+
+        _set_home(monkeypatch, tmp_path)
+        assert resolve_output_path("~root/x.png") == "~root/x.png"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX path semantics")
+    def test_resolve_output_path_leaves_backslash_tilde_literal_on_posix(
+        self, tmp_path, monkeypatch
+    ):
+        """A backslash after ``~`` is not a path separator on POSIX."""
+        from scrapingbee_cli.cli_utils import resolve_output_path
+
+        _set_home(monkeypatch, tmp_path)
+        assert resolve_output_path(r"~\data.csv") == r"~\data.csv"
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows path semantics")
+    def test_resolve_output_path_expands_backslash_tilde_on_windows(self, tmp_path, monkeypatch):
+        from scrapingbee_cli.cli_utils import resolve_output_path
+
+        _set_home(monkeypatch, tmp_path)
+        assert resolve_output_path(r"~\data.csv") == str(tmp_path / "data.csv")
+
     def test_ensure_output_file_ready_creates_parent_dirs(self, tmp_path):
         from scrapingbee_cli.cli_utils import ensure_output_file_ready
 
@@ -625,6 +662,15 @@ class TestOutputPathResolution:
         resolved = ensure_output_file_ready(str(out))
         assert resolved == str(out)
         assert out.parent.is_dir()
+
+    def test_ensure_output_file_ready_tilde_filename_literal(self, tmp_path, monkeypatch):
+        """``--output-file ~data.csv`` must not raise RuntimeError from expanduser."""
+        from scrapingbee_cli.cli_utils import ensure_output_file_ready
+
+        _set_home(monkeypatch, tmp_path)
+        monkeypatch.chdir(tmp_path)
+        resolved = ensure_output_file_ready("~data.csv", overwrite=True)
+        assert resolved == "~data.csv"
 
     def test_ensure_output_file_ready_checks_overwrite_before_return(self, tmp_path, monkeypatch):
         from scrapingbee_cli.cli_utils import ensure_output_file_ready
@@ -634,6 +680,29 @@ class TestOutputPathResolution:
         monkeypatch.setattr("click.confirm", lambda *a, **kw: False)
         with pytest.raises(SystemExit):
             ensure_output_file_ready(str(existing), overwrite=False)
+
+    def test_write_output_checks_overwrite_when_path_changed(self, tmp_path, monkeypatch):
+        """Extension-append case: final path must not silently clobber."""
+        from scrapingbee_cli.cli_utils import write_output
+        from scrapingbee_cli.theme import set_repl_mode
+
+        existing = tmp_path / "report.html"
+        existing.write_bytes(b"old")
+        set_repl_mode(True)
+        try:
+            with pytest.raises(click.UsageError, match="already exists"):
+                write_output(
+                    b"<html></html>",
+                    {},
+                    200,
+                    str(existing),
+                    verbose=False,
+                    overwrite=False,
+                    skip_overwrite_check=False,
+                )
+        finally:
+            set_repl_mode(False)
+        assert existing.read_bytes() == b"old"
 
     def test_store_common_options_prepares_tilde_output_file(self, tmp_path, monkeypatch):
         from scrapingbee_cli.cli_utils import store_common_options
@@ -669,6 +738,18 @@ class TestOutputPathResolution:
         expected = str(home / "batch-results")
         assert obj["output_dir"] == expected
         assert Path(expected).is_dir()
+
+    def test_store_common_options_tilde_filename_literal(self, tmp_path, monkeypatch):
+        """``--output-file ~data.csv`` is accepted as a literal cwd-relative name."""
+        from scrapingbee_cli.cli_utils import store_common_options
+
+        _set_home(monkeypatch, tmp_path)
+        monkeypatch.chdir(tmp_path)
+        obj: dict = {}
+        store_common_options(
+            obj, **TestStoreCommonOptionsBatchValidation()._make_obj(output_file="~data.csv")
+        )
+        assert obj["output_file"] == "~data.csv"
 
 
 class TestInputPathResolution:
@@ -722,6 +803,15 @@ class TestInputPathResolution:
         input_file = home / "urls.txt"
         input_file.write_text("https://example.com\n", encoding="utf-8")
         assert read_input_file("~/urls.txt") == ["https://example.com"]
+
+    def test_read_input_file_leaves_tilde_filename_literal(self, tmp_path, monkeypatch):
+        from scrapingbee_cli.batch import read_input_file
+
+        _set_home(monkeypatch, tmp_path)
+        monkeypatch.chdir(tmp_path)
+        input_file = tmp_path / "~urls.txt"
+        input_file.write_text("https://example.com\n", encoding="utf-8")
+        assert read_input_file("~urls.txt") == ["https://example.com"]
 
 
 class TestReplOutputPathResolution:
@@ -871,6 +961,48 @@ class TestReplOutputPathResolution:
         assert out_file.parent.is_dir()
         assert out_file.read_bytes() == b"png-bytes"
         assert "screenshot.png" in combined.replace("\n", "")
+
+    def test_scrape_repl_extension_append_does_not_clobber(self, tmp_path, monkeypatch):
+        """``--output-file report`` must not silently overwrite existing report.html."""
+        from unittest.mock import AsyncMock, patch
+
+        from click.testing import CliRunner
+
+        from scrapingbee_cli.commands.scrape import scrape_cmd
+        from scrapingbee_cli.theme import set_repl_mode
+
+        monkeypatch.chdir(tmp_path)
+        existing = tmp_path / "report.html"
+        existing.write_bytes(b"keep-me")
+
+        mock_client = AsyncMock()
+        mock_client.scrape.return_value = (b"<html>new</html>", {"Content-Type": "text/html"}, 200)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        set_repl_mode(True)
+        try:
+            with patch("scrapingbee_cli.commands.scrape.get_api_key", return_value="fake"):
+                with patch("scrapingbee_cli.commands.scrape.Client", return_value=mock_client):
+                    result = CliRunner().invoke(
+                        scrape_cmd,
+                        [
+                            "https://example.com",
+                            "--render-js",
+                            "false",
+                            "--output-file",
+                            "report",
+                        ],
+                        obj={},
+                    )
+        finally:
+            set_repl_mode(False)
+
+        combined = (result.output or "") + (result.stderr or "")
+        assert result.exit_code != 0, combined
+        assert "already exists" in combined
+        assert "--overwrite" in combined
+        assert existing.read_bytes() == b"keep-me"
 
 
 # =============================================================================

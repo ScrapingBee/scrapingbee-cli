@@ -321,8 +321,16 @@ def _batch_options(f: Any) -> Any:
 
 
 def resolve_output_path(path: str) -> str:
-    """Expand ``~`` in an output path."""
-    return str(Path(path).expanduser())
+    """Expand a leading ``~/`` (current user only).
+
+    Only ``~`` and paths starting with ``~/`` (or ``~\\`` on Windows) are
+    expanded. Bare filenames like ``~data.csv`` and foreign homes like
+    ``~root/x`` are left literal — ``Path.expanduser()`` would otherwise
+    raise ``RuntimeError`` or write into another user's home.
+    """
+    if path == "~" or path.startswith("~/") or (sys.platform == "win32" and path.startswith("~\\")):
+        return str(Path(path).expanduser())
+    return path
 
 
 def ensure_output_file_ready(
@@ -333,7 +341,7 @@ def ensure_output_file_ready(
 ) -> str:
     """Validate an output file path before any API work starts.
 
-    Expands ``~``, creates parent directories, and checks overwrite policy.
+    Expands ``~/``, creates parent directories, and checks overwrite policy.
     Returns the resolved path.
     """
     resolved = resolve_output_path(path)
@@ -350,7 +358,7 @@ def ensure_output_file_ready(
 
 
 def ensure_output_dir_ready(path: str) -> str:
-    """Expand ``~`` and create an output directory before API work."""
+    """Expand ``~/`` and create an output directory before API work."""
     resolved = resolve_output_path(path)
     try:
         Path(resolved).mkdir(parents=True, exist_ok=True)
@@ -363,7 +371,7 @@ def ensure_output_dir_ready(path: str) -> str:
 def ensure_input_file_ready(path: str) -> str:
     """Validate an input file path before any API work starts.
 
-    Expands ``~`` and ensures the file exists and is readable. Stdin (``-``) is
+    Expands ``~/`` and ensures the file exists and is readable. Stdin (``-``) is
     passed through unchanged.
     """
     if path == "-":
@@ -1831,6 +1839,8 @@ def write_output(
     fields: str | None = None,
     command: str | None = None,
     credit_cost: int | None = None,
+    overwrite: bool = False,
+    skip_overwrite_check: bool = True,
 ) -> None:
     """Write response data to file or stdout; optionally print verbose headers.
 
@@ -1838,6 +1848,11 @@ def write_output(
     language. When *extract_field* is set, extract from JSON using a path
     expression. When *fields* is set, filter JSON to specified fields.
     Precedence: *smart_extract* > *extract_field* > *fields*.
+
+    *skip_overwrite_check* defaults to ``True`` because callers normally run
+    ``ensure_output_file_ready`` on the same path earlier. Pass
+    ``skip_overwrite_check=False`` when the final path may differ from the
+    early-validated one (e.g. scrape auto-appends an extension).
     """
     if verbose:
         if is_repl_mode():
@@ -1910,6 +1925,8 @@ def write_output(
             except OSError as e:
                 click.echo(f"Cannot create directory '{parent}': {e.strerror}", err=True)
                 raise SystemExit(1)
+        if not skip_overwrite_check:
+            confirm_overwrite(resolved, overwrite)
         try:
             fh = open(resolved, "wb")
         except OSError as e:
