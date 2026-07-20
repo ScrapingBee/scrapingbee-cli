@@ -186,6 +186,59 @@ class TestProvenanceAndSnapshot:
         assert meta and all(m == (-1, 0) for m in meta)
 
 
+class TestVisualRowScrollCap:
+    """scroll_up / scroll_to_top must cap the offset in *visual* (post-wrap)
+    rows — the unit get_visible_visual_with_meta consumes — not logical lines.
+    Regression: a single 4000-char line (the REPL's truncated-preview shape)
+    is 1 logical line but ~44 visual rows at 92 cols; a logical-line cap made
+    everything above it unreachable."""
+
+    def _buf(self, width: int = 91, height: int = 14):
+        sb = ScrollbackBuffer()
+        sb.append_ansi_text("first line: a warning lives here\n")
+        sb.append_ansi_text("x" * 4000 + "\n")  # 1 logical line, wraps to 44 rows at 91
+        sb.append_ansi_text("done\n")
+        # Prime the wrap width the way the renderer does each frame.
+        sb.get_visible_visual_with_meta(height, width)
+        return sb
+
+    def _top_row_text(self, sb, width: int = 91, height: int = 14) -> str:
+        rows, _ = sb.get_visible_visual_with_meta(height, width)
+        return "".join(t for _, t in rows[0])
+
+    def test_scroll_up_reaches_wrapped_content_top(self):
+        sb = self._buf()
+        for _ in range(200):
+            sb.scroll_up(1)
+        assert self._top_row_text(sb) == "first line: a warning lives here"
+
+    def test_scroll_to_top_reaches_top(self):
+        sb = self._buf()
+        sb.scroll_to_top()
+        assert self._top_row_text(sb) == "first line: a warning lives here"
+
+    def test_render_clamps_offset_to_content(self):
+        sb = self._buf()
+        sb.scroll_to_top()
+        sb.get_visible_visual_with_meta(14, 91)
+        # 3 logical lines -> 1 + 44 + 1 = 46 visual rows; clamp = 46 - 14.
+        assert sb.scroll_offset == 32
+
+    def test_cap_falls_back_to_logical_lines_before_first_render(self):
+        sb = ScrollbackBuffer()
+        for _ in range(5):
+            sb.append_ansi_text("line\n")
+        sb.scroll_to_top()
+        assert sb.scroll_offset == 4
+
+    def test_scroll_down_returns_to_bottom(self):
+        sb = self._buf()
+        sb.scroll_to_top()
+        for _ in range(200):
+            sb.scroll_down(1)
+        assert sb.at_bottom
+
+
 class TestCopyToClipboard:
     """The OS clipboard write used by drag-copy (and :view). Mocks subprocess so
     it's deterministic and never touches the real clipboard."""

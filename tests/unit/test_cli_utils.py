@@ -551,6 +551,10 @@ class TestDisplayPath:
         monkeypatch.chdir(tmp_path)
         assert display_path("screenshot.png") == str((tmp_path / "screenshot.png").resolve())
 
+    def test_tilde_prefixed_filename_stays_literal(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert display_path("~data.csv") == str((tmp_path / "~data.csv").resolve())
+
 
 class TestMaybeReplPreview:
     def test_binary_returns_summary_not_bytes(self, monkeypatch, tmp_path) -> None:
