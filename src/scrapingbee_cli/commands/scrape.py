@@ -774,12 +774,24 @@ def scrape_cmd(
                 raise SystemExit(1)
             data = _apply_chunking(url or "", data, chunk_size, chunk_overlap)
             # Force .ndjson extension when chunking
-            output_path = obj["output_file"]
+            early_path = obj["output_file"]
+            output_path = early_path
             if output_path and "." not in os.path.basename(output_path):
                 output_path = output_path.rstrip("/") + ".ndjson"
-            write_output(data, resp_headers, status_code, output_path, obj["verbose"])
+            write_output(
+                data,
+                resp_headers,
+                status_code,
+                output_path,
+                obj["verbose"],
+                overwrite=bool(obj.get("overwrite", False)),
+                # Re-check when extension append changes the path after the
+                # early ensure_output_file_ready validation.
+                skip_overwrite_check=output_path == early_path,
+            )
             return
-        output_path = obj["output_file"]
+        early_path = obj["output_file"]
+        output_path = early_path
         if output_path:
             if force_extension:
                 if "." not in os.path.basename(output_path):
@@ -795,6 +807,10 @@ def scrape_cmd(
             status_code,
             output_path,
             obj["verbose"],
+            overwrite=bool(obj.get("overwrite", False)),
+            # Re-check when extension append changes the path after the
+            # early ensure_output_file_ready validation.
+            skip_overwrite_check=output_path == early_path,
         )
 
     asyncio.run(_single())

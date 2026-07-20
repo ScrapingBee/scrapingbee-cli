@@ -14,6 +14,7 @@ from ..cli_utils import (
     _validate_json_option,
     _validate_range,
     build_scrape_kwargs,
+    ensure_output_dir_ready,
     scrape_kwargs_to_api_params,
     store_common_options,
 )
@@ -427,7 +428,10 @@ def crawl_cmd(
     See https://www.scrapingbee.com/documentation/ for parameter details.
     """
     store_common_options(obj, **kwargs)
-    obj["output_dir"] = output_dir or ""
+    if output_dir:
+        obj["output_dir"] = ensure_output_dir_ready(output_dir)
+    else:
+        obj["output_dir"] = ""
     obj["concurrency"] = concurrency or 0
     obj["resume"] = resume
     obj["on_complete"] = on_complete
@@ -562,6 +566,7 @@ def crawl_cmd(
             custom_headers[k.strip()] = v.strip()
         out_dir = (obj.get("output_dir") or "").strip() or None
         out_dir = out_dir or default_crawl_output_dir()
+        out_dir = ensure_output_dir_ready(out_dir)
         allowed_list: list[str] | None = None
         if allowed_domains:
             allowed_list = [d.strip() for d in allowed_domains.split(",") if d.strip()]

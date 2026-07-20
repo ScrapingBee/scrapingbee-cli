@@ -2189,7 +2189,9 @@ def _handle_meta(
             target_path = crawl_log
             missing_msg = "no crawl log yet — run `crawl ...` first"
         else:
-            target_path = Path(target_arg).expanduser()
+            from .cli_utils import resolve_output_path
+
+            target_path = Path(resolve_output_path(target_arg))
             missing_msg = f"file not found: {target_arg}"
         if not target_path.exists():
             err_console.print(f"  [{BEE_DIM}]{missing_msg}[/]")

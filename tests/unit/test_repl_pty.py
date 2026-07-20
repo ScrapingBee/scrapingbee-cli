@@ -468,3 +468,32 @@ def test_session_default_no_skip_warning_for_supported_command(tmp_path):
         )
     finally:
         child.close(force=True)
+
+
+@needs_cli
+def test_repl_tilde_output_file_validated_before_scrape(tmp_path):
+    """REPL expands ~/ output paths and rejects overwrites before any scrape work."""
+    home = tmp_path / "home"
+    home.mkdir()
+    out_dir = home / "Desktop" / "sb-cli-test" / "ss"
+    out_dir.mkdir(parents=True)
+    (out_dir / "screenshot.png").write_bytes(b"old")
+
+    child, screen, stream = _spawn(home)
+    try:
+        assert _pump_until(child, screen, stream, lambda s: "❯" in _text(s)), "no prompt"
+        child.send(
+            "scrape https://example.com --render-js false "
+            "--output-file ~/Desktop/sb-cli-test/ss/screenshot.png\r"
+        )
+        assert _pump_until(
+            child,
+            screen,
+            stream,
+            lambda s: "already exists" in _text(s) and "--overwrite" in _text(s),
+            timeout=10.0,
+        ), "overwrite error not shown before scrape"
+        t = _text(screen)
+        assert "Cannot write to '~/" not in t
+    finally:
+        child.close(force=True)
