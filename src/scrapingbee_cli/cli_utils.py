@@ -25,6 +25,18 @@ _REPL_PREVIEW_MAX_LINES = 30
 _REPL_PREVIEW_MAX_BYTES = 4000
 
 
+def display_path(path: str) -> str:
+    """Return an absolute path for user-facing output.
+
+    Absolute paths are the most reliable form for REPL click-to-open and
+    drag-copy (they survive wrap and match the absolute-path detector).
+    Relative paths like ``abc/screenshot.png`` also work via relative-path
+    link detection, but normalising at display time keeps ``Saved to …``
+    lines unambiguous and consistently clickable.
+    """
+    return str(Path(resolve_output_path(path)).resolve())
+
+
 def _format_bytes(n: int) -> str:
     if n >= 1_048_576:
         return f"{n / 1_048_576:.1f} MB"
@@ -33,43 +45,78 @@ def _format_bytes(n: int) -> str:
     return f"{n} B"
 
 
+_BINARY_MAGICS = (
+    b"\x89PNG\r\n",
+    b"\xff\xd8\xff",  # JPEG
+    b"%PDF",
+    b"GIF87a",
+    b"GIF89a",
+    b"PK\x03\x04",  # ZIP / Office Open XML
+    b"\x7fELF",
+    b"RIFF",  # WebP / WAV / etc.
+)
+
+
+def _is_text_payload(data: bytes) -> bool:
+    """Heuristic: treat as text unless recognised binary magic, an early NUL,
+    or a high ratio of control bytes in the head sample."""
+    if not data:
+        return True
+    for magic in _BINARY_MAGICS:
+        if data.startswith(magic):
+            return False
+    if data[:1] in (b"{", b"[", b"<", b"#"):
+        return True
+    if b"\x00" in data[:512]:
+        return False
+    sample = data[:512]
+    if sample:
+        control = sum(1 for b in sample if b < 32 and b not in (9, 10, 13))
+        if control / len(sample) > 0.30:
+            return False
+    return True
+
+
+def _repl_cache_path():
+    from pathlib import Path
+
+    cache_dir = Path.home() / ".cache" / "scrapingbee-cli"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / "last-output"
+
+
 def _maybe_repl_preview(data: bytes) -> tuple[bytes, str | None, str | None]:
     """If we're in REPL mode and `data` is a large text payload, shrink it
     down to a preview and save the full payload to a fixed cache path.
+
+    Binary payloads (screenshots, PDFs, etc.) are never printed inline —
+    they are cached and summarised instead, so the scrollback is not filled
+    with raw bytes.
 
     Triggers truncation on EITHER too many lines OR too many bytes — single-
     line minified HTML often hits the byte cap without ever wrapping, so a
     line-only check would let it through unchanged.
 
     Returns ``(bytes_to_print, summary_or_none, saved_path_or_none)``. Outside
-    REPL mode (or for binary data, or short outputs), returns ``(data, None,
-    None)`` unchanged so piped/redirected use is unaffected.
+    REPL mode, returns ``(data, None, None)`` unchanged so piped/redirected
+    use is unaffected.
     """
     if not data:
         return data, None, None
     if not is_repl_mode():
         return data, None, None
 
-    # Skip binary data (screenshots, PDFs, etc.) — keep the original behaviour.
-    is_text = data[:1] in (b"{", b"[", b"<", b"#") or b"\x00" not in data[:512]
-    if not is_text:
-        return data, None, None
-
-    # Always overwrite the ``last-output`` cache for every response, even
-    # short ones. Otherwise ``:view`` would happily display a stale large
-    # response from a previous command — the cache file would only get
-    # refreshed by responses big enough to trigger the truncation branch.
     full_path: str | None = None
     try:
-        from pathlib import Path
-
-        cache_dir = Path.home() / ".cache" / "scrapingbee-cli"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_path = cache_dir / "last-output"
+        cache_path = _repl_cache_path()
         cache_path.write_bytes(data)
         full_path = str(cache_path)
     except Exception:
         full_path = None
+
+    if not _is_text_payload(data):
+        summary = f"… binary output  ·  {_format_bytes(len(data))}  ·  not shown inline"
+        return b"", summary, full_path
 
     line_count = data.count(b"\n") + 1
     if len(data) <= _REPL_PREVIEW_MAX_BYTES and line_count <= _REPL_PREVIEW_MAX_LINES:
@@ -1940,7 +1987,9 @@ def write_output(
         # stdout/pipes clean for non-REPL use.
         from .theme import BEE_DIM, BEE_YELLOW, err_console
 
-        err_console.print(f"  [{BEE_DIM}]Saved to[/] [bold {BEE_YELLOW}]{resolved}[/]")
+        err_console.print(
+            f"  [{BEE_DIM}]Saved to[/] [bold {BEE_YELLOW}]{display_path(resolved)}[/]"
+        )
     else:
         # In REPL mode, truncate large text dumps to a tidy preview and surface
         # a path to the full output. Non-REPL invocations (`scrapingbee scrape ...`)
@@ -1950,18 +1999,21 @@ def write_output(
         # Only add a trailing newline for text-like content; binary data (PNG, PDF, etc.)
         # must not have extra bytes appended.
         if preview_data and not preview_data.endswith(b"\n"):
-            is_text = (
-                preview_data[:1] in (b"{", b"[", b"<", b"#") or b"\x00" not in preview_data[:512]
-            )
-            if is_text:
+            if _is_text_payload(preview_data):
                 click.echo()
         if repl_summary:
             from .theme import BEE_DIM, BEE_YELLOW, err_console
 
             err_console.print(f"  [{BEE_DIM}]{repl_summary}[/]")
             if repl_full_path:
-                err_console.print(
-                    f"  [bold {BEE_YELLOW}]:view[/] "
-                    f"[{BEE_DIM}]to scroll the full output  ·  or pass[/] "
-                    f"[bold {BEE_YELLOW}]--output-file FILE[/]"
-                )
+                if _is_text_payload(data):
+                    err_console.print(
+                        f"  [bold {BEE_YELLOW}]:view[/] "
+                        f"[{BEE_DIM}]to scroll the full output  ·  or pass[/] "
+                        f"[bold {BEE_YELLOW}]--output-file FILE[/]"
+                    )
+                else:
+                    err_console.print(
+                        f"  [{BEE_DIM}]pass[/] [bold {BEE_YELLOW}]--output-file FILE[/] "
+                        f"[{BEE_DIM}]to save (e.g. screenshot.png)[/]"
+                    )

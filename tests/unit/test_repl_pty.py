@@ -7,6 +7,8 @@ timing-sensitive, so each:
   * pumps **until a condition** (not a fixed sleep) for robustness on slow CI,
   * asserts the on-screen ``reverse`` highlight (deterministic in pyte) rather than the
     OS clipboard — which would need a platform tool and would touch the real clipboard.
+    The drag-copy path test hijacks ``pbcopy`` / ``wl-copy`` / ``xclip`` / ``xsel`` on
+    ``PATH`` so the copied bytes are captured without touching the real clipboard.
 
 The clipboard *write* itself is covered by a separate unit test (test_scrollback_selection.py).
 """
@@ -16,7 +18,9 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
@@ -35,10 +39,44 @@ if not os.path.exists(SB):
     SB = shutil.which("scrapingbee")
 needs_cli = pytest.mark.skipif(not SB, reason="scrapingbee console script not found")
 COLS, ROWS = 110, 32
+_MINIMAL_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
 # Unique markers for the scroll regression — must not appear in the banner/help.
 _SCROLL_TOP = "PTY_SCROLL_TOP_MARKER"
 _SCROLL_BOTTOM = "PTY_SCROLL_BOTTOM_MARKER"
+
+
+class _MockApiHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):  # noqa: A002
+        pass
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Spb-Cost", "5")
+        self.end_headers()
+        self.wfile.write(_MINIMAL_PNG)
+
+
+def _start_mock_api_server():
+    server = HTTPServer(("127.0.0.1", 0), _MockApiHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, port
+
+
+def _write_sitecustomize(tmp_path) -> None:
+    (tmp_path / "sitecustomize.py").write_text(
+        """\
+import os
+_port = os.environ.get("SCRAPINGBEE_MOCK_API_PORT")
+if _port:
+    import scrapingbee_cli.config as _config
+    _config.BASE_URL = f"http://127.0.0.1:{_port}"
+""",
+        encoding="utf-8",
+    )
 
 
 def _setup_exec_home(home, key: str = "dummy-pty-key") -> None:
@@ -51,13 +89,39 @@ def _setup_exec_home(home, key: str = "dummy-pty-key") -> None:
     )
 
 
-def _spawn(home, args=(), key="dummy-pty-key", *, cols=COLS, rows=ROWS, exec_enabled=False):
+def _setup_fake_clipboard(tmp_path):
+    clip_file = tmp_path / "clipboard.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    capture = f'cat > "{clip_file}"'
+    for name in ("pbcopy", "wl-copy", "xsel"):
+        tool = bin_dir / name
+        tool.write_text(f"#!/bin/sh\n{capture}\n", encoding="utf-8")
+        tool.chmod(0o755)
+    xclip = bin_dir / "xclip"
+    xclip.write_text(f'#!/bin/sh\nwhile [ "$1" ]; do shift; done\n{capture}\n', encoding="utf-8")
+    xclip.chmod(0o755)
+    return clip_file, bin_dir
+
+
+def _spawn(
+    home,
+    args=(),
+    key="dummy-pty-key",
+    *,
+    extra_env=None,
+    rows=ROWS,
+    cols=COLS,
+    exec_enabled=False,
+):
     if exec_enabled:
         _setup_exec_home(home, key)
     env = dict(os.environ)
     env.update(HOME=str(home), SCRAPINGBEE_API_KEY=key, TERM="xterm-256color", PWD=str(home))
     if exec_enabled:
         env["SCRAPINGBEE_ALLOW_EXEC"] = "1"
+    if extra_env:
+        env.update(extra_env)
     child = pexpect.spawn(
         SB,
         list(args),
@@ -141,6 +205,106 @@ def _drag(child, target, c1, c2):
     child.send(f"\x1b[<0;{c1 + 1};{target + 1}M")  # left press
     child.send(f"\x1b[<32;{c2 + 1};{target + 1}M")  # left-drag (motion)
     child.send(f"\x1b[<0;{c2 + 1};{target + 1}m")  # left release
+
+
+def _path_span_in_line(line: str, path: str) -> tuple[int, int]:
+    """Return inclusive ``(start, end)`` column indices for ``path`` in ``line``."""
+    start = line.find(path)
+    if start >= 0:
+        return start, start + len(path) - 1
+    basename = os.path.basename(path)
+    idx = line.find(basename)
+    assert idx >= 0, f"path not in line: {path!r} in {line!r}"
+    start = idx
+    while start > 0 and line[start - 1] not in " \t":
+        start -= 1
+    return start, idx + len(basename) - 1
+
+
+def _saved_path_drag_coords(screen, saved_path: str) -> tuple[int, int, int, int]:
+    """Return inclusive drag endpoints ``(r1, c1, r2, c2)`` for a Saved-to path."""
+    disp = list(screen.display)
+    basename = os.path.basename(saved_path)
+
+    saved_row = None
+    end_row = None
+    for y in range(11, ROWS - 4):
+        t = disp[y]
+        if "❯" in t or "─" in t:
+            continue
+        if t.strip().startswith("✓"):
+            break
+        if "Saved to" in t:
+            saved_row = y
+        if saved_row is not None and ("Saved to" in t or "/" in t or basename in t):
+            end_row = y
+
+    assert saved_row is not None and end_row is not None, (
+        f"path rows not found in:\n{_text(screen)}"
+    )
+
+    r1 = saved_row
+    while r1 <= end_row and "/" not in disp[r1]:
+        r1 += 1
+    assert r1 <= end_row, f"path start row not found in:\n{_text(screen)}"
+    c1 = disp[r1].find("/")
+
+    end_line = disp[end_row]
+    _, c2 = _path_span_in_line(end_line, saved_path)
+    return r1, c1, end_row, c2
+
+
+@needs_cli
+def test_drag_copy_saved_screenshot_path(tmp_path):
+    """Drag across a ``Saved to …/screenshot.png`` line copies the full path."""
+    server, port = _start_mock_api_server()
+    _write_sitecustomize(tmp_path)
+    clip_file, bin_dir = _setup_fake_clipboard(tmp_path)
+    (tmp_path / "abc").mkdir()
+    saved_path = str((tmp_path / "abc" / "screenshot.png").resolve())
+
+    extra_env = {
+        "PYTHONPATH": str(tmp_path),
+        "SCRAPINGBEE_MOCK_API_PORT": str(port),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
+    child, screen, stream = _spawn(tmp_path, extra_env=extra_env)
+    try:
+        assert _pump_until(child, screen, stream, lambda s: "❯" in _text(s)), "no command prompt"
+        child.send(
+            "scrape https://example.com --output-file abc/screenshot.png --render-js false\r"
+        )
+        assert _pump_until(
+            child,
+            screen,
+            stream,
+            lambda s: "screenshot.png" in _text(s) and "Saved to" in _text(s),
+            timeout=25.0,
+        ), f"Saved path not on screen:\n{_text(screen)}"
+        _pump(child, screen, stream, 0.3)
+
+        r1, c1, r2, c2 = _saved_path_drag_coords(screen, saved_path)
+
+        if clip_file.exists():
+            clip_file.unlink()
+        _drag_multi(child, r1, c1, r2, c2)
+        assert _pump_until(
+            child,
+            screen,
+            stream,
+            lambda s: clip_file.is_file() and clip_file.stat().st_size > 0,
+            timeout=5.0,
+        ), "clipboard capture file was not written"
+        copied = clip_file.read_text(encoding="utf-8").strip()
+        flat = copied.replace("\n", "")
+        assert flat.endswith(".png"), f"selection dropped final chars: {copied!r}"
+        assert not flat.endswith(".pn"), f"selection missing final char: {copied!r}"
+        assert os.path.realpath(flat) == os.path.realpath(saved_path), (
+            f"expected {saved_path!r}, got {copied!r}"
+        )
+    finally:
+        child.close(force=True)
+        server.shutdown()
 
 
 @needs_cli
@@ -417,10 +581,38 @@ def _has_session_default_skip_warning(screen, command: str, setting: str) -> boo
     )
 
 
+def _pump_until_transient(child, screen, stream, predicate, timeout=15.0, step=256):
+    """Like ``_pump_until`` but also catches short-lived screen states.
+
+    ``_pump_until`` feeds each PTY read (up to 64 KiB) to pyte in one go and
+    only then checks the predicate, so text that appears and scrolls off (or
+    is repainted over) within a single read is never observed. Feeding the
+    data in small slices and checking after each slice makes transient
+    states — like a warning printed just before command output streams in —
+    reliably detectable.
+    """
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            data = child.read_nonblocking(1 << 16, 0.2)
+        except pexpect.TIMEOUT:
+            continue
+        except pexpect.EOF:
+            break
+        for i in range(0, len(data), step):
+            stream.feed(data[i : i + step])
+            if predicate(screen):
+                return True
+    return predicate(screen)
+
+
 @needs_cli
 def test_session_default_skip_warning_on_screen(tmp_path):
     """Scrape-only session defaults warn on screen when a command ignores them."""
-    child, screen, stream = _spawn(tmp_path)
+    # Tall grid: the warning is appended to scrollback before the command
+    # output, so on a short screen later lines (help text, footer, background
+    # usage-refresh output on CI) can push it out of the visible window.
+    child, screen, stream = _spawn(tmp_path, rows=64)
     try:
         assert _pump_until(child, screen, stream, lambda s: "❯" in _text(s)), "no prompt"
         child.send(":set premium-proxy=true\r")
@@ -430,14 +622,16 @@ def test_session_default_skip_warning_on_screen(tmp_path):
             stream,
             lambda s: "premium-proxy" in _text(s) and "true" in _text(s),
         ), ":set did not apply premium-proxy=true"
-        child.send("google --help\r")
-        assert _pump_until(
+        # ``usage --help`` keeps the output short; the transient pump checks
+        # every intermediate screen state, not just the post-read one.
+        child.send("usage --help\r")
+        assert _pump_until_transient(
             child,
             screen,
             stream,
-            lambda s: _has_session_default_skip_warning(s, "google", "premium-proxy"),
+            lambda s: _has_session_default_skip_warning(s, "usage", "premium-proxy"),
             timeout=20.0,
-        ), "skip warning for premium-proxy on google not shown"
+        ), f"skip warning for premium-proxy on usage not shown; screen:\n{_text(screen)}"
     finally:
         child.close(force=True)
 

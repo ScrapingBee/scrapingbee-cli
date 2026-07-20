@@ -9,7 +9,10 @@ path is validated separately via a PTY harness (not a CI dep).
 from __future__ import annotations
 
 from scrapingbee_cli.interactive import (
+    _REL_PATH_RE,
     ScrollbackBuffer,
+    _resolve_path_str,
+    _selection_bounds,
     _slice_selection,
     _styled_with_selection,
 )
@@ -85,6 +88,61 @@ class TestSliceSelection:
         result = _slice_selection([line], (0, 5), (0, 45))
         assert result == "a" * 40
         assert "\n" not in result
+
+
+class TestSelectionBounds:
+    def test_includes_character_under_cursor(self):
+        text = "abc/screenshot.png"
+        bounds = _selection_bounds((0, 0), (0, 17))
+        assert bounds is not None
+        lo, hi = bounds
+        assert _slice_selection([text], lo, hi) == text
+
+    def test_single_character_drag(self):
+        text = "abc/screenshot.png"
+        bounds = _selection_bounds((0, 17), (0, 17))
+        assert bounds is not None
+        lo, hi = bounds
+        assert _slice_selection([text], lo, hi) == "g"
+
+    def test_reversed_endpoints(self):
+        text = "hello"
+        bounds = _selection_bounds((0, 4), (0, 1))
+        assert bounds is not None
+        lo, hi = bounds
+        assert _slice_selection([text], lo, hi) == "ello"
+
+    def test_none_when_incomplete(self):
+        assert _selection_bounds(None, (0, 0)) is None
+        assert _selection_bounds((0, 0), None) is None
+
+
+class TestResolvePathStr:
+    def test_relative_path_is_absolute(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        assert _resolve_path_str("abc/out.png") == str(tmp_path / "abc" / "out.png")
+
+    def test_tilde_expands(self, monkeypatch, tmp_path):
+        # Set both HOME (Unix) and USERPROFILE (Windows); expanduser picks the
+        # platform-appropriate variable.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        assert _resolve_path_str("~/file.txt") == str(tmp_path / "file.txt")
+
+
+class TestRelPathRe:
+    def test_matches_nested_relative_path(self):
+        m = _REL_PATH_RE.search("Saved to abc/screenshot.png")
+        assert m is not None
+        assert m.group(0) == "abc/screenshot.png"
+
+    def test_matches_bare_filename(self):
+        m = _REL_PATH_RE.search("see screenshot.png for details")
+        assert m is not None
+        assert m.group(0) == "screenshot.png"
+
+    def test_skips_url_like_tokens(self):
+        assert _REL_PATH_RE.search("https://example.com/x.png") is None
 
 
 class TestProvenanceAndSnapshot:

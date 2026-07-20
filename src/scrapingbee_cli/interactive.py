@@ -454,6 +454,44 @@ def _slice_selection(texts: list[str], lo: tuple[int, int], hi: tuple[int, int])
     return "\n".join([texts[0][lo_char:], *texts[1:-1], texts[-1][:hi_char]])
 
 
+def _selection_bounds(
+    anchor: tuple[int, int] | None,
+    cursor: tuple[int, int] | None,
+) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """Convert drag endpoints to half-open ``[lo, hi)`` slice bounds.
+
+    The mouse maps to the character *under* the cursor (inclusive), but
+    ``_slice_selection`` / ``_styled_with_selection`` use an exclusive end
+    index — without ``+ 1`` on the high endpoint, dragging through the last
+    character of a path drops it (``screenshot.pn`` instead of ``.png``).
+    """
+    if anchor is None or cursor is None:
+        return None
+    lo, hi = sorted((anchor, cursor))
+    return lo, (hi[0], hi[1] + 1)
+
+
+def _resolve_path_str(raw: str) -> str:
+    """Expand ``~`` and resolve relative paths against the cwd."""
+    expanded = os.path.expanduser(raw)
+    # ``expanduser("~/file")`` can retain the forward slash after a Windows
+    # home directory (``C:\Users\me/file``). ``abspath`` also normalises
+    # already-absolute paths, so apply it unconditionally.
+    return os.path.abspath(expanded)
+
+
+# Relative/bare filenames for link detection (``abc/out.png``, ``shot.png``).
+# Absolute paths are handled by ``_path_start_re`` inside ``run_repl``.
+_REL_PATH_RE = re.compile(
+    r"(?<![\w:./~])"
+    r"(?:"
+    r"(?:[\w][\w.-]*/)+[\w][\w.-]*"
+    r"|[\w][\w.-]*\.[\w]{2,8}"
+    r")"
+    r"(?![\w.])"
+)
+
+
 class ScrollbackBuffer:
     """In-memory line buffer that backs the scrollable output Window.
 
@@ -2811,13 +2849,6 @@ def run_repl(
     _path_start_re = re.compile(r"(?<![\w:])((?:\.{1,2}|~)?/)")
     _path_trim_chars = ".,;:!?)]}> '\"\t"
 
-    def _resolve_path_str(raw: str) -> str:
-        if raw.startswith("~/"):
-            return os.path.expanduser(raw)
-        if raw.startswith(("./", "../")):
-            return os.path.abspath(raw)
-        return raw
-
     def _resolve_clicked_path(raw: str) -> str | None:
         """Backwards-compat single-string resolver: return the resolved
         absolute path if it exists, else ``None``.
@@ -2964,10 +2995,12 @@ def run_repl(
                 anchor = _selection.get("anchor")
                 cursor = _selection.get("cursor")
                 if anchor is not None and cursor is not None and anchor != cursor:
-                    lo, hi = sorted((anchor, cursor))
-                    text = _extract_selection(lo, hi)
-                    if text:
-                        _copy_to_clipboard(text)
+                    bounds = _selection_bounds(anchor, cursor)
+                    if bounds is not None:
+                        lo, hi = bounds
+                        text = _extract_selection(lo, hi)
+                        if text:
+                            _copy_to_clipboard(text)
                     _selection["active"] = True  # keep the highlight visible
                     try:
                         app.invalidate()
@@ -3048,6 +3081,14 @@ def run_repl(
         """Yield ``(start, end, raw)`` for every existing path substring
         in ``text``. Non-overlapping; resumes scanning past each match.
         """
+        found: list[tuple[int, int, str]] = []
+
+        def _add(start: int, end: int, raw: str) -> None:
+            for s, e, _ in found:
+                if start < e and end > s:
+                    return
+            found.append((start, end, raw))
+
         i = 0
         while i < len(text):
             m = _path_start_re.search(text, i)
@@ -3056,12 +3097,17 @@ def run_repl(
             start = m.start()
             end, raw = _find_path_at(text, start)
             if raw is not None:
-                yield (start, end, raw)
+                _add(start, end, raw)
                 i = end
             else:
-                # No existing path here — advance past the ``/`` so we
-                # don't infinite-loop on the same candidate start.
                 i = m.end()
+
+        for m in _REL_PATH_RE.finditer(text):
+            raw = m.group(0)
+            if _path_exists_cached(_resolve_path_str(raw)):
+                _add(m.start(), m.end(), raw)
+
+        yield from sorted(found, key=lambda t: t[0])
 
     def _scrollback_click_handler(mouse_event):
         """Resolve a modifier-click on the scrollback to a path open.
@@ -3092,7 +3138,7 @@ def run_repl(
         if not fragments:
             return fragments
         text = "".join(t for _, t in fragments)
-        if "/" not in text and "~" not in text:
+        if "/" not in text and "~" not in text and "." not in text:
             return fragments
         # Build an offset map: position → (fragment_index, char_offset_in_fragment).
         # Used to split fragments at path boundaries.
@@ -3336,11 +3382,13 @@ def run_repl(
             if scrollback.current_length() != _selection.get("seen_len"):
                 _clear_selection()
             else:
-                lo, hi = sorted((_selection["anchor"], _selection["cursor"]))
-                visual_rows = [
-                    _styled_with_selection(row, meta[i][0], meta[i][1], lo, hi)
-                    for i, row in enumerate(visual_rows)
-                ]
+                bounds = _selection_bounds(_selection["anchor"], _selection["cursor"])
+                if bounds is not None:
+                    lo, hi = bounds
+                    visual_rows = [
+                        _styled_with_selection(row, meta[i][0], meta[i][1], lo, hi)
+                        for i, row in enumerate(visual_rows)
+                    ]
         # Cache rows + provenance so the scrollback mouse_handler can map a
         # click/drag position to a stable (line, char) without recomputing
         # wrap/scroll math.
