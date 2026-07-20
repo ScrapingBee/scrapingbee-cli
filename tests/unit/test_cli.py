@@ -783,6 +783,57 @@ class TestDocsCommand:
         mock_open.assert_not_called()
 
 
+class TestModeAutoGuards:
+    """Validation guards for --mode auto and --max-cost in the scrape command."""
+
+    def _invoke(self, args):
+        from unittest.mock import patch
+
+        from click.testing import CliRunner
+
+        from scrapingbee_cli.commands.scrape import scrape_cmd
+
+        runner = CliRunner()
+        with patch("scrapingbee_cli.commands.scrape.get_api_key", return_value="fake"):
+            with patch("scrapingbee_cli.commands.scrape.asyncio") as mock_asyncio:
+                mock_asyncio.run = lambda x: None
+                return runner.invoke(scrape_cmd, ["https://example.com", *args], obj={})
+
+    @pytest.mark.parametrize(
+        "conflicting",
+        [
+            ["--render-js", "true"],
+            ["--premium-proxy", "true"],
+            ["--stealth-proxy", "true"],
+            ["--transparent-status-code", "true"],
+            # presence (even "false") conflicts: the server rejects the combo.
+            ["--render-js", "false"],
+        ],
+    )
+    def test_mode_auto_rejects_conflicting_options(self, conflicting):
+        result = self._invoke(["--mode", "auto", *conflicting])
+        assert result.exit_code == 1
+        assert "--mode auto cannot be combined with" in result.output
+
+    def test_max_cost_requires_mode_auto(self):
+        result = self._invoke(["--max-cost", "10"])
+        assert result.exit_code == 1
+        assert "--max-cost requires --mode auto" in result.output
+
+    def test_max_cost_below_one_rejected(self):
+        result = self._invoke(["--mode", "auto", "--max-cost", "0"])
+        assert result.exit_code == 1
+        assert "max_cost must be between 1 and" in result.output
+
+    def test_mode_auto_alone_passes_guards(self):
+        result = self._invoke(["--mode", "auto"])
+        assert result.exit_code == 0
+
+    def test_mode_auto_with_max_cost_passes_guards(self):
+        result = self._invoke(["--mode", "auto", "--max-cost", "25"])
+        assert result.exit_code == 0
+
+
 class TestCrawlSaveReporting:
     """The CLI must report what actually landed on disk, not a blanket
     "Saved to …". A --save-pattern that matches nothing leaves an empty
