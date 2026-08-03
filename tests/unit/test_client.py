@@ -210,6 +210,7 @@ _FIRST_ARG = {
     "walmart_product": "12345",
     "youtube_search": "coffee",
     "youtube_metadata": "dQw4w9WgXcQ",
+    "youtube_subtitles": "dQw4w9WgXcQ",
     "chatgpt": "hello",
     "gemini": "hello",
 }
@@ -294,6 +295,85 @@ class TestMaxCostParam:
             with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
                 await client.scrape("https://example.com", mode="auto", retries=0)
             assert "max_cost" not in captured["params"]
+
+        asyncio.run(run())
+
+
+class TestYoutubeSubtitlesParams:
+    """Tests that youtube_subtitles hits the right path and forwards params only when set."""
+
+    def test_params_sent_when_set(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["path"] = path
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.youtube_subtitles(
+                    "dQw4w9WgXcQ",
+                    language="en",
+                    subtitle_origin="auto_generated",
+                    retries=0,
+                )
+            assert captured["path"] == "/youtube/subtitles"
+            assert captured["params"].get("video_id") == "dQw4w9WgXcQ"
+            assert captured["params"].get("language") == "en"
+            assert captured["params"].get("subtitle_origin") == "auto_generated"
+
+        asyncio.run(run())
+
+    def test_optional_params_omitted_when_unset(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.youtube_subtitles("dQw4w9WgXcQ", retries=0)
+            assert "language" not in captured["params"]
+            assert "subtitle_origin" not in captured["params"]
+
+        asyncio.run(run())
+
+
+class TestGooglePagesParam:
+    """Tests that google_search forwards pages only when set."""
+
+    def test_pages_sent_when_set(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search("coffee", page=2, pages=3, retries=0)
+            assert captured["params"].get("page") == 2
+            assert captured["params"].get("pages") == 3
+
+        asyncio.run(run())
+
+    def test_pages_omitted_when_unset(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search("coffee", retries=0)
+            assert "pages" not in captured["params"]
 
         asyncio.run(run())
 

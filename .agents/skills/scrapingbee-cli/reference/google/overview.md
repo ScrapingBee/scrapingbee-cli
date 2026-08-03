@@ -14,10 +14,11 @@ scrapingbee google --output-file serp.json "pizza new york" --country-code us
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `--search-type` | string | `classic`, `news`, `maps`, `lens`, `shopping`, `images`, `ai-mode`. |
+| `--search-type` | string | `classic`, `news`, `maps`, `lens`, `shopping`, `images`, `ai-mode`, `ads`. |
 | `--country-code` | string | ISO 3166-1 (e.g. us, gb, de). |
 | `--device` | string | `desktop` or `mobile`. |
 | `--page` | int | Page number (default 1). |
+| `--pages` | int | Consecutive pages to fetch starting at `--page` (default 1, max 10; 3 or fewer recommended). Combined into one response; cost is per fetched page. |
 | `--language` | string | Language code (e.g. en, fr, de). |
 | `--date-range` | string | `past-hour`, `past-day`, `past-week`, `past-month`, `past-year`. Restrict results by recency. |
 | `--nfpr` | true/false | Disable autocorrection. |
@@ -72,6 +73,7 @@ scrapingbee scrape --output-dir pages --input-file urls.txt --return-page-markdo
 | `maps` | `maps_results` (title, address, rating, phone) |
 | `lens` | `lens_results` (image_url, title, link) |
 | `ai-mode` | `ai_mode_answer.response_text` + `ai_mode_answer.links` |
+| `ads` | classic structure optimized for paid-ad visibility (`top_ads`, `bottom_ads`) |
 
 ```json
 {

@@ -22,6 +22,7 @@ from ..cli_utils import (
     _batch_options,
     _validate_geolocation,
     _validate_page,
+    _validate_pages,
     _validate_price_range,
     check_api_response,
     norm_val,
@@ -61,11 +62,14 @@ def _warn_empty_organic(data: bytes, search_type: str | None) -> None:
 @optgroup.option(
     "--search-type",
     type=NormalizedChoice(
-        ["classic", "news", "maps", "lens", "shopping", "images", "ai-mode"],
+        ["classic", "news", "maps", "lens", "shopping", "images", "ai-mode", "ads"],
         case_sensitive=False,
     ),
     default=None,
-    help="Search type. Default: classic. ai-mode returns an AI-generated answer.",
+    help=(
+        "Search type. Default: classic. ai-mode returns an AI-generated answer; "
+        "ads uses the classic structure optimized for paid-ad visibility."
+    ),
 )
 @optgroup.option(
     "--country-code",
@@ -80,6 +84,15 @@ def _warn_empty_organic(data: bytes, search_type: str | None) -> None:
     help="Device: desktop or mobile. news not available with mobile.",
 )
 @optgroup.option("--page", type=int, default=None, help="Page number (default: 1).")
+@optgroup.option(
+    "--pages",
+    type=int,
+    default=None,
+    help=(
+        "Number of consecutive pages to fetch starting at --page (default: 1, max: 10; "
+        "3 or fewer recommended). Results are combined into one response."
+    ),
+)
 @optgroup.option(
     "--language",
     type=str,
@@ -164,6 +177,7 @@ def google_cmd(
     country_code: str | None,
     device: str | None,
     page: int | None,
+    pages: int | None,
     language: str | None,
     nfpr: str | None,
     extra_params: str | None,
@@ -191,6 +205,7 @@ def google_cmd(
         click.echo(str(e), err=True)
         raise SystemExit(1)
     _validate_page(page)
+    _validate_pages(pages)
     _validate_price_range(min_price, max_price)
     _validate_geolocation(latitude, longitude, radius)
 
@@ -223,6 +238,7 @@ def google_cmd(
                 country_code=country_code,
                 device=device,
                 page=page,
+                pages=pages,
                 language=language,
                 nfpr=parse_bool(nfpr),
                 extra_params=extra_params,
@@ -273,6 +289,7 @@ def google_cmd(
                 country_code=country_code,
                 device=device,
                 page=page,
+                pages=pages,
                 language=language,
                 nfpr=parse_bool(nfpr),
                 extra_params=extra_params,

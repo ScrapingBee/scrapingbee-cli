@@ -1712,7 +1712,7 @@ def _print_help(commands: dict[str, str]) -> None:
         "Pages": ["scrape", "crawl"],
         "Search": ["google", "fast-search"],
         "Marketplaces": ["amazon-product", "amazon-search", "walmart-product", "walmart-search"],
-        "Media": ["youtube-search", "youtube-metadata"],
+        "Media": ["youtube-search", "youtube-metadata", "youtube-subtitles"],
         "AI": ["chatgpt"],
         "Learn": ["tutorial"],
         "Account": ["auth", "logout"],

@@ -11,6 +11,7 @@ from scrapingbee_cli.cli_utils import (
     _validate_geolocation,
     _validate_json_option,
     _validate_page,
+    _validate_pages,
     _validate_price_range,
     _validate_range,
 )
@@ -96,6 +97,26 @@ class TestValidatePriceRange:
     def test_min_gt_max_exits(self):
         with pytest.raises(SystemExit):
             _validate_price_range(100, 50)
+
+
+class TestValidatePages:
+    """Tests for _validate_pages()."""
+
+    def test_none_passes(self):
+        _validate_pages(None)
+
+    def test_valid_values_pass(self):
+        _validate_pages(1)
+        _validate_pages(3)
+        _validate_pages(10)
+
+    def test_zero_exits(self):
+        with pytest.raises(SystemExit):
+            _validate_pages(0)
+
+    def test_above_max_exits(self):
+        with pytest.raises(SystemExit):
+            _validate_pages(11)
 
 
 class TestValidateGeo:
@@ -224,6 +245,20 @@ class TestPresetAndJsScenarioCli:
         code, out, _ = cli_run(["google", "--help"])
         assert code == 0
         assert "ai-mode" in out
+
+    def test_google_search_type_includes_ads(self):
+        from tests.conftest import cli_run
+
+        code, out, _ = cli_run(["google", "--help"])
+        assert code == 0
+        assert "ads" in out
+
+    def test_google_pages_option(self):
+        from tests.conftest import cli_run
+
+        code, out, _ = cli_run(["google", "--help"])
+        assert code == 0
+        assert "--pages" in out
 
 
 class TestExtractFieldValues:
@@ -489,6 +524,16 @@ class TestCommandHelpOutput:
         assert code == 0
         assert "VIDEO_ID" in out or "video" in out.lower()
 
+    def test_youtube_subtitles_help(self):
+        from tests.conftest import cli_run
+
+        code, out, _ = cli_run(["youtube-subtitles", "--help"])
+        assert code == 0
+        assert "VIDEO_ID" in out or "video" in out.lower()
+        for flag in ("--language", "--subtitle-origin"):
+            assert flag in out, f"{flag} should appear in youtube-subtitles --help"
+        assert "auto-generated" in out and "uploader-provided" in out
+
     def test_walmart_search_help(self):
         from tests.conftest import cli_run
 
@@ -706,6 +751,7 @@ class TestCommandHelpOutput:
             "walmart-product",
             "youtube-search",
             "youtube-metadata",
+            "youtube-subtitles",
             "chatgpt",
             "gemini",
             "export",

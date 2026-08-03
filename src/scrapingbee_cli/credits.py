@@ -18,6 +18,7 @@ ESTIMATED_CREDITS: dict[str, str] = {
     "walmart-product": "10-15",
     "youtube-search": "5",
     "youtube-metadata": "5",
+    "youtube-subtitles": "5",
     "chatgpt": "15",
     "gemini": "15",
 }

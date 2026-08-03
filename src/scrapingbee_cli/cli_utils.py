@@ -1515,6 +1515,14 @@ def _validate_page(value: int | None, name: str = "page") -> None:
         raise SystemExit(1)
 
 
+def _validate_pages(value: int | None, max_pages: int = 10) -> None:
+    """Validate a page-count parameter (1 <= pages <= max_pages)."""
+    _validate_page(value, name="pages")
+    if value is not None and value > max_pages:
+        click.echo(f"pages must be at most {max_pages}", err=True)
+        raise SystemExit(1)
+
+
 def _validate_price_range(min_price: float | None, max_price: float | None) -> None:
     """Validate min_price/max_price: non-negative and min <= max."""
     if min_price is not None and min_price < 0:

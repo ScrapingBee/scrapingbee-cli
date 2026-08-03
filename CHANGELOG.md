@@ -5,13 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.5.2] - TBD
+## [1.6.0] - TBD
 
 ### Added
 
 - **Auto-Mode on `scrape` (`--mode auto`)** — the API picks the cheapest scraping config that succeeds (tries cheap → expensive, stops at the first success) and charges only for the winning config (0 credits if all fail). GET only. Forwarded to the API as `mode=auto` when set, omitted otherwise. Cannot be combined with `--render-js`, `--premium-proxy`, `--stealth-proxy`, or `--transparent-status-code` (Auto-Mode selects these itself) — the CLI rejects such combinations before making a request.
 - **`--max-cost` on `scrape`** — cap the credits a request may cost (integer ≥ 1). Requires `--mode auto`; omit for an uncapped budget. Forwarded to the API as `max_cost` when set, omitted otherwise.
 - The verbose output (`-v`) now surfaces the `Spb-auto-cost` response header as `Auto Credit Cost` (the credits actually charged for the winning Auto-Mode config), alongside the existing `Credit Cost`.
+- **`youtube-subtitles` command** — fetch video captions/transcripts from the YouTube Subtitles API (5 credits per request). Accepts a video ID or full YouTube URL, `--language` (ISO code) and `--subtitle-origin` (`auto-generated` / `uploader-provided`), and supports batch via `--input-file` like the other YouTube commands.
+- **`--pages` on `google`** — fetch up to 10 consecutive result pages starting at `--page` in a single combined response (3 or fewer recommended; cost is per fetched page).
+- **`--search-type ads` on `google`** — classic-result structure optimized for paid-ad visibility.
 
 ## [1.5.1] - 2026-07-20
 
