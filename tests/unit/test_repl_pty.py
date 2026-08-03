@@ -657,19 +657,20 @@ def test_session_default_skip_warning_on_screen(tmp_path):
             stream,
             lambda s: "premium-proxy" in _text(s) and "true" in _text(s),
         ), ":set did not apply premium-proxy=true"
-        child.send("google --help\r")
-        # Match on the raw stream, not the screen: the warning is one line
-        # printed before the full --help output, which scrolls it out of the
-        # 32-row viewport — a screen predicate only wins the race when an
-        # intermediate frame happens to be captured.
-        matched, _ = _pump_until_raw(
+        # ``usage --help`` keeps the output short so the warning stays on
+        # screen; the transient pump checks every intermediate screen state,
+        # not just the post-read one. A long help (e.g. ``google --help``)
+        # is unreliable here: the differential renderer may repaint straight
+        # to the final frame without ever emitting the scrolled-off warning
+        # into the PTY stream.
+        child.send("usage --help\r")
+        assert _pump_until_transient(
             child,
             screen,
             stream,
-            lambda t: _has_session_default_skip_warning(t, "google", "premium-proxy"),
+            lambda s: _has_session_default_skip_warning(_text(s), "usage", "premium-proxy"),
             timeout=20.0,
-        )
-        assert matched, "skip warning for premium-proxy on google not shown"
+        ), f"skip warning for premium-proxy on usage not shown; screen:\n{_text(screen)}"
     finally:
         child.close(force=True)
 
