@@ -73,7 +73,23 @@ Blocked? See [reference/proxy/strategies.md](reference/proxy/strategies.md).
 | `--timeout` | int | Timeout ms (1000–140000). Scrape job timeout on ScrapingBee. The CLI sets the HTTP client (aiohttp) timeout to this value in seconds plus 30 s (for send/receive) so the client does not give up before the API responds. |
 | `--custom-google` / `--transparent-status-code` | — | Google (15 credits), target status. |
 | `--tag` | string | Optional label included in API response headers. |
+| `--mode` | auto | Auto-Mode: API picks the cheapest config that succeeds; charged only for the winning config. GET only. See [Auto-Mode](#auto-mode). |
+| `--max-cost` | int | Cap credits a request may cost (≥ 1). Requires `--mode auto`; omit = uncapped. |
 | `-X` / `-d` | — | Method (GET, POST, or PUT), body for POST/PUT. The request **to ScrapingBee** is always `application/x-www-form-urlencoded`; use form body (e.g. `KEY_1=VALUE_1`). For POST/PUT use **`--render-js false`** so the request is forwarded without the browser tunnel. |
+
+## Auto-Mode
+
+`--mode auto` lets the API choose the cheapest scraping config that successfully fetches the page. It tries configs from cheap to expensive (1 basic → 5 JS → 10 premium → 25 premium+JS → 75 stealth), stops at the first success, and **charges only for the winning config** (0 credits if every config fails).
+
+- GET only.
+- Cannot be combined with `--render-js`, `--premium-proxy`, `--stealth-proxy`, or `--transparent-status-code` — Auto-Mode selects those itself, and the CLI rejects the combination before making a request.
+- Add `--max-cost N` (integer ≥ 1) to cap the credits a single request may spend; omit it for an uncapped budget. `--max-cost` requires `--mode auto`.
+- The credits actually charged come back in the `Spb-auto-cost` response header (shown as `Auto Credit Cost` with `-v`), alongside the usual `Spb-cost`.
+
+```bash
+scrapingbee scrape "https://example.com" --mode auto
+scrapingbee scrape "https://example.com" --mode auto --max-cost 25
+```
 
 ## RAG / chunked output
 

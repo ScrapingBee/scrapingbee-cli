@@ -229,6 +229,75 @@ class TestTagParam:
         assert "tag" not in captured["params"]
 
 
+class TestModeParam:
+    """Tests that scrape forwards mode=auto only when set, and omits it otherwise."""
+
+    def test_mode_sent_when_set(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.scrape("https://example.com", mode="auto", retries=0)
+            assert captured["params"].get("mode") == "auto"
+
+        asyncio.run(run())
+
+    def test_mode_omitted_when_unset(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.scrape("https://example.com", retries=0)
+            assert "mode" not in captured["params"]
+
+        asyncio.run(run())
+
+
+class TestMaxCostParam:
+    """Tests that scrape forwards max_cost only when set, and omits it otherwise."""
+
+    @pytest.mark.parametrize("value", [1, 5, 25, 75])
+    def test_max_cost_sent_when_set(self, value):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.scrape("https://example.com", mode="auto", max_cost=value, retries=0)
+            assert captured["params"].get("max_cost") == str(value)
+
+        asyncio.run(run())
+
+    def test_max_cost_omitted_when_unset(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.scrape("https://example.com", mode="auto", retries=0)
+            assert "max_cost" not in captured["params"]
+
+        asyncio.run(run())
+
+
 class TestGoogleDateRange:
     """Tests that google_search forwards date_range only when set."""
 
