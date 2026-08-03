@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import sys
 from io import BytesIO
+from pathlib import Path
 
 import click
 import pytest
@@ -13,8 +14,10 @@ import pytest
 from scrapingbee_cli.cli_utils import (
     BOOL_STR,
     NormalizedChoice,
+    _maybe_repl_preview,
     build_scrape_kwargs,
     chunk_text,
+    display_path,
     parse_bool,
     scrape_kwargs_to_api_params,
     write_output,
@@ -415,6 +418,21 @@ class TestWriteOutput:
         write_output(b"hello world", {}, 200, str(out), verbose=False)
         assert out.read_bytes() == b"hello world"
 
+    def test_saved_to_prints_absolute_path(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        captured: list[str] = []
+        monkeypatch.setattr(
+            "scrapingbee_cli.theme.err_console.print",
+            lambda msg, **_: captured.append(msg),
+        )
+        (tmp_path / "out").mkdir()
+        write_output(b"png", {}, 200, "out/screenshot.png", verbose=False)
+        abs_path = str((tmp_path / "out" / "screenshot.png").resolve())
+        assert captured
+        assert abs_path in captured[0]
+        assert captured[0].startswith("  [")
+        assert Path(abs_path).is_absolute()
+
     def test_extracts_field_to_file(self, tmp_path) -> None:
         data = b'{"results": [{"url": "https://a.com"}, {"url": "https://b.com"}]}'
         out = tmp_path / "urls.txt"
@@ -497,6 +515,82 @@ class TestWriteOutput:
         # contain that substring (e.g. this test's own name) once write_output
         # echoes the saved path.
         assert "Credit Cost (estimated)" not in err
+
+    def test_repl_binary_not_written_to_stdout(self, monkeypatch, tmp_path) -> None:
+        """REPL mode: PNG bytes must not land in scrollback stdout — summarise instead."""
+        buf = BytesIO()
+        fake = type(
+            "FakeStdout",
+            (),
+            {
+                "buffer": buf,
+                "write": buf.write,
+                "flush": lambda self: None,
+            },
+        )()
+        monkeypatch.setattr(sys, "stdout", fake)
+        monkeypatch.setattr("scrapingbee_cli.cli_utils.is_repl_mode", lambda: True)
+        monkeypatch.setattr(
+            "scrapingbee_cli.cli_utils._repl_cache_path",
+            lambda: tmp_path / "last-output",
+        )
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 5000
+        write_output(png, {}, 200, None, verbose=False)
+        assert buf.getvalue() == b""
+        assert (tmp_path / "last-output").read_bytes() == png
+
+
+class TestDisplayPath:
+    def test_relative_becomes_absolute(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "abc").mkdir()
+        target = (tmp_path / "abc" / "screenshot.png").resolve()
+        assert display_path("abc/screenshot.png") == str(target)
+
+    def test_bare_filename_becomes_absolute(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert display_path("screenshot.png") == str((tmp_path / "screenshot.png").resolve())
+
+    def test_tilde_prefixed_filename_stays_literal(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert display_path("~data.csv") == str((tmp_path / "~data.csv").resolve())
+
+
+class TestMaybeReplPreview:
+    def test_binary_returns_summary_not_bytes(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr("scrapingbee_cli.cli_utils.is_repl_mode", lambda: True)
+        monkeypatch.setattr(
+            "scrapingbee_cli.cli_utils._repl_cache_path",
+            lambda: tmp_path / "last-output",
+        )
+        png = b"\x89PNG\r\n\x1a\n" + b"\xff" * 8000
+        preview, summary, path = _maybe_repl_preview(png)
+        assert preview == b""
+        assert summary is not None
+        assert "binary output" in summary
+        assert path == str(tmp_path / "last-output")
+        assert (tmp_path / "last-output").read_bytes() == png
+
+    def test_large_text_still_truncates(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr("scrapingbee_cli.cli_utils.is_repl_mode", lambda: True)
+        monkeypatch.setattr(
+            "scrapingbee_cli.cli_utils._repl_cache_path",
+            lambda: tmp_path / "last-output",
+        )
+        data = b"{" + b"x" * 5000 + b"}"
+        preview, summary, path = _maybe_repl_preview(data)
+        assert len(preview) < len(data)
+        assert summary is not None
+        assert "preview truncated" in summary
+        assert path == str(tmp_path / "last-output")
+
+    def test_outside_repl_unchanged(self, monkeypatch) -> None:
+        monkeypatch.setattr("scrapingbee_cli.cli_utils.is_repl_mode", lambda: False)
+        png = b"\x89PNG\r\n" + b"\xff" * 100
+        preview, summary, path = _maybe_repl_preview(png)
+        assert preview == png
+        assert summary is None
+        assert path is None
 
 
 class TestEstimatedCredits:

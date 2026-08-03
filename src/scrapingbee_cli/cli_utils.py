@@ -6,6 +6,7 @@ import fnmatch
 import json
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 import click
@@ -24,6 +25,18 @@ _REPL_PREVIEW_MAX_LINES = 30
 _REPL_PREVIEW_MAX_BYTES = 4000
 
 
+def display_path(path: str) -> str:
+    """Return an absolute path for user-facing output.
+
+    Absolute paths are the most reliable form for REPL click-to-open and
+    drag-copy (they survive wrap and match the absolute-path detector).
+    Relative paths like ``abc/screenshot.png`` also work via relative-path
+    link detection, but normalising at display time keeps ``Saved to …``
+    lines unambiguous and consistently clickable.
+    """
+    return str(Path(resolve_output_path(path)).resolve())
+
+
 def _format_bytes(n: int) -> str:
     if n >= 1_048_576:
         return f"{n / 1_048_576:.1f} MB"
@@ -32,43 +45,78 @@ def _format_bytes(n: int) -> str:
     return f"{n} B"
 
 
+_BINARY_MAGICS = (
+    b"\x89PNG\r\n",
+    b"\xff\xd8\xff",  # JPEG
+    b"%PDF",
+    b"GIF87a",
+    b"GIF89a",
+    b"PK\x03\x04",  # ZIP / Office Open XML
+    b"\x7fELF",
+    b"RIFF",  # WebP / WAV / etc.
+)
+
+
+def _is_text_payload(data: bytes) -> bool:
+    """Heuristic: treat as text unless recognised binary magic, an early NUL,
+    or a high ratio of control bytes in the head sample."""
+    if not data:
+        return True
+    for magic in _BINARY_MAGICS:
+        if data.startswith(magic):
+            return False
+    if data[:1] in (b"{", b"[", b"<", b"#"):
+        return True
+    if b"\x00" in data[:512]:
+        return False
+    sample = data[:512]
+    if sample:
+        control = sum(1 for b in sample if b < 32 and b not in (9, 10, 13))
+        if control / len(sample) > 0.30:
+            return False
+    return True
+
+
+def _repl_cache_path():
+    from pathlib import Path
+
+    cache_dir = Path.home() / ".cache" / "scrapingbee-cli"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / "last-output"
+
+
 def _maybe_repl_preview(data: bytes) -> tuple[bytes, str | None, str | None]:
     """If we're in REPL mode and `data` is a large text payload, shrink it
     down to a preview and save the full payload to a fixed cache path.
+
+    Binary payloads (screenshots, PDFs, etc.) are never printed inline —
+    they are cached and summarised instead, so the scrollback is not filled
+    with raw bytes.
 
     Triggers truncation on EITHER too many lines OR too many bytes — single-
     line minified HTML often hits the byte cap without ever wrapping, so a
     line-only check would let it through unchanged.
 
     Returns ``(bytes_to_print, summary_or_none, saved_path_or_none)``. Outside
-    REPL mode (or for binary data, or short outputs), returns ``(data, None,
-    None)`` unchanged so piped/redirected use is unaffected.
+    REPL mode, returns ``(data, None, None)`` unchanged so piped/redirected
+    use is unaffected.
     """
     if not data:
         return data, None, None
     if not is_repl_mode():
         return data, None, None
 
-    # Skip binary data (screenshots, PDFs, etc.) — keep the original behaviour.
-    is_text = data[:1] in (b"{", b"[", b"<", b"#") or b"\x00" not in data[:512]
-    if not is_text:
-        return data, None, None
-
-    # Always overwrite the ``last-output`` cache for every response, even
-    # short ones. Otherwise ``:view`` would happily display a stale large
-    # response from a previous command — the cache file would only get
-    # refreshed by responses big enough to trigger the truncation branch.
     full_path: str | None = None
     try:
-        from pathlib import Path
-
-        cache_dir = Path.home() / ".cache" / "scrapingbee-cli"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_path = cache_dir / "last-output"
+        cache_path = _repl_cache_path()
         cache_path.write_bytes(data)
         full_path = str(cache_path)
     except Exception:
         full_path = None
+
+    if not _is_text_payload(data):
+        summary = f"… binary output  ·  {_format_bytes(len(data))}  ·  not shown inline"
+        return b"", summary, full_path
 
     line_count = data.count(b"\n") + 1
     if len(data) <= _REPL_PREVIEW_MAX_BYTES and line_count <= _REPL_PREVIEW_MAX_LINES:
@@ -243,7 +291,13 @@ def _batch_options(f: Any) -> Any:
         default=None,
         help="CSV input: column name or 0-based index.",
     )(f)
-    f = click.option("--output-dir", "output_dir", default=None, help="Batch output folder.")(f)
+    f = click.option(
+        "--output-dir",
+        "output_dir",
+        type=click.Path(),
+        default=None,
+        help="Batch output folder.",
+    )(f)
     f = click.option(
         "--output-format",
         "output_format",
@@ -313,21 +367,94 @@ def _batch_options(f: Any) -> Any:
     return f
 
 
+def resolve_output_path(path: str) -> str:
+    """Expand a leading ``~/`` (current user only).
+
+    Only ``~`` and paths starting with ``~/`` (or ``~\\`` on Windows) are
+    expanded. Bare filenames like ``~data.csv`` and foreign homes like
+    ``~root/x`` are left literal — ``Path.expanduser()`` would otherwise
+    raise ``RuntimeError`` or write into another user's home.
+    """
+    if path == "~" or path.startswith("~/") or (sys.platform == "win32" and path.startswith("~\\")):
+        return str(Path(path).expanduser())
+    return path
+
+
+def ensure_output_file_ready(
+    path: str,
+    *,
+    overwrite: bool = False,
+    skip_overwrite_check: bool = False,
+) -> str:
+    """Validate an output file path before any API work starts.
+
+    Expands ``~/``, creates parent directories, and checks overwrite policy.
+    Returns the resolved path.
+    """
+    resolved = resolve_output_path(path)
+    parent = Path(resolved).parent
+    if str(parent) and not parent.exists():
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            click.echo(f"Cannot create directory '{parent}': {e.strerror}", err=True)
+            raise SystemExit(1)
+    if not skip_overwrite_check:
+        confirm_overwrite(resolved, overwrite)
+    return resolved
+
+
+def ensure_output_dir_ready(path: str) -> str:
+    """Expand ``~/`` and create an output directory before API work."""
+    resolved = resolve_output_path(path)
+    try:
+        Path(resolved).mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        click.echo(f"Cannot create directory '{resolved}': {e.strerror}", err=True)
+        raise SystemExit(1)
+    return resolved
+
+
+def ensure_input_file_ready(path: str) -> str:
+    """Validate an input file path before any API work starts.
+
+    Expands ``~/`` and ensures the file exists and is readable. Stdin (``-``) is
+    passed through unchanged.
+    """
+    if path == "-":
+        return path
+    resolved = resolve_output_path(path)
+    p = Path(resolved)
+    if not p.is_file():
+        if p.exists():
+            click.echo(f"Not a file: '{resolved}'", err=True)
+        else:
+            click.echo(f"Input file not found: '{resolved}'", err=True)
+        raise SystemExit(1)
+    try:
+        with open(resolved, "rb"):
+            pass
+    except OSError as e:
+        click.echo(f"Cannot read from '{resolved}': {e.strerror}", err=True)
+        raise SystemExit(1)
+    return resolved
+
+
 def confirm_overwrite(path: str | None, overwrite: bool = False) -> None:
     """If path exists, prompt for confirmation unless --overwrite is set."""
     if not path:
         return
-    from pathlib import Path
+    resolved = resolve_output_path(path)
 
-    if Path(path).exists() and not overwrite:
+    if Path(resolved).exists() and not overwrite:
         # In REPL mode, prompt_toolkit owns the TTY (full-screen / alt-buffer),
         # so click.confirm reads from sys.stdin and blocks forever. Surface
         # the conflict as an error and tell the user to pass --overwrite.
         if is_repl_mode():
             raise click.UsageError(
-                f"'{path}' already exists. Re-run with --overwrite to replace it."
+                f"'{resolved}' already exists. Re-run with --overwrite to replace it."
             )
-        if not click.confirm(f"'{path}' already exists. Overwrite?"):
+        if not click.confirm(f"'{resolved}' already exists. Overwrite?"):
             click.echo("Cancelled.", err=True)
             raise SystemExit(0)
 
@@ -379,10 +506,6 @@ def store_common_options(obj: dict, **kwargs: Any) -> None:
     has_input = bool(obj.get("input_file"))
     has_output_file = bool(obj.get("output_file"))
     has_output_dir = bool(obj.get("output_dir"))
-
-    # Check if output file already exists (skip for --update-csv which intentionally overwrites)
-    if has_output_file and not obj.get("update_csv"):
-        confirm_overwrite(obj["output_file"], obj.get("overwrite", False))
 
     # Mutual exclusion: --output-file and --output-dir
     if has_output_file and has_output_dir:
@@ -519,6 +642,21 @@ def store_common_options(obj: dict, **kwargs: Any) -> None:
                     err=True,
                 )
             raise SystemExit(1)
+
+    # Resolve paths before any API work (expand ~, mkdir outputs, validate inputs).
+    input_file_path = obj.get("input_file")
+    if isinstance(input_file_path, str):
+        obj["input_file"] = ensure_input_file_ready(input_file_path)
+    output_file_path = obj.get("output_file")
+    if isinstance(output_file_path, str):
+        obj["output_file"] = ensure_output_file_ready(
+            output_file_path,
+            overwrite=bool(obj.get("overwrite", False)),
+            skip_overwrite_check=bool(obj.get("update_csv")),
+        )
+    output_dir_path = obj.get("output_dir")
+    if isinstance(output_dir_path, str) and output_dir_path:
+        obj["output_dir"] = ensure_output_dir_ready(output_dir_path)
 
 
 def _parse_path(path: str) -> list[tuple[str, Any]]:
@@ -1752,6 +1890,8 @@ def write_output(
     fields: str | None = None,
     command: str | None = None,
     credit_cost: int | None = None,
+    overwrite: bool = False,
+    skip_overwrite_check: bool = True,
 ) -> None:
     """Write response data to file or stdout; optionally print verbose headers.
 
@@ -1759,6 +1899,11 @@ def write_output(
     language. When *extract_field* is set, extract from JSON using a path
     expression. When *fields* is set, filter JSON to specified fields.
     Precedence: *smart_extract* > *extract_field* > *fields*.
+
+    *skip_overwrite_check* defaults to ``True`` because callers normally run
+    ``ensure_output_file_ready`` on the same path earlier. Pass
+    ``skip_overwrite_check=False`` when the final path may differ from the
+    early-validated one (e.g. scrape auto-appends an extension).
     """
     if verbose:
         if is_repl_mode():
@@ -1825,10 +1970,20 @@ def write_output(
     elif fields:
         data = _filter_fields(data, fields)
     if output_path:
+        resolved = resolve_output_path(output_path)
+        parent = Path(resolved).parent
+        if str(parent) and not parent.exists():
+            try:
+                parent.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                click.echo(f"Cannot create directory '{parent}': {e.strerror}", err=True)
+                raise SystemExit(1)
+        if not skip_overwrite_check:
+            confirm_overwrite(resolved, overwrite)
         try:
-            fh = open(output_path, "wb")
+            fh = open(resolved, "wb")
         except OSError as e:
-            click.echo(f"Cannot write to '{output_path}': {e.strerror}", err=True)
+            click.echo(f"Cannot write to '{resolved}': {e.strerror}", err=True)
             raise SystemExit(1)
         with fh:
             fh.write(data)
@@ -1838,7 +1993,9 @@ def write_output(
         # stdout/pipes clean for non-REPL use.
         from .theme import BEE_DIM, BEE_YELLOW, err_console
 
-        err_console.print(f"  [{BEE_DIM}]Saved to[/] [bold {BEE_YELLOW}]{output_path}[/]")
+        err_console.print(
+            f"  [{BEE_DIM}]Saved to[/] [bold {BEE_YELLOW}]{display_path(resolved)}[/]"
+        )
     else:
         # In REPL mode, truncate large text dumps to a tidy preview and surface
         # a path to the full output. Non-REPL invocations (`scrapingbee scrape ...`)
@@ -1848,18 +2005,21 @@ def write_output(
         # Only add a trailing newline for text-like content; binary data (PNG, PDF, etc.)
         # must not have extra bytes appended.
         if preview_data and not preview_data.endswith(b"\n"):
-            is_text = (
-                preview_data[:1] in (b"{", b"[", b"<", b"#") or b"\x00" not in preview_data[:512]
-            )
-            if is_text:
+            if _is_text_payload(preview_data):
                 click.echo()
         if repl_summary:
             from .theme import BEE_DIM, BEE_YELLOW, err_console
 
             err_console.print(f"  [{BEE_DIM}]{repl_summary}[/]")
             if repl_full_path:
-                err_console.print(
-                    f"  [bold {BEE_YELLOW}]:view[/] "
-                    f"[{BEE_DIM}]to scroll the full output  ·  or pass[/] "
-                    f"[bold {BEE_YELLOW}]--output-file FILE[/]"
-                )
+                if _is_text_payload(data):
+                    err_console.print(
+                        f"  [bold {BEE_YELLOW}]:view[/] "
+                        f"[{BEE_DIM}]to scroll the full output  ·  or pass[/] "
+                        f"[bold {BEE_YELLOW}]--output-file FILE[/]"
+                    )
+                else:
+                    err_console.print(
+                        f"  [{BEE_DIM}]pass[/] [bold {BEE_YELLOW}]--output-file FILE[/] "
+                        f"[{BEE_DIM}]to save (e.g. screenshot.png)[/]"
+                    )

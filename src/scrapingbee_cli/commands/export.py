@@ -93,10 +93,12 @@ def export_cmd(
     input_path = Path(input_dir).resolve()
     output_file = obj.get("output_file")
 
-    # Check if output file already exists
-    from ..cli_utils import confirm_overwrite
+    # Check if output file already exists and prepare destination before reading inputs.
+    from ..cli_utils import ensure_output_file_ready
 
-    confirm_overwrite(output_file, overwrite)
+    if output_file:
+        output_file = ensure_output_file_ready(output_file, overwrite=overwrite)
+        obj["output_file"] = output_file
 
     # Load manifest for URL → relative-path mapping (optional)
     # Supports both old format (string values) and new format (dict values with "file" key).
