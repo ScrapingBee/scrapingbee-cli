@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`youtube-subtitles` command** — fetch video captions/transcripts from the YouTube Subtitles API (5 credits per request). Accepts a video ID or full YouTube URL, `--language` (ISO code) and `--subtitle-origin` (`auto-generated` / `uploader-provided`), and supports batch via `--input-file` like the other YouTube commands.
 - **`--pages` on `google`** — fetch up to 10 consecutive result pages starting at `--page` in a single combined response (3 or fewer recommended; cost is per fetched page).
 - **`--search-type ads` on `google`** — classic-result structure optimized for paid-ad visibility.
+- **`--nb-results` on `google`** — requested number of results per page. Undocumented API parameter, verified accepted by the API (Google may return more or fewer results than requested).
+- **`--autoselect-variant` on `amazon-product`** — auto-select the default/most-popular product variant, matching the existing `amazon-search` flag. Undocumented API parameter, verified accepted by the API.
+
+### Changed
+
+- **Header-based authorization** — all API requests now authenticate via the `Authorization: Bearer` header instead of the deprecated `api_key` query parameter, so the key no longer appears in request URLs (or anything that logs them). `crawl` is the one exception: its Scrapy middleware (`scrapy-scrapingbee`) still builds `api_key` URLs and will migrate separately.
 
 ## [1.5.1] - 2026-07-20
 

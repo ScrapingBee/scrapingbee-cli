@@ -260,6 +260,20 @@ class TestPresetAndJsScenarioCli:
         assert code == 0
         assert "--pages" in out
 
+    def test_google_nb_results_option(self):
+        from tests.conftest import cli_run
+
+        code, out, _ = cli_run(["google", "--help"])
+        assert code == 0
+        assert "--nb-results" in out
+
+    def test_amazon_product_autoselect_variant_option(self):
+        from tests.conftest import cli_run
+
+        code, out, _ = cli_run(["amazon-product", "--help"])
+        assert code == 0
+        assert "--autoselect-variant" in out
+
 
 class TestExtractFieldValues:
     """Tests for _extract_field_values()."""

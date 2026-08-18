@@ -43,10 +43,13 @@ class Client:
             else aiohttp.TCPConnector(ssl=ssl_context)
         )
         timeout = aiohttp.ClientTimeout(total=self.timeout)
+        # Header-based auth: the api_key query parameter is deprecated for
+        # new integrations, so authenticate every request via the session.
+        session_headers = user_agent_headers() | {"Authorization": f"Bearer {self.api_key}"}
         self._session = aiohttp.ClientSession(
             connector=connector,
             timeout=timeout,
-            headers=user_agent_headers(),
+            headers=session_headers,
         )
         return self
 
@@ -67,7 +70,6 @@ class Client:
         headers: dict[str, str] | None = None,
     ) -> tuple[bytes, dict, int]:
         params = _clean_params(params)
-        params.setdefault("api_key", self.api_key)
         url = f"{self.base_url}{path}" if path else self.base_url
         session = self._ensure_session()
         req_kwargs: dict[str, Any] = {"params": params}
@@ -114,7 +116,6 @@ class Client:
         headers: dict[str, str] | None = None,
     ) -> tuple[bytes, dict, int]:
         params = _clean_params(params)
-        params.setdefault("api_key", self.api_key)
         url = f"{self.base_url}{path}" if path else self.base_url
         session = self._ensure_session()
         req_kwargs: dict[str, Any] = {"params": params}
@@ -243,7 +244,6 @@ class Client:
                     body_out, out_headers, status = await self._get("", params, headers=req_headers)
                 else:
                     params_clean = _clean_params(params)
-                    params_clean["api_key"] = self.api_key
                     # ScrapingBee API expects POST to it as application/x-www-form-urlencoded
                     content_type = "application/x-www-form-urlencoded; charset=utf-8"
                     # Don't send user's Content-Type to ScrapingBee; forward via params if needed
@@ -279,7 +279,7 @@ class Client:
     ) -> tuple[bytes, dict, int]:
         return await self._get_with_retry(
             "/usage",
-            {"api_key": self.api_key},
+            {},
             retries=retries,
             backoff=backoff,
         )
@@ -292,6 +292,7 @@ class Client:
         device: str | None = None,
         page: int | None = None,
         pages: int | None = None,
+        nb_results: int | None = None,
         language: str | None = None,
         nfpr: bool | None = None,
         extra_params: str | None = None,
@@ -315,6 +316,7 @@ class Client:
             "device": device,
             "page": page if page is not None else None,
             "pages": pages if pages is not None else None,
+            "nb_results": nb_results if nb_results is not None else None,
             "language": language,
             "nfpr": self._bool(nfpr),
             "extra_params": extra_params,
@@ -369,6 +371,7 @@ class Client:
         zip_code: str | None = None,
         language: str | None = None,
         currency: str | None = None,
+        autoselect_variant: bool | None = None,
         add_html: bool | None = None,
         light_request: bool | None = None,
         screenshot: bool | None = None,
@@ -384,6 +387,7 @@ class Client:
             "zip_code": zip_code,
             "language": language,
             "currency": currency,
+            "autoselect_variant": self._bool(autoselect_variant),
             "add_html": self._bool(add_html),
             "light_request": self._bool(light_request),
             "screenshot": self._bool(screenshot),

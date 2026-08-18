@@ -19,6 +19,7 @@ scrapingbee google --output-file serp.json "pizza new york" --country-code us
 | `--device` | string | `desktop` or `mobile`. |
 | `--page` | int | Page number (default 1). |
 | `--pages` | int | Consecutive pages to fetch starting at `--page` (default 1, max 10; 3 or fewer recommended). Combined into one response; cost is per fetched page. |
+| `--nb-results` | int | Requested results per page (undocumented API param, verified accepted; Google may return more or fewer). |
 | `--language` | string | Language code (e.g. en, fr, de). |
 | `--date-range` | string | `past-hour`, `past-day`, `past-week`, `past-month`, `past-year`. Restrict results by recency. |
 | `--nfpr` | true/false | Disable autocorrection. |

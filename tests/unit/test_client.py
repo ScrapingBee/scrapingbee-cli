@@ -378,6 +378,134 @@ class TestGooglePagesParam:
         asyncio.run(run())
 
 
+class TestHeaderAuth:
+    """The client authenticates via Authorization: Bearer, not the deprecated api_key param."""
+
+    def test_session_has_bearer_authorization(self):
+        async def run():
+            async with Client("fake-key") as client:
+                assert client._ensure_session().headers.get("Authorization") == "Bearer fake-key"
+
+        asyncio.run(run())
+
+    def test_get_sends_no_api_key_param(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.scrape("https://example.com", retries=0)
+            assert "api_key" not in captured["params"]
+
+        asyncio.run(run())
+
+    def test_post_sends_no_api_key_param(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_request(
+                method, path, params, data=None, content_type=None, headers=None
+            ):
+                captured["params"] = dict(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_request", new=AsyncMock(side_effect=fake_request)):
+                await client.scrape("https://example.com", method="post", body="x=1", retries=0)
+            assert "api_key" not in captured["params"]
+
+        asyncio.run(run())
+
+    def test_usage_sends_no_api_key_param(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.usage(retries=0)
+            assert "api_key" not in captured["params"]
+
+        asyncio.run(run())
+
+
+class TestGoogleNbResults:
+    """Tests that google_search forwards nb_results only when set."""
+
+    def test_nb_results_sent_when_set(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search("coffee", nb_results=3, retries=0)
+            assert captured["params"].get("nb_results") == 3
+
+        asyncio.run(run())
+
+    def test_nb_results_omitted_when_unset(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.google_search("coffee", retries=0)
+            assert "nb_results" not in captured["params"]
+
+        asyncio.run(run())
+
+
+class TestAmazonProductAutoselectVariant:
+    """Tests that amazon_product forwards autoselect_variant only when set."""
+
+    def test_sent_when_set(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["path"] = path
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.amazon_product("B000000000", autoselect_variant=True, retries=0)
+            assert captured["path"] == "/amazon/product"
+            assert captured["params"].get("autoselect_variant") == "true"
+
+        asyncio.run(run())
+
+    def test_omitted_when_unset(self):
+        async def run():
+            client = Client("fake-key")
+            captured: dict = {}
+
+            async def fake_get(path, params, headers=None):
+                captured["params"] = _clean_params(params)
+                return (b"{}", {}, 200)
+
+            with patch.object(client, "_get", new=AsyncMock(side_effect=fake_get)):
+                await client.amazon_product("B000000000", retries=0)
+            assert "autoselect_variant" not in captured["params"]
+
+        asyncio.run(run())
+
+
 class TestGoogleDateRange:
     """Tests that google_search forwards date_range only when set."""
 
