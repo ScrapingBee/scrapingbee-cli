@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from scrapingbee_cli.crawl import (
     _body_from_json_response,
+    _engine_crawl,
     _extract_hrefs_from_body,
     _extract_hrefs_from_response,
     _normalize_url,
@@ -442,6 +443,55 @@ class TestRequiresDiscoveryPhase:
     def test_return_page_markdown_does_not_require_discovery(self):
         # Markdown responses are handled by _MARKDOWN_LINK_RE — no discovery needed if links present
         assert _requires_discovery_phase({"return_page_markdown": "true"}) is False
+
+
+class TestEngineCrawlDispatch:
+    """_engine_crawl() must match the running Scrapy's ExecutionEngine.crawl signature.
+
+    Scrapy 2.10 deprecated and 2.13 removed the ``spider`` argument; passing it
+    on a modern engine raises TypeError, which the save-dispatch error handlers
+    swallow — every queued save silently fails and a discovery crawl saves zero
+    pages (the 1.6.0 regression this guards against).
+    """
+
+    def test_modern_engine_gets_request_only(self):
+        from scrapy import Spider
+
+        calls = []
+        spider = Spider(name="t")
+
+        class ModernEngine:
+            def crawl(self, request):
+                calls.append((request,))
+
+        _engine_crawl(ModernEngine(), "REQ", spider)
+        assert calls == [("REQ",)]
+
+    def test_legacy_engine_gets_request_and_spider(self):
+        from scrapy import Spider
+
+        calls = []
+        spider = Spider(name="t")
+
+        class LegacyEngine:
+            def crawl(self, request, spider):
+                calls.append((request, spider))
+
+        _engine_crawl(LegacyEngine(), "REQ", spider)
+        assert calls == [("REQ", spider)]
+
+    def test_installed_scrapy_engine_is_dispatchable(self):
+        """The real installed Scrapy must match one of the two supported shapes."""
+        import inspect
+
+        from scrapy.core.engine import ExecutionEngine
+
+        params = set(inspect.signature(ExecutionEngine.crawl).parameters)
+        assert "request" in params
+        # Either shape is fine — _engine_crawl handles both; anything else is
+        # a new Scrapy API break that must fail loudly here, not silently in
+        # a live crawl.
+        assert params in ({"self", "request"}, {"self", "request", "spider"})
 
 
 class TestExtractHrefsExceptionHandling:

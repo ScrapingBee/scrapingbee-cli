@@ -546,7 +546,7 @@ def crawl_cmd(
                 "  an extra HTML-only discovery request — approximately doubling credits.\n\n"
                 "  Tip: Use --save-pattern '.*' to crawl with HTML (cheap, finds all links)\n"
                 "  and apply your full settings only to pages that match the pattern.\n"
-                "  Pass --yes to skip this prompt in scripts.\n",
+                "  Pass --confirm yes to skip this prompt in scripts.\n",
                 err=True,
             )
             try:

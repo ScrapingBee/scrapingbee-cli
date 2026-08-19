@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Header-based authorization** — all API requests now authenticate via the `Authorization: Bearer` header instead of the deprecated `api_key` query parameter, so the key no longer appears in request URLs (or anything that logs them). `crawl` is the one exception: its Scrapy middleware (`scrapy-scrapingbee`) still builds `api_key` URLs and will migrate separately.
 
+### Fixed
+
+- **Discovery crawls saved zero pages on Scrapy ≥ 2.13** — Scrapy 2.13 removed the `spider` argument of `ExecutionEngine.crawl()` (deprecated since 2.10), so any crawl needing the discovery phase (`--return-page-text`, `--extract-rules`, `--ai-query`, screenshot without `--json-response`) raised `TypeError` on every queued save; the error handler logged and continued, so the crawl "succeeded" with nothing saved. Save dispatch now adapts to the running Scrapy's signature (works on both old and new versions).
+- **Crawl discovery prompt suggested a flag that doesn't exist** — the double-credit warning told users to pass `--yes`; the actual flag is `--confirm yes`.
+
 ## [1.5.1] - 2026-07-20
 
 ### Fixed
