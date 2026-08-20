@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Discovery crawls saved zero pages on Scrapy ≥ 2.13** — Scrapy 2.13 removed the `spider` argument of `ExecutionEngine.crawl()` (deprecated since 2.10), so any crawl needing the discovery phase (`--return-page-text`, `--extract-rules`, `--ai-query`, screenshot without `--json-response`) raised `TypeError` on every queued save; the error handler logged and continued, so the crawl "succeeded" with nothing saved. Save dispatch now adapts to the running Scrapy's signature (works on both old and new versions).
+- **Discovery crawls saved zero pages when the site was smaller than `--max-pages`** — Scrapy 2.13 removed the `spider` argument of `ExecutionEngine.crawl()` (deprecated since 2.10), so a discovery-phase crawl (`--return-page-text`, `--extract-rules`, `--ai-query`, screenshot without `--json-response`) whose save queue never reached the `--max-pages` cap (site smaller than the cap, or no cap) raised `TypeError` on every queued save; the error handler logged and continued, so the crawl "succeeded" with nothing saved. Crawls that hit the cap dispatched saves through a different path and were unaffected — which is why this went unnoticed. Save dispatch now uses the current Scrapy call signature, and a contract test fails CI loudly if a future Scrapy changes it again.
 - **Crawl discovery prompt suggested a flag that doesn't exist** — the double-credit warning told users to pass `--yes`; the actual flag is `--confirm yes`.
 
 ## [1.5.1] - 2026-07-20
