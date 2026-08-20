@@ -336,20 +336,6 @@ def _requires_discovery_phase(scrape_params: dict[str, Any]) -> bool:
     return False
 
 
-def _engine_crawl(engine: Any, request: Any, spider: Spider) -> None:
-    """Dispatch a request on a running engine across Scrapy versions.
-
-    Scrapy 2.10 deprecated (and 2.13 removed) the ``spider`` argument of
-    ``ExecutionEngine.crawl``; older versions require it.
-    """
-    import inspect
-
-    if "spider" in inspect.signature(engine.crawl).parameters:
-        engine.crawl(request, spider)
-    else:
-        engine.crawl(request)
-
-
 def _body_from_json_response(body: bytes) -> bytes | None:
     """If body is JSON with a 'body' or 'content' field (ScrapingBee
     json_response), return that inner content."""
@@ -668,7 +654,12 @@ class GenericScrapingBeeSpider(Spider):
             self._save_pending += 1
             self._save_queue_next += 1
             try:
-                _engine_crawl(engine, self._make_save_request(url), spider)
+                # Scrapy 2.13 removed the ``spider`` argument of
+                # ``ExecutionEngine.crawl`` — request-only is the sole call
+                # shape on every Scrapy this spider runs on (its ``start()``
+                # entry point requires >= 2.13). test_crawl.py's contract
+                # test fails loudly if a future Scrapy changes the signature.
+                engine.crawl(self._make_save_request(url))
             except Exception as e:
                 # Log, don't swallow: if engine.crawl()'s signature shifts under a
                 # Scrapy bump, every queued save would silently fail and the user
@@ -1153,7 +1144,7 @@ class GenericScrapingBeeSpider(Spider):
                     self._save_queue_next += 1
                     self._save_pending += 1
                     try:
-                        _engine_crawl(engine, self._make_save_request(url), self)
+                        engine.crawl(self._make_save_request(url))
                     except Exception as e:
                         self.logger.warning("Failed to dispatch backfill save for %s: %s", url, e)
                         if self._save_pending > 0:
