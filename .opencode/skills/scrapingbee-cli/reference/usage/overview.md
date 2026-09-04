@@ -10,7 +10,7 @@ scrapingbee usage
 
 Shows available credits and max concurrency. Run **before large batches or crawls**. CLI **won't start a batch** if credits are below the minimum required (100); see [rules/security.md](rules/security.md).
 
-**Global retries:** `--retries N` and `--backoff F` apply to this command and all other API commands (google, amazon, walmart, youtube, chatgpt, etc.). Example: `scrapingbee --retries 2 usage`.
+**Retries:** `--retries N` and `--backoff F` are available on this command and on every other API command (google, amazon, walmart, youtube, chatgpt, etc.), but they belong to the subcommand — pass them after it. Example: `scrapingbee usage --retries 2`.
 
 ## When to use
 
