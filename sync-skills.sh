@@ -87,6 +87,13 @@ for dest in "${AGENT_DESTINATIONS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# AGENTS.md
+# ---------------------------------------------------------------------------
+# Generated from SKILL.md — edit that, not AGENTS.md.
+echo "Generating AGENTS.md..."
+python3 "$REPO_ROOT/scripts/build_agents_md.py"
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "Note: .amazonq/cli-agents/scraping-pipeline.json uses JSON format — update manually."
 echo "Done."
