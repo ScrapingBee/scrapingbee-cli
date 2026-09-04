@@ -232,10 +232,15 @@ class Client:
         method_upper = (method or "GET").upper()
         req_headers: dict[str, str] | None = None
         if custom_headers:
-            if method_upper == "GET":
-                req_headers = {f"Spb-{k}": v for k, v in custom_headers.items()}
-            else:
-                req_headers = dict(custom_headers)
+            # Always Spb-prefix (idempotently): the API only forwards prefixed
+            # headers — it strips the prefix in both forward modes and drops
+            # raw custom headers on POST/PUT — and a raw user Authorization
+            # header would replace the session's Bearer key (per-request
+            # headers win over session headers in aiohttp).
+            req_headers = {
+                (k if k.lower().startswith("spb-") else f"Spb-{k}"): v
+                for k, v in custom_headers.items()
+            }
         last_error: BaseException | None = None
         last_result: tuple[bytes, dict, int] = (b"", {}, 500)
         for attempt in range(max(0, retries) + 1):
@@ -244,21 +249,16 @@ class Client:
                     body_out, out_headers, status = await self._get("", params, headers=req_headers)
                 else:
                     params_clean = _clean_params(params)
-                    # ScrapingBee API expects POST to it as application/x-www-form-urlencoded
+                    # ScrapingBee API expects POST to it as application/x-www-form-urlencoded;
+                    # the user's Content-Type reaches the target via Spb-Content-Type.
                     content_type = "application/x-www-form-urlencoded; charset=utf-8"
-                    # Don't send user's Content-Type to ScrapingBee; forward via params if needed
-                    req_headers_send = (
-                        {k: v for k, v in req_headers.items() if k.lower() != "content-type"}
-                        if req_headers
-                        else None
-                    )
                     body_out, out_headers, status = await self._request(
                         method_upper,
                         "",
                         params_clean,
                         data=body,
                         content_type=content_type,
-                        headers=req_headers_send,
+                        headers=req_headers,
                     )
                 last_result = (body_out, out_headers, status)
                 if status < 500 or attempt >= max(0, retries):

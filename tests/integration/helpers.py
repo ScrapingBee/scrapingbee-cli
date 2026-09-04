@@ -194,6 +194,8 @@ def build_api_matrix_tests(
 
     tests.append(("youtube-metadata", base + ["youtube-metadata", "dQw4w9WgXcQ"], api_timeout))
 
+    tests.append(("youtube-subtitles", base + ["youtube-subtitles", "dQw4w9WgXcQ"], api_timeout))
+
     tests.append(("chatgpt", base + ["chatgpt", "Say hello"], chatgpt_timeout))
 
     # Gemini is also an LLM source; reuse the longer chatgpt_timeout.

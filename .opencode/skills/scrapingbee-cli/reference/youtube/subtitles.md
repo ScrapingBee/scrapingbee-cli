@@ -14,7 +14,7 @@ scrapingbee youtube-subtitles --output-file subtitles.json dQw4w9WgXcQ
 
 | Flag | Values | Notes |
 |------|--------|-------|
-| `--language` | ISO language code (`en`, `fr`, ...) | A language with no matching subtitles returns 404. |
+| `--language` | ISO language code (`en`, `fr`, ...) | A language with no matching subtitles returns HTTP 200 with an empty `subtitles` object (still 5 credits); the CLI prints a warning. |
 | `--subtitle-origin` | `auto-generated`, `uploader-provided` | Filter by subtitle source. |
 
 Plus global flags (`--output-file`, `--verbose`, `--output-dir`, `--concurrency`, `--retries`, `--backoff`).
