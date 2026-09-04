@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`--max-cost` on `scrape`** — cap the credits a request may cost (integer ≥ 1). Requires `--mode auto`; omit for an uncapped budget. Forwarded to the API as `max_cost` when set, omitted otherwise.
 - The verbose output (`-v`) now surfaces the `Spb-auto-cost` response header as `Auto Credit Cost` (the credits actually charged for the winning Auto-Mode config), alongside the existing `Credit Cost`.
 - **`youtube-subtitles` command** — fetch video captions/transcripts from the YouTube Subtitles API (5 credits per request). Accepts a video ID or full YouTube URL, `--language` (ISO code) and `--subtitle-origin` (`auto-generated` / `uploader-provided`), and supports batch via `--input-file` like the other YouTube commands.
-- **`--pages` on `google`** — fetch up to 10 consecutive result pages starting at `--page` in a single combined response (3 or fewer recommended; cost is per fetched page).
+- **`--pages` on `google`** — fetch up to 10 consecutive result pages starting at `--page` in a single combined response (3 or fewer recommended). Cost is flat per request — 10 credits light / 15 rendered — regardless of page count.
 - **`--search-type ads` on `google`** — classic-result structure optimized for paid-ad visibility.
 - **`--nb-results` on `google`** — requested number of results per page. Undocumented API parameter, verified accepted by the API (Google may return more or fewer results than requested).
 - **`--autoselect-variant` on `amazon-product`** — auto-select the default/most-popular product variant, matching the existing `amazon-search` flag. Undocumented API parameter, verified accepted by the API.
@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Discovery crawls saved zero pages when the site was smaller than `--max-pages`** — Scrapy 2.13 removed the `spider` argument of `ExecutionEngine.crawl()` (deprecated since 2.10), so a discovery-phase crawl (`--return-page-text`, `--extract-rules`, `--ai-query`, screenshot without `--json-response`) whose save queue never reached the `--max-pages` cap (site smaller than the cap, or no cap) raised `TypeError` on every queued save; the error handler logged and continued, so the crawl "succeeded" with nothing saved. Crawls that hit the cap dispatched saves through a different path and were unaffected — which is why this went unnoticed. Save dispatch now uses the current Scrapy call signature, and a contract test fails CI loudly if a future Scrapy changes it again.
 - **Crawl discovery prompt suggested a flag that doesn't exist** — the double-credit warning told users to pass `--yes`; the actual flag is `--confirm yes`.
+- **`-H` headers were silently dropped on POST/PUT** — custom headers are now `Spb-`-prefixed on every method (idempotently), which is the only form the API forwards to the target. Previously the prefix was only added on GET, so POST/PUT headers never reached the target — and a user `Authorization` header could clobber the CLI's own API authentication. Already-prefixed headers are passed through unchanged, so `-H "Spb-X: 1"` no longer double-prefixes.
+- **Empty subtitles warned about** — `youtube-subtitles` with a `--language`/`--subtitle-origin` that matches nothing returns HTTP 200 with an empty `subtitles` object (not 404) and still charges 5 credits; the CLI now prints a warning instead of silent empty JSON.
 
 ## [1.5.1] - 2026-07-20
 

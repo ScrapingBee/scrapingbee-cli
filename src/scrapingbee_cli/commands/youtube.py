@@ -421,6 +421,40 @@ def youtube_metadata_cmd(
     asyncio.run(_single())
 
 
+def _warn_empty_subtitles(data: bytes, language: str | None, subtitle_origin: str | None) -> None:
+    """Warn when the subtitles response is empty — the request still cost credits.
+
+    A language with no matching subtitles returns HTTP 200 with an empty
+    ``subtitles`` object (not 404), so without this the user gets silent
+    empty JSON.
+    """
+    import json as _json
+
+    try:
+        obj = _json.loads(data)
+    except Exception:
+        return
+    if not isinstance(obj, dict):
+        return
+    subs = obj.get("subtitles")
+    if not isinstance(subs, dict):
+        return
+    if any(v for v in subs.values() if v):
+        return
+    filters = [
+        f"--language {language}" if language else None,
+        f"--subtitle-origin {subtitle_origin}" if subtitle_origin else None,
+    ]
+    hint = " and ".join(f for f in filters if f)
+    click.echo(
+        "Warning: no subtitles found"
+        + (f" matching {hint}" if hint else " for this video")
+        + " — the request still used credits."
+        + (" Try omitting the filter(s) to see what languages exist." if hint else ""),
+        err=True,
+    )
+
+
 @click.command("youtube-subtitles")
 @click.argument("video_id", required=False)
 @click.option(
@@ -531,6 +565,7 @@ def youtube_subtitles_cmd(
                 backoff=float(obj.get("backoff") or 2.0),
             )
         check_api_response(data, status_code)
+        _warn_empty_subtitles(data, language, norm_val(subtitle_origin))
         write_output(
             data,
             headers,

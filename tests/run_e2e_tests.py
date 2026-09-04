@@ -1607,6 +1607,22 @@ def build_tests(fx: dict[str, str]) -> list[Test]:
         ),
     ]
 
+    # ── YB: youtube-subtitles ─────────────────────────────────────────────────
+    tests += [
+        Test(
+            "YB-01",
+            "youtube-subtitles dQw4w9WgXcQ",
+            ["youtube-subtitles", "dQw4w9WgXcQ"],
+            json_key("subtitles"),
+        ),
+        Test(
+            "YB-02",
+            "youtube-subtitles --language en",
+            ["youtube-subtitles", "dQw4w9WgXcQ", "--language", "en"],
+            combined_checks(json_key("subtitles"), stdout_contains("strangers")),
+        ),
+    ]
+
     # ── CG: chatgpt ───────────────────────────────────────────────────────────
     tests += [
         Test(
