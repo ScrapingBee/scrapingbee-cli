@@ -291,6 +291,7 @@ class Client:
         country_code: str | None = None,
         device: str | None = None,
         page: int | None = None,
+        pages: int | None = None,
         language: str | None = None,
         nfpr: bool | None = None,
         extra_params: str | None = None,
@@ -313,6 +314,7 @@ class Client:
             "country_code": country_code,
             "device": device,
             "page": page if page is not None else None,
+            "pages": pages if pages is not None else None,
             "language": language,
             "nfpr": self._bool(nfpr),
             "extra_params": extra_params,
@@ -610,6 +612,27 @@ class Client:
         return await self._get_with_retry(
             "/youtube/metadata",
             {"video_id": video_id, "tag": tag},
+            retries=retries,
+            backoff=backoff,
+        )
+
+    async def youtube_subtitles(
+        self,
+        video_id: str,
+        language: str | None = None,
+        subtitle_origin: str | None = None,
+        tag: str | None = None,
+        retries: int = 3,
+        backoff: float = 2.0,
+    ) -> tuple[bytes, dict, int]:
+        return await self._get_with_retry(
+            "/youtube/subtitles",
+            {
+                "video_id": video_id,
+                "language": language,
+                "subtitle_origin": subtitle_origin,
+                "tag": tag,
+            },
             retries=retries,
             backoff=backoff,
         )

@@ -174,6 +174,7 @@ def _handle_scraping_config() -> None:
         "walmart-product",
         "youtube-search",
         "youtube-metadata",
+        "youtube-subtitles",
         "chatgpt",
         "gemini",
         "usage",

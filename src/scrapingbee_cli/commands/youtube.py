@@ -112,6 +112,7 @@ YOUTUBE_TYPE = ["video", "channel", "playlist", "movie"]
 YOUTUBE_DURATION = ["short", "medium", "long", "<4", "4-20", ">20"]
 _DURATION_ALIAS = {"short": "<4", "medium": "4-20", "long": ">20"}
 YOUTUBE_SORT_BY = ["relevance", "rating", "view-count", "upload-date"]
+YOUTUBE_SUBTITLE_ORIGIN = ["auto-generated", "uploader-provided"]
 
 
 @click.command("youtube-search")
@@ -420,6 +421,133 @@ def youtube_metadata_cmd(
     asyncio.run(_single())
 
 
+@click.command("youtube-subtitles")
+@click.argument("video_id", required=False)
+@click.option(
+    "--language",
+    type=str,
+    default=None,
+    help="ISO language code of the subtitles to fetch (e.g. en, fr).",
+)
+@click.option(
+    "--subtitle-origin",
+    type=NormalizedChoice(YOUTUBE_SUBTITLE_ORIGIN, case_sensitive=False),
+    default=None,
+    help="Subtitle source: auto-generated or uploader-provided.",
+)
+@click.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Optional label included in API response headers.",
+)
+@_batch_options
+@click.pass_obj
+def youtube_subtitles_cmd(
+    obj: dict,
+    video_id: str | None,
+    language: str | None,
+    subtitle_origin: str | None,
+    tag: str | None,
+    **kwargs,
+) -> None:
+    """Fetch YouTube video subtitles (captions/transcript)."""
+    store_common_options(obj, **kwargs)
+    input_file = obj.get("input_file")
+    if not input_file and not video_id:
+        click.echo("expected one video ID, or use --input-file for batch", err=True)
+        raise SystemExit(1)
+    try:
+        key = get_api_key(None)
+    except ValueError as e:
+        click.echo(str(e), err=True)
+        raise SystemExit(1)
+
+    if input_file:
+        if video_id:
+            click.echo("cannot use both --input-file and positional video-id", err=True)
+            raise SystemExit(1)
+        try:
+            inputs = read_input_file(input_file, input_column=obj.get("input_column"))
+        except ValueError as e:
+            click.echo(str(e), err=True)
+            raise SystemExit(1)
+        inputs = prepare_batch_inputs(inputs, obj)
+        usage_info = get_batch_usage(None)
+        try:
+            validate_batch_run(obj["concurrency"], len(inputs), usage_info)
+        except ValueError as e:
+            click.echo(str(e), err=True)
+            raise SystemExit(1)
+        concurrency = resolve_batch_concurrency(obj["concurrency"], usage_info, len(inputs))
+
+        skip_n = (
+            _find_completed_n(obj.get("output_dir") or "") if obj.get("resume") else frozenset()
+        )
+
+        async def api_call(client, vid):
+            return await client.youtube_subtitles(
+                _extract_video_id(vid),
+                language=language,
+                subtitle_origin=norm_val(subtitle_origin),
+                tag=tag,
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
+            )
+
+        run_api_batch(
+            key=key,
+            inputs=inputs,
+            concurrency=concurrency,
+            from_user=obj["concurrency"] > 0,
+            skip_n=skip_n,
+            output_dir=obj.get("output_dir") or None,
+            verbose=obj["verbose"],
+            show_progress=obj.get("progress", True),
+            api_call=api_call,
+            on_complete=obj.get("on_complete"),
+            output_format=obj.get("output_format"),
+            post_process=obj.get("post_process"),
+            update_csv_path=input_file if obj.get("update_csv") else None,
+            input_column=obj.get("input_column"),
+            output_file=obj.get("output_file") or None,
+            extract_field=obj.get("extract_field"),
+            fields=obj.get("fields"),
+        )
+        return
+
+    if not video_id:
+        click.echo("expected one video ID, or use --input-file for batch", err=True)
+        raise SystemExit(1)
+
+    async def _single() -> None:
+        async with Client(key, BASE_URL) as client:
+            data, headers, status_code = await client.youtube_subtitles(
+                _extract_video_id(video_id),
+                language=language,
+                subtitle_origin=norm_val(subtitle_origin),
+                tag=tag,
+                retries=int(obj.get("retries") or 3),
+                backoff=float(obj.get("backoff") or 2.0),
+            )
+        check_api_response(data, status_code)
+        write_output(
+            data,
+            headers,
+            status_code,
+            obj["output_file"],
+            obj["verbose"],
+            smart_extract=obj.get("smart_extract"),
+            extract_field=obj.get("extract_field"),
+            fields=obj.get("fields"),
+            command="youtube-subtitles",
+            credit_cost=5,
+        )
+
+    asyncio.run(_single())
+
+
 def register(cli: click.Group) -> None:
     cli.add_command(youtube_search_cmd, "youtube-search")
     cli.add_command(youtube_metadata_cmd, "youtube-metadata")
+    cli.add_command(youtube_subtitles_cmd, "youtube-subtitles")

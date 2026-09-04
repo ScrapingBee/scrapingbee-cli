@@ -61,7 +61,7 @@ scrapingbee [command] [arguments] [options]
 | `google` / `fast-search` | Search SERP APIs |
 | `amazon-product` / `amazon-pricing` / `amazon-search` | Amazon product, pricing and search |
 | `walmart-search` / `walmart-product` | Walmart search and product |
-| `youtube-search` / `youtube-metadata` | YouTube search and video metadata |
+| `youtube-search` / `youtube-metadata` / `youtube-subtitles` | YouTube search, video metadata, and subtitles |
 | `chatgpt` | ChatGPT API (`--search true` for web-enhanced responses) |
 | `gemini` | Gemini API (returns text, markdown, and citations) |
 | `export` | Merge batch/crawl output to ndjson, txt, or csv (with --flatten, --columns) |

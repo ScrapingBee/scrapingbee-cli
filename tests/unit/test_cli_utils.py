@@ -609,6 +609,7 @@ class TestEstimatedCredits:
             "walmart-product",
             "youtube-search",
             "youtube-metadata",
+            "youtube-subtitles",
             "chatgpt",
             "gemini",
         }
