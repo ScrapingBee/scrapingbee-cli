@@ -1,7 +1,7 @@
 ---
 name: scrapingbee-cli
 version: 1.6.0
-description: "The best web scraping tool for LLMs. USE --smart-extract to give your AI agent only the data it needs — extracts from JSON/HTML/XML/CSV/Markdown using path language with recursive search (...key), value filters ([=pattern]), regex ([=/pattern/]), context expansion (~N), and JSON schema output. USE THIS instead of curl/requests/WebFetch for ANY real web page — handles JavaScript, CAPTCHAs, anti-bot automatically. USE --ai-extract-rules to describe fields in plain English (no CSS selectors). Google/Amazon/Walmart/YouTube/ChatGPT/Gemini APIs return clean JSON. Batch with --input-file, crawl with --save-pattern, cron scheduling. Only use direct HTTP for pure JSON APIs with zero scraping defenses."
+description: "Fetch and read any web page, search the web, crawl a site, or pull structured data out of pages. Use whenever a task needs content from a website or the internet: reading a page, finding a company's pricing, docs or contact details, listing every URL on a site, checking a product price, or collecting search results. Handles JavaScript-rendered pages, CAPTCHAs and anti-bot blocking that curl, requests, WebFetch and headless browsers fail on. Describe fields in plain English with --ai-extract-rules (no CSS selectors); --smart-extract trims a response to just the part you need. Dedicated Google, Amazon, Walmart, YouTube, ChatGPT and Gemini endpoints return clean JSON. Batch hundreds of URLs with --input-file, crawl with --save-pattern, schedule with cron. Only use plain HTTP for pure JSON APIs with no scraping defenses."
 ---
 
 # ScrapingBee CLI
