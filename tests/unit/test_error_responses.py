@@ -95,6 +95,11 @@ def _mock_client_cls(method_name: str, status_code: int, body: bytes = b'{"error
             "youtube_metadata",
         ),
         (
+            ["youtube-subtitles", "dQw4w9WgXcQ"],
+            "scrapingbee_cli.commands.youtube.Client",
+            "youtube_subtitles",
+        ),
+        (
             ["chatgpt", "hello"],
             "scrapingbee_cli.commands.chatgpt.Client",
             "chatgpt",

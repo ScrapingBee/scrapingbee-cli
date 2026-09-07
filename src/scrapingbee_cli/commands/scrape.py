@@ -173,7 +173,7 @@ SCRAPE_PRESETS = (
     "--forward-headers",
     type=BOOL_STR,
     default=None,
-    help="Forward custom headers to target (true/false). Use -H with Spb- prefix for GET.",
+    help="Forward custom headers to target (true/false). -H headers are prefixed automatically.",
 )
 @optgroup.option(
     "--forward-headers-pure",

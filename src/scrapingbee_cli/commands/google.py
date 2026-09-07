@@ -94,6 +94,15 @@ def _warn_empty_organic(data: bytes, search_type: str | None) -> None:
     ),
 )
 @optgroup.option(
+    "--nb-results",
+    type=int,
+    default=None,
+    help=(
+        "Requested number of results per page (undocumented API parameter — "
+        "verified accepted by the API; Google may return more or fewer)."
+    ),
+)
+@optgroup.option(
     "--language",
     type=str,
     default=None,
@@ -178,6 +187,7 @@ def google_cmd(
     device: str | None,
     page: int | None,
     pages: int | None,
+    nb_results: int | None,
     language: str | None,
     nfpr: str | None,
     extra_params: str | None,
@@ -206,6 +216,7 @@ def google_cmd(
         raise SystemExit(1)
     _validate_page(page)
     _validate_pages(pages)
+    _validate_page(nb_results, name="nb-results")
     _validate_price_range(min_price, max_price)
     _validate_geolocation(latitude, longitude, radius)
 
@@ -239,6 +250,7 @@ def google_cmd(
                 device=device,
                 page=page,
                 pages=pages,
+                nb_results=nb_results,
                 language=language,
                 nfpr=parse_bool(nfpr),
                 extra_params=extra_params,
@@ -290,6 +302,7 @@ def google_cmd(
                 device=device,
                 page=page,
                 pages=pages,
+                nb_results=nb_results,
                 language=language,
                 nfpr=parse_bool(nfpr),
                 extra_params=extra_params,

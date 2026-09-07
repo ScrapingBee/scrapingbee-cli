@@ -23,6 +23,7 @@ from scrapingbee_cli.commands.youtube import (
     YOUTUBE_UPLOAD_DATE,
     _extract_video_id,
     _normalize_youtube_search,
+    _warn_empty_subtitles,
 )
 
 
@@ -260,6 +261,20 @@ class TestPresetAndJsScenarioCli:
         assert code == 0
         assert "--pages" in out
 
+    def test_google_nb_results_option(self):
+        from tests.conftest import cli_run
+
+        code, out, _ = cli_run(["google", "--help"])
+        assert code == 0
+        assert "--nb-results" in out
+
+    def test_amazon_product_autoselect_variant_option(self):
+        from tests.conftest import cli_run
+
+        code, out, _ = cli_run(["amazon-product", "--help"])
+        assert code == 0
+        assert "--autoselect-variant" in out
+
 
 class TestExtractFieldValues:
     """Tests for _extract_field_values()."""
@@ -445,6 +460,40 @@ class TestNormalizeYoutubeSearch:
         raw = json.dumps({"results": json.dumps(items), "search": "rick"}).encode()
         d = json.loads(_normalize_youtube_search(raw))
         assert d["search"] == "rick"
+
+
+class TestWarnEmptySubtitles:
+    """A missing language returns HTTP 200 with empty subtitles (not 404) and
+    still charges credits — the CLI must warn instead of printing silent
+    empty JSON. Verified live 2026-09-04: --language fr on dQw4w9WgXcQ ->
+    200, {"subtitles":{}}, 5 credits."""
+
+    def test_warns_on_fully_empty_subtitles(self, capsys):
+        _warn_empty_subtitles(b'{"subtitles": {}}', "fr", None)
+        err = capsys.readouterr().err
+        assert "no subtitles found" in err
+        assert "--language fr" in err
+
+    def test_warns_on_empty_origin_buckets(self, capsys):
+        _warn_empty_subtitles(
+            b'{"subtitles": {"auto_generated": {}, "uploader_provided": {}}}',
+            None,
+            "uploader_provided",
+        )
+        err = capsys.readouterr().err
+        assert "no subtitles found" in err
+        assert "--subtitle-origin uploader_provided" in err
+
+    def test_no_warning_when_subtitles_present(self, capsys):
+        _warn_empty_subtitles(
+            b'{"subtitles": {"auto_generated": {"en": [{"start_ms": "0"}]}}}', "en", None
+        )
+        assert capsys.readouterr().err == ""
+
+    def test_silent_on_non_json_or_unexpected_shape(self, capsys):
+        _warn_empty_subtitles(b"not json", None, None)
+        _warn_empty_subtitles(b'{"other": 1}', None, None)
+        assert capsys.readouterr().err == ""
 
 
 class TestYouTubeDurationAlias:

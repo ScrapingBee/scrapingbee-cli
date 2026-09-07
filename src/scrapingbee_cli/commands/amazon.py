@@ -63,6 +63,15 @@ AMAZON_SORT_BY = [
 @optgroup.option("--currency", type=str, default=None, help="Currency code (e.g. USD, EUR, GBP).")
 @optgroup.group("Output", help="Response format options")
 @optgroup.option(
+    "--autoselect-variant",
+    type=BOOL_STR,
+    default=None,
+    help=(
+        "Auto-select the default/most-popular product variant (true/false). "
+        "Undocumented API parameter — verified accepted by the API."
+    ),
+)
+@optgroup.option(
     "--add-html", type=BOOL_STR, default=None, help="Include full HTML in response (true/false)."
 )
 @optgroup.option(
@@ -86,6 +95,7 @@ def amazon_product_cmd(
     zip_code: str | None,
     language: str | None,
     currency: str | None,
+    autoselect_variant: str | None,
     add_html: str | None,
     light_request: str | None,
     screenshot: str | None,
@@ -135,6 +145,7 @@ def amazon_product_cmd(
                 zip_code=zip_code,
                 language=language,
                 currency=currency,
+                autoselect_variant=parse_bool(autoselect_variant),
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
@@ -178,6 +189,7 @@ def amazon_product_cmd(
                 zip_code=zip_code,
                 language=language,
                 currency=currency,
+                autoselect_variant=parse_bool(autoselect_variant),
                 add_html=parse_bool(add_html),
                 light_request=parse_bool(light_request),
                 screenshot=parse_bool(screenshot),
