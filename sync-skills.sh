@@ -93,6 +93,19 @@ done
 echo "Generating AGENTS.md..."
 python3 "$REPO_ROOT/scripts/build_agents_md.py"
 
+# The hosted copy lives in the landing-page repo. Regenerate it when that
+# checkout is present as a sibling; otherwise say so, loudly, since a stale
+# hosted file is exactly the drift this script exists to prevent.
+HOSTED="$REPO_ROOT/../scrapingbee-landing-page/static/agent-onboarding/SKILL.md"
+if [ -d "$(dirname "$(dirname "$HOSTED")")" ]; then
+    python3 "$REPO_ROOT/scripts/build_agents_md.py" --hosted "$HOSTED" > /dev/null
+    echo "  Generated: $HOSTED"
+    echo "  (commit it in scrapingbee-landing-page if it changed)"
+else
+    echo "  WARNING: scrapingbee-landing-page checkout not found as a sibling —"
+    echo "  the hosted /agent-onboarding/SKILL.md was NOT regenerated."
+fi
+
 # ---------------------------------------------------------------------------
 echo ""
 echo "Note: .amazonq/cli-agents/scraping-pipeline.json uses JSON format — update manually."
