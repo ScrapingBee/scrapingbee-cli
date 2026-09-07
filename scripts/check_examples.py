@@ -23,7 +23,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SKILL_DIR = REPO / "plugins/scrapingbee-cli/skills/scrapingbee-cli"
-TARGETS = [REPO / "AGENTS.md", SKILL_DIR / "SKILL.md", *sorted(SKILL_DIR.rglob("reference/**/*.md"))]
+GUARD_DIR = REPO / "plugins/scrapingbee-cli/skills/scrapingbee-cli-guard"
+TARGETS = [
+    REPO / "AGENTS.md",
+    SKILL_DIR / "SKILL.md",
+    *sorted(SKILL_DIR.rglob("reference/**/*.md")),
+    *sorted(SKILL_DIR.rglob("rules/*.md")),
+    *sorted(GUARD_DIR.rglob("*.md")),
+]
 
 # Placeholders that appear in prose to illustrate a form, not a real command.
 IGNORED_FLAGS = {"--option", "--flag"}
