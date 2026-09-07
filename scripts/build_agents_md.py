@@ -17,6 +17,7 @@ Run via ./sync-skills.sh, not directly.
 
 from __future__ import annotations
 
+import argparse
 import pathlib
 import re
 import sys
@@ -75,10 +76,49 @@ def build(skill_text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", out)
 
 
+def build_hosted(skill_text: str) -> str:
+    """The self-contained file agents fetch from the web.
+
+    Same body as AGENTS.md — no links into a plugin directory the fetcher does
+    not have — but with the frontmatter kept, so a host that installs it as a
+    skill still gets the description that decides whether it is picked.
+    """
+    name = re.search(r"^name: (.*)$", skill_text, re.M).group(1)
+    version = re.search(r"^version: (.*)$", skill_text, re.M)
+    description = re.search(r'^description: (".*")$', skill_text, re.M).group(1)
+    body = build(skill_text)
+    body = body.split("\n", 1)[1].lstrip("\n")  # drop the generated H1
+    return (
+        "---\n"
+        f"name: {name}\n"
+        + (f"version: {version.group(1)}\n" if version else "")
+        + f"description: {description}\n"
+        "---\n\n"
+        "<!-- Generated from SKILL.md in ScrapingBee/scrapingbee-cli. Do not edit here.\n"
+        "     Refresh: python3 scripts/build_agents_md.py --hosted <path-to-this-file> -->\n\n"
+        "# ScrapingBee CLI\n\n" + body
+    )
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Generate AGENTS.md from SKILL.md")
+    parser.add_argument(
+        "--hosted",
+        type=pathlib.Path,
+        default=None,
+        help="also write the self-contained hosted copy to this path",
+    )
+    args = parser.parse_args()
+
     if not SKILL.is_file():
         print(f"missing {SKILL}", file=sys.stderr)
         return 1
+
+    if args.hosted:
+        args.hosted.parent.mkdir(parents=True, exist_ok=True)
+        args.hosted.write_text(build_hosted(SKILL.read_text()))
+        print(f"  Generated: {args.hosted}")
+
     generated = build(SKILL.read_text())
 
     leftover = [
