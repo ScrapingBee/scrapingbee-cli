@@ -71,7 +71,7 @@ Blocked? See [reference/proxy/strategies.md](reference/proxy/strategies.md).
 |-----------|------|-------------|
 | `--device` | desktop \| mobile | Device type (CLI validates). |
 | `--timeout` | int | Timeout ms (1000–140000). Scrape job timeout on ScrapingBee. The CLI sets the HTTP client (aiohttp) timeout to this value in seconds plus 30 s (for send/receive) so the client does not give up before the API responds. |
-| `--custom-google` / `--transparent-status-code` | — | Google (20 credits), target status. |
+| `--custom-google` / `--transparent-status-code` | — | Google (15 credits — the API's error message for non-custom-google Google requests wrongly claims 20; 15 is correct), target status. |
 | `--tag` | string | Optional label included in API response headers. |
 | `--mode` | auto | Auto-Mode: API picks the cheapest config that succeeds; charged only for the winning config. GET only. See [Auto-Mode](#auto-mode). |
 | `--max-cost` | int | Cap credits a request may cost (≥ 1). Requires `--mode auto`; omit = uncapped. |

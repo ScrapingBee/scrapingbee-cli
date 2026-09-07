@@ -654,7 +654,12 @@ class GenericScrapingBeeSpider(Spider):
             self._save_pending += 1
             self._save_queue_next += 1
             try:
-                engine.crawl(self._make_save_request(url), spider)
+                # Scrapy 2.13 removed the ``spider`` argument of
+                # ``ExecutionEngine.crawl`` — request-only is the sole call
+                # shape on every Scrapy this spider runs on (its ``start()``
+                # entry point requires >= 2.13). test_crawl.py's contract
+                # test fails loudly if a future Scrapy changes the signature.
+                engine.crawl(self._make_save_request(url))
             except Exception as e:
                 # Log, don't swallow: if engine.crawl()'s signature shifts under a
                 # Scrapy bump, every queued save would silently fail and the user
@@ -1139,7 +1144,7 @@ class GenericScrapingBeeSpider(Spider):
                     self._save_queue_next += 1
                     self._save_pending += 1
                     try:
-                        engine.crawl(self._make_save_request(url), self)
+                        engine.crawl(self._make_save_request(url))
                     except Exception as e:
                         self.logger.warning("Failed to dispatch backfill save for %s: %s", url, e)
                         if self._save_pending > 0:

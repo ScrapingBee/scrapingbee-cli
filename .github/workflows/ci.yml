@@ -5,8 +5,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # No branches filter: stacked PRs (a PR based on another PR's branch) must
+  # run CI too — with [main] here they silently get no checks at all.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read

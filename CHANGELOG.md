@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Discovery crawls saved zero pages when the site was smaller than `--max-pages`** — Scrapy 2.13 removed the `spider` argument of `ExecutionEngine.crawl()` (deprecated since 2.10), so a discovery-phase crawl (`--return-page-text`, `--extract-rules`, `--ai-query`, screenshot without `--json-response`) whose save queue never reached the `--max-pages` cap (site smaller than the cap, or no cap) raised `TypeError` on every queued save; the error handler logged and continued, so the crawl "succeeded" with nothing saved. Crawls that hit the cap dispatched saves through a different path and were unaffected — which is why this went unnoticed. Save dispatch now uses the current Scrapy call signature, and a contract test fails CI loudly if a future Scrapy changes it again.
+- **Crawl discovery prompt suggested a flag that doesn't exist** — the double-credit warning told users to pass `--yes`; the actual flag is `--confirm yes`.
 - **`-H` headers were silently dropped on POST/PUT** — custom headers are now `Spb-`-prefixed on every method (idempotently), which is the only form the API forwards to the target. Previously the prefix was only added on GET, so POST/PUT headers never reached the target — and a user `Authorization` header could clobber the CLI's own API authentication. Already-prefixed headers are passed through unchanged, so `-H "Spb-X: 1"` no longer double-prefixes.
 - **Empty subtitles warned about** — `youtube-subtitles` with a `--language`/`--subtitle-origin` that matches nothing returns HTTP 200 with an empty `subtitles` object (not 404) and still charges 5 credits; the CLI now prints a warning instead of silent empty JSON.
 

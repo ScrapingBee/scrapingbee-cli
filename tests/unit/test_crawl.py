@@ -444,6 +444,29 @@ class TestRequiresDiscoveryPhase:
         assert _requires_discovery_phase({"return_page_markdown": "true"}) is False
 
 
+class TestEngineCrawlContract:
+    """The installed Scrapy's ExecutionEngine.crawl must be request-only.
+
+    Scrapy 2.13 removed the ``spider`` argument; the spider dispatches saves
+    with ``engine.crawl(request)``. A stale call shape raises TypeError,
+    which the save-dispatch error handlers swallow — every queued save
+    silently fails and a discovery crawl saves zero pages (the 1.6.0
+    regression this guards against). If a future Scrapy changes the
+    signature again, this test fails loudly at upgrade time instead.
+    """
+
+    def test_installed_scrapy_engine_crawl_is_request_only(self):
+        import inspect
+
+        from scrapy.core.engine import ExecutionEngine
+
+        params = list(inspect.signature(ExecutionEngine.crawl).parameters)
+        assert params == ["self", "request"], (
+            f"ExecutionEngine.crawl signature changed to {params}; update the "
+            "engine.crawl() dispatch sites in crawl.py to match"
+        )
+
+
 class TestExtractHrefsExceptionHandling:
     """Tests that _extract_hrefs_from_response handles non-HTML gracefully."""
 
