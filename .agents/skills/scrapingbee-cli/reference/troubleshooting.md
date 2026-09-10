@@ -42,10 +42,10 @@ Each `.err` file is a JSON object with `error`, `status_code`, `input`, and `bod
 
 ## Output file not written
 
-- Global `--output-file` can appear **before or after** the subcommand — both work:
-  `scrapingbee --output-file out.html scrape URL` ✓
+- `--output-file` belongs to the subcommand, so it must come **after** it:
   `scrapingbee scrape --output-file out.html URL` ✓
   `scrapingbee scrape URL --output-file out.html` ✓
+  `scrapingbee --output-file out.html scrape URL` ✗ — exits 2 without running
 
 - For batch, use `--output-dir`:
   `scrapingbee scrape --output-dir results --input-file urls.txt`

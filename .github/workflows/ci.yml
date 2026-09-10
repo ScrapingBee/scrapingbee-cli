@@ -56,6 +56,14 @@ jobs:
       - name: Ruff format check
         run: ruff format --check src tests
 
+      - name: Documented commands resolve against the CLI
+        run: python3 scripts/check_examples.py
+
+      - name: AGENTS.md is in sync with SKILL.md
+        run: |
+          python3 scripts/build_agents_md.py
+          git diff --exit-code AGENTS.md
+
   check-version:
     name: Version consistency
     runs-on: ubuntu-latest
