@@ -72,6 +72,16 @@ scrapingbee logout
 If `scrapingbee` is not found after install:
 
 1. Activate the environment where `pip install scrapingbee-cli` was run (e.g. `source .venv/bin/activate`). Pip puts the `scrapingbee` script in that env’s bin (e.g. `.venv/bin`), so it’s on PATH only when that env is active.
-2. Reinstall: `pip install --force-reinstall scrapingbee-cli`.
+2. If pip warned that the script went to `~/.local/bin` (a user install, common in sandboxed shells), that directory is not on PATH in minimal shells: run `export PATH="$HOME/.local/bin:$PATH"`, or call `~/.local/bin/scrapingbee` by full path.
+3. Reinstall: `pip install --force-reinstall scrapingbee-cli`.
+
+## Network allowlist (Claude Cowork and other locked-down sandboxes)
+
+If every command fails with `Cannot connect to host app.scrapingbee.com:443 ... Temporary failure in name resolution`, the shell can reach PyPI but not the ScrapingBee API: the host restricts outbound traffic to an allowlist. Two ways through:
+
+1. An org Owner adds `app.scrapingbee.com` to the allowed hosts (in Claude Cowork: Admin settings → Capabilities). The CLI then works unchanged.
+2. Use the ScrapingBee MCP connector (`https://mcp.scrapingbee.com/mcp`, `Authorization: Bearer <key>`) for single-page and search work — connectors are not subject to the sandbox allowlist. Crawls, batches, file output and scheduling still need the CLI, so prefer option 1 when those matter.
+
+Do not fall back to the host's built-in fetch tool as a substitute: it is subject to the same allowlist and cannot render JavaScript or pass anti-bot protection.
 
 **See also:** [rules/security.md](rules/security.md) (credits, output safety, shell safety).
