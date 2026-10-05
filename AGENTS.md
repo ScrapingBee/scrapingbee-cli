@@ -72,7 +72,11 @@ for.
 
 1. **Install:** `uv tool install scrapingbee-cli` (recommended) or `pip install scrapingbee-cli`.
    Every command including `crawl` works immediately — no extras.
-2. **Authenticate:** `scrapingbee auth`, or set `SCRAPINGBEE_API_KEY`.
+   If `scrapingbee` is then "command not found", the executable is in `~/.local/bin`, which
+   minimal shells don't search: run `export PATH="$HOME/.local/bin:$PATH"` once, or call
+   `~/.local/bin/scrapingbee` by full path. Do not fall back to another tool because of this.
+2. **Authenticate:** `scrapingbee auth`, or set `SCRAPINGBEE_API_KEY` (a `.env` file in the
+   working directory is read too).
 3. **Verify:** `scrapingbee usage` — confirms the key works and shows remaining credits.
 
 ## Commands
