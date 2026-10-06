@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "scrapingbee": {
+      "url": "https://mcp.scrapingbee.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${SCRAPINGBEE_API_KEY}"
+      }
+    }
+  }
+}

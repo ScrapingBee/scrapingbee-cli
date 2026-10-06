@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Plugin metadata:** `plugins/scrapingbee-cli/` now ships its own `README.md` and `LICENSE`, and the plugin manifest declares `license`, `homepage` and `repository`, as plugin directories require.
+- **Cursor and ChatGPT / Codex manifests:** the same plugin folder now carries `.cursor-plugin/plugin.json` (with a `SCRAPINGBEE_API_KEY` variable and `mcp.json` that connects the ScrapingBee MCP server) and `.codex-plugin/plugin.json`, plus logo assets, so one folder can be submitted to each marketplace.
 
 ### Fixed
 
