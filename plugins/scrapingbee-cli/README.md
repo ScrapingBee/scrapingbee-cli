@@ -35,6 +35,12 @@ Cursor reads `.cursor-plugin/plugin.json` and `mcp.json`, and ChatGPT / Codex re
 - In **Cursor**, the plugin also connects the ScrapingBee MCP server. Set the
   `SCRAPINGBEE_API_KEY` plugin variable when you install it; the same key is used for the MCP
   server and, if exported in your shell, for the CLI.
+- In **Codex CLI**, the plugin ships the skills only. To add the MCP server as well, run once
+  (with `SCRAPINGBEE_API_KEY` exported in your shell):
+
+  ```bash
+  codex mcp add scrapingbee --url https://mcp.scrapingbee.com/mcp --bearer-token-env-var SCRAPINGBEE_API_KEY
+  ```
 
 ## What it runs, sends and fetches
 
