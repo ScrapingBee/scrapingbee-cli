@@ -1,0 +1,31 @@
+{
+  "name": "scrapingbee",
+  "version": "1.6.0",
+  "description": "Fetch and read any web page, search the web, crawl a site, or pull structured data out of pages — whenever a task needs content from a website. Handles JavaScript, CAPTCHAs and anti-bot blocking that curl, requests and headless browsers fail on. Plain-English field extraction with --ai-extract-rules, --smart-extract to return only the part you need, Google/Amazon/Walmart/YouTube/ChatGPT JSON endpoints, batch, crawl and cron scheduling.",
+  "author": {
+    "name": "ScrapingBee"
+  },
+  "homepage": "https://www.scrapingbee.com/documentation/cli/",
+  "repository": "https://github.com/ScrapingBee/scrapingbee-cli",
+  "license": "MIT",
+  "skills": "./skills",
+  "interface": {
+    "displayName": "ScrapingBee",
+    "shortDescription": "Read, search and crawl the web",
+    "longDescription": "ScrapingBee fetches any web page as clean markdown, text or JSON — including JavaScript-rendered pages and sites behind CAPTCHAs or anti-bot blocking that plain HTTP tools fail on. This plugin teaches the agent when and how to use the ScrapingBee CLI: scrape a single page or a CSV of URLs, crawl a whole site into files for a RAG index, search Google, Amazon, Walmart or YouTube and get structured JSON back, extract fields described in plain English, and schedule recurring checks — while keeping credit spend to the minimum that works. Requires a ScrapingBee account and API key.",
+    "category": "Developer Tools",
+    "capabilities": ["Read"],
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png",
+    "developerName": "ScrapingBee",
+    "websiteURL": "https://www.scrapingbee.com/documentation/cli/",
+    "privacyPolicyURL": "https://www.scrapingbee.com/privacy-policy/",
+    "termsOfServiceURL": "https://www.scrapingbee.com/terms-and-conditions/",
+    "defaultPrompt": [
+      "Fetch this pricing page as markdown and save it to a file",
+      "Crawl this docs site and save every guide page for my RAG index",
+      "Get the current price and rating for this Amazon ASIN",
+      "I have a CSV of product URLs — refresh the price column in place"
+    ]
+  }
+}

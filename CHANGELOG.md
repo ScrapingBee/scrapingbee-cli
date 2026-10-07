@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Plugin metadata:** `plugins/scrapingbee-cli/` now ships its own `README.md` and `LICENSE`, and the plugin manifest declares `license`, `homepage` and `repository`, as plugin directories require.
+- **Cursor and ChatGPT / Codex manifests:** the same plugin folder now carries `.cursor-plugin/plugin.json` (with a `SCRAPINGBEE_API_KEY` variable and `mcp.json` that connects the ScrapingBee MCP server) and `.codex-plugin/plugin.json`, plus logo assets, so one folder can be submitted to each marketplace.
+
+### Fixed
+
+- **Skill install path:** the skill now tells agents that `uv tool install` places `scrapingbee` in `~/.local/bin` and how to run it when that directory is not on `PATH`, instead of giving up on the CLI.
+- **Sandbox network allowlists:** documented what a "Temporary failure in name resolution" from the CLI means in a locked-down sandbox and that the MCP connector is the way around it.
+
 ## [1.6.0] - 2026-09-11
 
 ### Added

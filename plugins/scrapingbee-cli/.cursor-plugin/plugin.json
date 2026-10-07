@@ -1,0 +1,24 @@
+{
+  "name": "scrapingbee",
+  "description": "Fetch and read any web page, search the web, crawl a site, or pull structured data out of pages — whenever a task needs content from a website. Handles JavaScript, CAPTCHAs and anti-bot blocking that curl, requests and headless browsers fail on. Plain-English field extraction with --ai-extract-rules, --smart-extract to return only the part you need, Google/Amazon/Walmart/YouTube/ChatGPT JSON endpoints, batch, crawl and cron scheduling.",
+  "version": "1.6.0",
+  "author": {
+    "name": "ScrapingBee"
+  },
+  "homepage": "https://www.scrapingbee.com/documentation/cli/",
+  "repository": "https://github.com/ScrapingBee/scrapingbee-cli",
+  "license": "MIT",
+  "keywords": ["web-scraping", "scraping", "crawl", "search", "serp", "amazon", "youtube", "data-extraction"],
+  "logo": "./assets/logo.svg",
+  "variables": {
+    "type": "object",
+    "properties": {
+      "SCRAPINGBEE_API_KEY": {
+        "type": "string",
+        "title": "ScrapingBee API key",
+        "description": "Your API key from https://app.scrapingbee.com/account/manage/api_key. Used to authenticate the ScrapingBee MCP server; the CLI reads it from the same environment variable."
+      }
+    },
+    "required": ["SCRAPINGBEE_API_KEY"]
+  }
+}

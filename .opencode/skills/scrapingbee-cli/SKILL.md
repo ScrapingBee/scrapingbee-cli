@@ -39,7 +39,9 @@ schedule a recurring job, or keep a large page out of your context window.
 
 Reach for the **MCP** in two cases: the host already has it connected *and* the task is a single
 page or search whose result belongs in the conversation anyway; or you cannot run a CLI at all —
-no shell, no filesystem, or installation is blocked.
+no shell, no filesystem, installation is blocked, or the shell cannot reach
+`app.scrapingbee.com` (a "Temporary failure in name resolution" from the CLI means a network
+allowlist is in the way — the MCP connector is not subject to it).
 
 MCP endpoint: `https://mcp.scrapingbee.com/mcp` — remote, Streamable HTTP, authenticated with an
 `Authorization: Bearer <SCRAPINGBEE_API_KEY>` header. Host-specific connection steps belong to the
@@ -81,7 +83,11 @@ for.
 
 1. **Install:** `uv tool install scrapingbee-cli` (recommended) or `pip install scrapingbee-cli`.
    Every command including `crawl` works immediately — no extras.
-2. **Authenticate:** `scrapingbee auth`, or set `SCRAPINGBEE_API_KEY`.
+   If `scrapingbee` is then "command not found", the executable is in `~/.local/bin`, which
+   minimal shells don't search: run `export PATH="$HOME/.local/bin:$PATH"` once, or call
+   `~/.local/bin/scrapingbee` by full path. Do not fall back to another tool because of this.
+2. **Authenticate:** `scrapingbee auth`, or set `SCRAPINGBEE_API_KEY` (a `.env` file in the
+   working directory is read too).
 3. **Verify:** `scrapingbee usage` — confirms the key works and shows remaining credits.
 
 ## Commands

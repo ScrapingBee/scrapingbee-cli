@@ -2,6 +2,9 @@
   "name": "scrapingbee",
   "description": "Fetch and read any web page, search the web, crawl a site, or pull structured data out of pages \u2014 whenever a task needs content from a website. Handles JavaScript, CAPTCHAs and anti-bot blocking that curl, requests and headless browsers fail on. Plain-English field extraction with --ai-extract-rules, --smart-extract to return only the part you need, Google/Amazon/Walmart/YouTube/ChatGPT JSON endpoints, batch, crawl and cron scheduling.",
   "version": "1.6.0",
+  "license": "MIT",
+  "homepage": "https://www.scrapingbee.com/documentation/cli/",
+  "repository": "https://github.com/ScrapingBee/scrapingbee-cli",
   "author": {
     "name": "ScrapingBee"
   },

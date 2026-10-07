@@ -28,8 +28,12 @@ Keep these in sync whenever you bump the version:
 - `pyproject.toml` → `[project] version`
 - `src/scrapingbee_cli/__init__.py` → `__version__`
 - `.claude-plugin/marketplace.json` → `plugins[0].version`
-- `.claude-plugin/plugin.json` → `version`
-- `skills/scrapingbee-cli/SKILL.md` → frontmatter `version`
+- `plugins/scrapingbee-cli/.claude-plugin/plugin.json` → `version` (Claude Code)
+- `plugins/scrapingbee-cli/.cursor-plugin/plugin.json` → `version` (Cursor)
+- `plugins/scrapingbee-cli/.codex-plugin/plugin.json` → `version` (ChatGPT / Codex)
+- `.agents/skills/scrapingbee-cli/SKILL.md` and `scrapingbee-cli-guard/SKILL.md` → frontmatter `version`, then `scripts/sync-skills.sh`
+
+Plugin directories re-review a plugin when its version changes, so bump all three manifests in the same release PR.
 
 The CI `check-version` job enforces that `pyproject.toml` and `__init__.py` stay in sync.
 
