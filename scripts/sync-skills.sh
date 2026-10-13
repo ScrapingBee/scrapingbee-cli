@@ -2,7 +2,8 @@
 # sync-skills.sh — sync the canonical skill tree to all AI platform directories.
 #
 # Source of truth: .agents/skills/
-# Targets: .github/skills/, .kiro/skills/, .opencode/skills/, plugins/scrapingbee-cli/skills/
+# Targets: .github/skills/, .kiro/skills/, .opencode/skills/, plugins/scrapingbee-cli/skills/,
+#          plugins/scrapingbee-cursor/skills/
 #
 # Usage: bash scripts/sync-skills.sh [--dry-run]
 
@@ -16,6 +17,7 @@ TARGETS=(
   "$REPO_ROOT/.kiro/skills"
   "$REPO_ROOT/.opencode/skills"
   "$REPO_ROOT/plugins/scrapingbee-cli/skills"
+  "$REPO_ROOT/plugins/scrapingbee-cursor/skills"
 )
 
 DRY_RUN=0

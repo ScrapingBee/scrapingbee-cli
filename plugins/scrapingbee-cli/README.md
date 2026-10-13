@@ -11,9 +11,10 @@ the job, how to keep credit spend low, and which tool to reach for first — the
 [ScrapingBee MCP server](https://mcp.scrapingbee.com/) when a single page or search result
 belongs straight in the conversation.
 
-One plugin folder serves several hosts: Claude Code reads `.claude-plugin/plugin.json`,
-Cursor reads `.cursor-plugin/plugin.json` and `mcp.json`, and ChatGPT / Codex read
-`.codex-plugin/plugin.json`. The skills are shared by all of them.
+This folder serves Claude Code (`.claude-plugin/plugin.json`) and ChatGPT / Codex
+(`.codex-plugin/plugin.json`). The Cursor plugin, which also bundles the ScrapingBee MCP
+server, lives in the sibling folder `plugins/scrapingbee-cursor/`. All of them share the same
+skills.
 
 ## What's inside
 
@@ -32,9 +33,6 @@ Cursor reads `.cursor-plugin/plugin.json` and `mcp.json`, and ChatGPT / Codex re
 - The **ScrapingBee CLI**, installed on the machine where the agent runs commands:
   `uv tool install scrapingbee-cli` (or `pip install scrapingbee-cli`), then `scrapingbee auth`
   or `SCRAPINGBEE_API_KEY` in the environment.
-- In **Cursor**, the plugin also connects the ScrapingBee MCP server. Set the
-  `SCRAPINGBEE_API_KEY` plugin variable when you install it; the same key is used for the MCP
-  server and, if exported in your shell, for the CLI.
 - In **Codex CLI**, the plugin ships the skills only. To add the MCP server as well, run once
   (with `SCRAPINGBEE_API_KEY` exported in your shell):
 

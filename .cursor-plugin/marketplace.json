@@ -1,0 +1,18 @@
+{
+  "name": "scrapingbee",
+  "owner": {
+    "name": "ScrapingBee",
+    "email": "support@scrapingbee.com"
+  },
+  "metadata": {
+    "description": "ScrapingBee for Cursor: fetch any web page, search, crawl and extract data — JavaScript, CAPTCHAs and anti-bot blocking handled."
+  },
+  "plugins": [
+    {
+      "name": "scrapingbee",
+      "source": "plugins/scrapingbee-cursor",
+      "description": "Fetch and read any web page, search the web, crawl a site, or pull structured data out of pages. Bundles the ScrapingBee MCP server and skills for the ScrapingBee CLI.",
+      "version": "1.6.0"
+    }
+  ]
+}
