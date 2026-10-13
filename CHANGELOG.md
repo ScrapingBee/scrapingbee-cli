@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Plugin metadata:** `plugins/scrapingbee-cli/` now ships its own `README.md` and `LICENSE`, and the plugin manifest declares `license`, `homepage` and `repository`, as plugin directories require.
 - **Cursor and ChatGPT / Codex manifests:** the same plugin folder now carries `.cursor-plugin/plugin.json` (with a `SCRAPINGBEE_API_KEY` variable and `mcp.json` that connects the ScrapingBee MCP server) and `.codex-plugin/plugin.json`, plus logo assets, so one folder can be submitted to each marketplace.
 
+### Changed
+
+- **Cursor plugin moved to `plugins/scrapingbee-cursor/`** (manifest, `mcp.json`, skills), with a root `.cursor-plugin/marketplace.json`. The Claude plugin manifest gains the directory listing fields (icon, documentation, support, privacy, terms).
+
 ### Fixed
 
 - **Skill install path:** the skill now tells agents that `uv tool install` places `scrapingbee` in `~/.local/bin` and how to run it when that directory is not on `PATH`, instead of giving up on the CLI.
