@@ -1,0 +1,24 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "scrapingbee-cli",
+  "description": "Fetch and read any web page, search the web, crawl a site, or pull structured data out of pages — whenever a task needs content from a website. Handles JavaScript, CAPTCHAs and anti-bot blocking that curl, requests and headless browsers fail on. Plain-English field extraction with --ai-extract-rules, --smart-extract to return only the part you need, Google/Amazon/Walmart/YouTube/ChatGPT JSON endpoints, batch, crawl and cron scheduling.",
+  "version": "1.6.0",
+  "author": {
+    "name": "ScrapingBee",
+    "url": "https://www.scrapingbee.com"
+  },
+  "homepage": "https://www.scrapingbee.com/documentation/cli/",
+  "repository": "https://github.com/ScrapingBee/scrapingbee-cli",
+  "license": "MIT",
+  "keywords": [
+    "web-scraping",
+    "scraping",
+    "crawl",
+    "search",
+    "serp",
+    "amazon",
+    "youtube",
+    "data-extraction",
+    "scrapingbee"
+  ]
+}
