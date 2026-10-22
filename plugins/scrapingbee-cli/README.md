@@ -11,8 +11,8 @@ the job, how to keep credit spend low, and which tool to reach for first — the
 [ScrapingBee MCP server](https://mcp.scrapingbee.com/) when a single page or search result
 belongs straight in the conversation.
 
-This folder serves Claude Code (`.claude-plugin/plugin.json`) and ChatGPT / Codex
-(`.codex-plugin/plugin.json`). The Cursor plugin, which also bundles the ScrapingBee MCP
+This folder serves Claude Code (`.claude-plugin/plugin.json`), ChatGPT / Codex
+(`.codex-plugin/plugin.json`) and GitHub Copilot CLI (`plugin.json`). The Cursor plugin, which also bundles the ScrapingBee MCP
 server, lives in the sibling folder `plugins/scrapingbee-cursor/`. All of them share the same
 skills.
 
