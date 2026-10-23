@@ -2,11 +2,15 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
     "scrapingbee": {
-      "type": "streamable-http",
-      "url": "https://mcp.scrapingbee.com/mcp",
-      "headers": {
-        "Authorization": "Bearer ${SCRAPINGBEE_API_KEY}"
-      }
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote@0.15.2",
+        "https://mcp.scrapingbee.com/mcp",
+        "--header",
+        "Authorization:Bearer ${SCRAPINGBEE_API_KEY}"
+      ]
     }
   }
 }

@@ -7,9 +7,10 @@ on, and returns clean markdown, text or JSON.
 
 This power uses the [Agent Plugins](https://agent-plugins.org) format and gives Kiro two things:
 
-- **The ScrapingBee MCP server** (`https://mcp.scrapingbee.com/mcp`), connected at install:
-  18 tools for fetching pages as text, markdown, HTML or screenshots, extracting data, and
-  getting JSON from Google, Amazon, Walmart, YouTube, ChatGPT and Gemini.
+- **The ScrapingBee MCP server** (`https://mcp.scrapingbee.com/mcp`), connected at install
+  through the [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) bridge: 18 tools for
+  fetching pages as text, markdown, HTML or screenshots, extracting data, and getting JSON
+  from Google, Amazon, Walmart, YouTube, ChatGPT and Gemini.
 - **Skills for the ScrapingBee CLI** — a router that teaches the agent when to use the CLI
   instead of the MCP server (hundreds of URLs, crawling a whole site, output to files,
   scheduled jobs), how to keep credit spend low, and the guardrails that stay active whenever
@@ -20,8 +21,11 @@ This power uses the [Agent Plugins](https://agent-plugins.org) format and gives 
 
 - A **ScrapingBee account and API key** — [sign up here](https://app.scrapingbee.com/account/register).
   API calls consume credits from your plan.
-- **`SCRAPINGBEE_API_KEY`** set in your environment before you install the power. `mcp.json`
-  reads it to authenticate the MCP server, and the CLI reads the same variable.
+- **`SCRAPINGBEE_API_KEY`** set in the environment Kiro starts from (export it in your shell,
+  then launch Kiro from that shell). The bridge reads it to authenticate the MCP server, and
+  the CLI reads the same variable. Kiro does not yet expand `${VAR}` inside a power's own
+  `mcp.json` headers, which is why the server is connected through `mcp-remote`.
+- **Node.js 18 or newer** with `npx`, which runs the `mcp-remote` bridge.
 - For the CLI skills: `uv tool install scrapingbee-cli` (or `pip install scrapingbee-cli`),
   then `scrapingbee auth` or `SCRAPINGBEE_API_KEY` in the environment.
 
