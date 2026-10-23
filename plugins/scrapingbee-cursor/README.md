@@ -41,6 +41,12 @@ you asked for. The plugin sends no data anywhere else.
 - "Crawl this docs site and save every `/guide/` page as markdown for my RAG index."
 - "What's the current price of Amazon ASIN B0CX23V2ZK?"
 
+## Support and privacy
+
+- Support: contact@scrapingbee.com, or the [FAQ](https://www.scrapingbee.com/faq/).
+- Privacy policy: https://www.scrapingbee.com/privacy-policy/
+- Terms: https://www.scrapingbee.com/terms-and-conditions/
+
 ## Links
 
 - MCP server: https://mcp.scrapingbee.com/

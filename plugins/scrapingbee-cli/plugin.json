@@ -5,7 +5,8 @@
   "version": "1.6.0",
   "author": {
     "name": "ScrapingBee",
-    "url": "https://www.scrapingbee.com"
+    "url": "https://www.scrapingbee.com",
+    "email": "contact@scrapingbee.com"
   },
   "homepage": "https://www.scrapingbee.com/documentation/cli/",
   "repository": "https://github.com/ScrapingBee/scrapingbee-cli",
