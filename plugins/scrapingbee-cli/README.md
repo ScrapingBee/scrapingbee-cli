@@ -12,9 +12,10 @@ the job, how to keep credit spend low, and which tool to reach for first — the
 belongs straight in the conversation.
 
 This folder serves Claude Code (`.claude-plugin/plugin.json`), ChatGPT / Codex
-(`.codex-plugin/plugin.json`) and GitHub Copilot CLI (`plugin.json`). The Cursor plugin, which also bundles the ScrapingBee MCP
-server, lives in the sibling folder `plugins/scrapingbee-cursor/`. All of them share the same
-skills.
+(`.codex-plugin/plugin.json`), GitHub Copilot CLI (`plugin.json`) and Google Antigravity
+(`.antigravity-plugin/plugin.json`). The Cursor plugin and the Kiro power, which also bundle
+the ScrapingBee MCP server, live in the sibling folders `plugins/scrapingbee-cursor/` and
+`plugins/scrapingbee-kiro/`. All of them share the same skills.
 
 ## What's inside
 
@@ -56,6 +57,12 @@ anywhere other than ScrapingBee.
 - "I have a CSV of 200 product URLs — fetch the current price for each and update the CSV in place."
 - "Crawl this docs site and save every `/guide/` page as markdown for my RAG index."
 - "What's the current price of Amazon ASIN B0CX23V2ZK?"
+
+## Support and privacy
+
+- Support: contact@scrapingbee.com, or the [FAQ](https://www.scrapingbee.com/faq/).
+- Privacy policy: https://www.scrapingbee.com/privacy-policy/
+- Terms: https://www.scrapingbee.com/terms-and-conditions/
 
 ## Links
 
