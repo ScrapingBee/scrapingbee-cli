@@ -32,7 +32,7 @@ Keep these in sync whenever you bump the version:
 - `plugins/scrapingbee-cursor/.cursor-plugin/plugin.json` and `.cursor-plugin/marketplace.json` → `version` (Cursor)
 - `plugins/scrapingbee-cli/.codex-plugin/plugin.json` → `version` (ChatGPT / Codex)
 - `plugins/scrapingbee-cli/plugin.json` → `version` (GitHub Copilot CLI, Agent Plugins format)
-- `plugins/scrapingbee-cli/.antigravity-plugin/plugin.json` → `version` (Google Antigravity)
+- `plugins/scrapingbee-antigravity/.antigravity-plugin/plugin.json` → `version` (Google Antigravity; the `.antigravity-plugin/plugin.json` files in `scrapingbee-cli` and `scrapingbee-kiro` are labels only)
 - `plugins/scrapingbee-kiro/plugin.json` → `version` (Kiro power, Agent Plugins format)
 - `.agents/skills/scrapingbee-cli/SKILL.md` and `scrapingbee-cli-guard/SKILL.md` → frontmatter `version`, then `scripts/sync-skills.sh`
 

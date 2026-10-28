@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "scrapingbee": {
+      "serverUrl": "https://mcp.scrapingbee.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${SCRAPINGBEE_API_KEY}"
+      },
+      "variables": [
+        {
+          "name": "SCRAPINGBEE_API_KEY",
+          "label": "ScrapingBee API key",
+          "description": "Your API key from https://app.scrapingbee.com/account/manage/api_key. Export the same variable in your shell for the ScrapingBee CLI.",
+          "sensitive": true,
+          "required": true
+        }
+      ]
+    }
+  }
+}
