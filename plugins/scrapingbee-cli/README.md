@@ -12,10 +12,10 @@ the job, how to keep credit spend low, and which tool to reach for first — the
 belongs straight in the conversation.
 
 This folder serves Claude Code (`.claude-plugin/plugin.json`), ChatGPT / Codex
-(`.codex-plugin/plugin.json`), GitHub Copilot CLI (`plugin.json`) and Google Antigravity
-(`.antigravity-plugin/plugin.json`). The Cursor plugin and the Kiro power, which also bundle
-the ScrapingBee MCP server, live in the sibling folders `plugins/scrapingbee-cursor/` and
-`plugins/scrapingbee-kiro/`. All of them share the same skills.
+(`.codex-plugin/plugin.json`) and GitHub Copilot CLI (`plugin.json`). The Cursor plugin, the
+Kiro power and the Antigravity plugin, which also bundle the ScrapingBee MCP server, live in
+the sibling folders `plugins/scrapingbee-cursor/`, `plugins/scrapingbee-kiro/` and
+`plugins/scrapingbee-antigravity/`. All of them share the same skills.
 
 ## What's inside
 

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "scrapingbee",
+  "displayName": "ScrapingBee",
+  "description": "Fetch and read any web page, search the web, crawl a site, or pull structured data out of pages — whenever a task needs content from a website. Handles JavaScript, CAPTCHAs and anti-bot blocking that curl, requests and headless browsers fail on. Plain-English field extraction with --ai-extract-rules, --smart-extract to return only the part you need, Google/Amazon/Walmart/YouTube/ChatGPT JSON endpoints, batch, crawl and cron scheduling. Bundles the ScrapingBee MCP server (18 tools) and skills for the ScrapingBee CLI.",
+  "version": "1.6.0",
+  "author": {
+    "name": "ScrapingBee",
+    "url": "https://www.scrapingbee.com"
+  },
+  "homepage": "https://www.scrapingbee.com/documentation/cli/",
+  "repository": "https://github.com/ScrapingBee/scrapingbee-cli",
+  "license": "MIT",
+  "keywords": [
+    "web-scraping",
+    "scraping",
+    "crawl",
+    "search",
+    "serp",
+    "amazon",
+    "youtube",
+    "data-extraction",
+    "scrapingbee"
+  ],
+  "logo": "assets/icon.png",
+  "suggestedPrompts": [
+    "Get me the full text of this JavaScript-heavy pricing page as clean markdown",
+    "I have a CSV of 200 product URLs: fetch the current price for each and update the CSV in place",
+    "Crawl this docs site and save every /guide/ page as markdown for my RAG index"
+  ]
+}

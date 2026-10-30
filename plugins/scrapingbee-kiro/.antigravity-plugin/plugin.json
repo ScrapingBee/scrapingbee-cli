@@ -1,0 +1,13 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "scrapingbee-kiro",
+  "displayName": "ScrapingBee for Kiro",
+  "description": "Kiro Powers packaging of the ScrapingBee plugin. In Antigravity, install the \"scrapingbee\" plugin from plugins/scrapingbee-antigravity instead; it bundles the ScrapingBee MCP server and the same skills.",
+  "version": "1.6.0",
+  "author": {
+    "name": "ScrapingBee",
+    "url": "https://www.scrapingbee.com"
+  },
+  "repository": "https://github.com/ScrapingBee/scrapingbee-cli",
+  "license": "MIT"
+}

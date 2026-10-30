@@ -3,7 +3,8 @@
 #
 # Source of truth: .agents/skills/
 # Targets: .github/skills/, .kiro/skills/, .opencode/skills/, plugins/scrapingbee-cli/skills/,
-#          plugins/scrapingbee-cursor/skills/, plugins/scrapingbee-kiro/skills/
+#          plugins/scrapingbee-cursor/skills/, plugins/scrapingbee-kiro/skills/,
+#          plugins/scrapingbee-antigravity/skills/
 #
 # Usage: bash scripts/sync-skills.sh [--dry-run]
 
@@ -19,6 +20,7 @@ TARGETS=(
   "$REPO_ROOT/plugins/scrapingbee-cli/skills"
   "$REPO_ROOT/plugins/scrapingbee-cursor/skills"
   "$REPO_ROOT/plugins/scrapingbee-kiro/skills"
+  "$REPO_ROOT/plugins/scrapingbee-antigravity/skills"
 )
 
 DRY_RUN=0
