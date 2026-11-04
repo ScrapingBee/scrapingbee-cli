@@ -58,6 +58,13 @@ class Client:
             await self._session.close()
             self._session = None
 
+    def _redact(self, body: bytes, status: int) -> bytes:
+        """The API echoes a wrong key back in its 401 body; keep it out of output and .err files."""
+        key = self.api_key.strip()
+        if status >= 400 and key:
+            return body.replace(key.encode(), b"[redacted]")
+        return body
+
     def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None:
             raise RuntimeError("Client must be used as async with Client(...) as client")
@@ -76,7 +83,7 @@ class Client:
         if headers:
             req_kwargs["headers"] = headers
         async with session.get(url, **req_kwargs) as resp:
-            body = await resp.read()
+            body = self._redact(await resp.read(), resp.status)
             out_headers = dict(resp.headers)
             return body, out_headers, resp.status
 
@@ -131,7 +138,7 @@ class Client:
                     else {"Content-Type": content_type}
                 )
         async with session.request(method, url, **req_kwargs) as resp:
-            body = await resp.read()
+            body = self._redact(await resp.read(), resp.status)
             return body, dict(resp.headers), resp.status
 
     @staticmethod
