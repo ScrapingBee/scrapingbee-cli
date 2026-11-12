@@ -1,0 +1,10 @@
+# Files Codex should not package from this plugin bundle
+.env
+.env.*
+*.log
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+batch_*/
+crawl_*/
