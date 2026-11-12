@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **GitHub Copilot CLI manifest:** `plugins/scrapingbee-cli/plugin.json` in the Agent Plugins format, which Copilot CLI and the awesome-copilot marketplace require at the plugin root.
 - **Kiro power:** `plugins/scrapingbee-kiro/` (Agent Plugins `plugin.json` + `mcp.json` that connects the ScrapingBee MCP server, README, synced skills) for the Kiro Powers marketplace.
 - **Antigravity plugin:** `plugins/scrapingbee-antigravity/` bundles the ScrapingBee MCP server through `mcp_config.json`, with the API key declared as a plugin variable that Antigravity asks for on enable, plus the synced skills. The `scrapingbee-cli` and `scrapingbee-kiro` folders carry label-only Antigravity manifests so a repository-wide install names them clearly. Plugin READMEs gain a "Support and privacy" section and the marketplace contact is now contact@scrapingbee.com.
-- **Security policy:** `SECURITY.md` (repo root and `plugins/scrapingbee-cli/`) with how to report a vulnerability; `.github/dependabot.yml` keeps the GitHub Actions current; `plugins/scrapingbee-cli/.codexignore` keeps local files out of the Codex bundle.
+- **Security policy:** `SECURITY.md` (repo root and `plugins/scrapingbee-cli/`) with how to report a vulnerability; `plugins/scrapingbee-cli/.codexignore` keeps local files out of the Codex bundle.
 - **Cursor and ChatGPT / Codex manifests:** the same plugin folder now carries `.cursor-plugin/plugin.json` (with a `SCRAPINGBEE_API_KEY` variable and `mcp.json` that connects the ScrapingBee MCP server) and `.codex-plugin/plugin.json`, plus logo assets, so one folder can be submitted to each marketplace.
 
 ### Changed
