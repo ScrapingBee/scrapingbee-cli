@@ -96,9 +96,9 @@ def test_save_and_remove_api_key_dotenv(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "auth_config_path", lambda: auth_file)
 
     assert remove_api_key_from_dotenv() is False
-    path = save_api_key_to_dotenv("test-key-123")
+    path = save_api_key_to_dotenv("example-key-123")
     assert path == auth_file
-    assert auth_file.read_text() == 'SCRAPINGBEE_API_KEY="test-key-123"\n'
+    assert auth_file.read_text() == 'SCRAPINGBEE_API_KEY="example-key-123"\n'
 
     assert remove_api_key_from_dotenv() is True
     assert not auth_file.exists()
