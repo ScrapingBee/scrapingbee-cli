@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Final
 
-ENV_API_KEY = "SCRAPINGBEE_API_KEY"
+ENV_API_KEY: Final = "SCRAPINGBEE_API_KEY"
 BASE_URL = "https://app.scrapingbee.com/api/v1"
 
 # Persistent auth .env path (evaluated once; cwd .env is evaluated at load_dotenv() call time)
